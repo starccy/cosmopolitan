@@ -30,6 +30,12 @@
 #include "libc/intrin/maps.h"
 #include "libc/intrin/strace.h"
 #include "libc/nt/accounting.h"
+#include "libc/nt/enum/accessmask.h"
+#include "libc/nt/createfile.h"
+#include "libc/nt/dll.h"
+#include "libc/nt/enum/fileflagandattributes.h"
+#include "libc/nt/enum/filesharemode.h"
+#include "libc/nt/files.h"
 #include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/processcreationflags.h"
 #include "libc/nt/enum/status.h"
@@ -119,6 +125,92 @@ textwindows static int __proc_checkstop(struct Proc *pr) {
   return sic;
 }
 
+// whether the process behind this handle is a native win32 program
+// rather than a cosmo one, decided by the first bytes of its image file:
+// every ape starts with "MZqFpD". false on any failure, so the caller
+// falls back to the usual decode.
+//
+// K32GetProcessImageFileNameW, not QueryFullProcessImageNameW: by the
+// time __proc_harvest() runs the child is dead, and the Query call fails
+// on a terminated process with ERROR_GEN_FAILURE. the K32 call answers
+// from the kernel process object and keeps working after death, but
+// names the image by its nt device path (\Device\HarddiskVolume3\...),
+// which CreateFile only accepts behind the \\?\GLOBALROOT prefix.
+textwindows static bool __proc_is_native_child(int64_t hProcess) {
+  typedef uint32_t (__msabi *GetImageF)(int64_t, char16_t *, uint32_t);
+  static GetImageF get_image;
+  static bool sought;
+  if (!sought) {
+    // not in our import tables, hence the runtime lookup
+    get_image = (GetImageF)GetProcAddress(GetModuleHandle("kernel32.dll"),
+                                          "K32GetProcessImageFileNameW");
+    sought = true;
+  }
+  if (!get_image)
+    return false;
+  char16_t path[14 + 1024] = u"\\\\?\\GLOBALROOT";
+  uint32_t len = get_image(hProcess, path + 14, 1024);
+  if (!len || len >= 1024)
+    return false;
+  int64_t h = CreateFile(
+      path, kNtGenericRead,
+      kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, 0,
+      kNtOpenExisting, kNtFileAttributeNormal, 0);
+  if (h == -1)
+    return false;
+  char buf[8] = {0};
+  uint32_t got = 0;
+  bool32 ok = ReadFile(h, buf, 8, &got, 0);
+  CloseHandle(h);
+  if (!ok || got < 8)
+    return false;
+  return buf[0] == 'M' && buf[1] == 'Z' && memcmp(buf, "MZqFpD", 6) != 0;
+}
+
+// a native child's exit code, re-encoded as a wait status. our own
+// children exit with a whole wait status in the exit code (exit(N) is
+// really N<<8, a signal death is the raw signal number) but a native
+// win32 program exits with a literal code, which read verbatim turns
+// every nonzero exit into a death by that signal. the ntstatus crash
+// codes map to the signal a unix kernel would have delivered (the same
+// table wait4-nt.c uses); anything else is an ordinary exit.
+textwindows static uint32_t __proc_native_wstatus(uint32_t code) {
+  switch (code) {
+    case kNtStatusControlCExit:
+      return SIGINT;
+    case kNtStatusStackOverflow:
+    case kNtStatusAccessViolation:
+    case kNtStatusGuardPageViolation:
+      return SIGSEGV;
+    case kNtStatusInPageError:
+      return SIGBUS;
+    case kNtStatusIllegalInstruction:
+    case kNtStatusPrivilegedInstruction:
+      return SIGILL;
+    case kNtStatusBreakpoint:
+      return SIGTRAP;
+    case kNtStatusIntegerOverflow:
+    case kNtStatusFloatDivideByZero:
+    case kNtStatusFloatOverflow:
+    case kNtStatusFloatUnderflow:
+    case kNtStatusFloatInexactResult:
+    case kNtStatusFloatDenormalOperand:
+    case kNtStatusFloatInvalidOperation:
+    case kNtStatusFloatStackCheck:
+    case kNtStatusIntegerDivideBYZero:
+      return SIGFPE;
+    case kNtStatusDllNotFound:
+    case kNtStatusDllInitFailed:
+    case kNtStatusOrdinalNotFound:
+    case kNtStatusEntrypointNotFound:
+      return SIGSYS;
+    case kNtStatusAssertionFailure:
+      return SIGABRT;
+    default:
+      return (code & 0xFF) << 8;
+  }
+}
+
 // performs accounting on exited process
 // multiple threads can wait on a process
 // it's important that only one calls this
@@ -141,6 +233,13 @@ textwindows int __proc_harvest(struct Proc *pr, bool iswait4) {
     }
   } else {
     GetExitCodeProcess(pr->hProcess, &dwExitCode);
+    // 259 (kNtStillActive) is microsoft's documented ambiguity: a program
+    // can really exit with it as an ordinary exit code. taking it at face
+    // value leaves the process waited on forever, so only trust it while
+    // the process object is still unsignaled.
+    if (dwExitCode == kNtStillActive &&
+        WaitForSingleObject(pr->hProcess, 0) != kNtWaitTimeout)
+      dwExitCode = __proc_native_wstatus(dwExitCode);
   }
   if (dwExitCode == kNtStillActive)
     return __proc_checkstop(pr);
@@ -157,6 +256,8 @@ textwindows int __proc_harvest(struct Proc *pr, bool iswait4) {
     // handle child _Exit()
     if (dwExitCode == 0xc9af3d51u)
       dwExitCode = kNtStillActive;
+    else if (!pr->isvfork && __proc_is_native_child(pr->hProcess))
+      dwExitCode = __proc_native_wstatus(dwExitCode);
     pr->dwExitCode = dwExitCode;
     if (pr->status == PROC_STOPPED) {
       dll_remove(&__proc.stopped, &pr->stopelem);
