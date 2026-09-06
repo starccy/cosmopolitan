@@ -31,6 +31,8 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #include "libc/vga/vga.internal.h"
+#include "libc/errno.h"
+#include "libc/nt/errors.h"
 #if SupportsWindows()
 
 #define _MSG_OOB      1
@@ -82,10 +84,18 @@ textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
   if (flags & _MSG_WAITALL)
     __imp_ioctlsocket(f->handle, FIONBIO, (uint32_t[]){0});
 
-  rc = __winsock_block(f->handle, flags & ~_MSG_DONTWAIT,
-                       (f->flags & O_NONBLOCK) || (flags & _MSG_DONTWAIT),
+  bool nonblock = (f->flags & O_NONBLOCK) || (flags & _MSG_DONTWAIT);
+  if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
+    __sig_unblock(waitmask);
+    return eagain();
+  }
+
+  rc = __winsock_block(f->handle, flags & ~_MSG_DONTWAIT, nonblock,
                        f->rcvtimeo, waitmask, sys_recv_nt_start,
                        &(struct RecvArgs){iov, iovlen});
+
+  if (rc == -1 && errno == kNtErrorHandleEof)
+    rc = 0;
 
   __sig_unblock(waitmask);
 
