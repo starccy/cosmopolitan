@@ -40,7 +40,7 @@ int getlogin_r(char *buf, size_t size) {
   } else if (IsWindows()) {
     n32 = ARRAYLEN(buf16);
     if (GetUserName(&buf16, &n32)) {
-      tprecode16to8(buf, sizeof(size), buf16);
+      tprecode16to8(buf, size, buf16);
       rc = 0;
     } else {
       rc = __winerr();
