@@ -52,10 +52,25 @@ int sys_ulock_wait(uint32_t operation, void *addr, uint64_t value,
 //   configured (via operation) in an inconsistent way.
 //
 // see also os_sync_wait_on_address.h from xcode sdk
+// the operations whose compare is 32 bits wide
+static int ulock_value_is_32bit(uint32_t operation) {
+  switch (operation & 0xff) {
+    case UL_COMPARE_AND_WAIT:
+    case UL_UNFAIR_LOCK:
+    case UL_COMPARE_AND_WAIT_SHARED:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
 int ulock_wait(uint32_t operation, void *addr, uint64_t value,
                uint32_t timeout_micros) {
   int rc;
   operation |= ULF_WAIT_CANCEL_POINT;
+  
+  if (ulock_value_is_32bit(operation))
+    value = (uint32_t)value;
   LOCKTRACE("ulock_wait(%#x, %p, %lx, %u) → ...", operation, addr, value,
             timeout_micros);
   rc = sys_ulock_wait(operation, addr, value, timeout_micros);
