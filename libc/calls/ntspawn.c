@@ -79,8 +79,12 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
       sb->path, kNtFileGenericRead,
       kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, 0,
       kNtOpenExisting, kNtFileAttributeNormal | kNtFileFlagBackupSemantics, 0);
-  if (fh == -1)
+  if (fh == -1) {
+    uint32_t err = GetLastError();
+    if (err == kNtErrorSymlinkClassDisabled || err == kNtErrorCantAccessFile)
+      return eacces();
     return __winerr();
+  }
   uint32_t got;
   bool32 ok = ReadFile(fh, p, pe - p, &got, 0);
   CloseHandle(fh);
@@ -92,8 +96,14 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
 
   // handle shebang
   size_t i = 0;  // represents space of sb->cmdline consumed
+  // an ape child reads unix paths itself, so its arguments are passed as
+  // given; only a native program gets the "/x/" rewrite. a script's
+  // interpreter is not looked at, and is taken for native
+  bool native = true;
   if (p[0] == 'M' && p[1] == 'Z') {
     // it's a windows executable
+    native = !(got >= 8 && (!memcmp(p, "MZqFpD='", 8) ||
+                            !memcmp(p, "jartsr='", 8)));
   } else if (p[0] == '#' && p[1] == '!') {
     p += 2;
     // make sure we got a complete first line
@@ -140,7 +150,8 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
   }
 
   // setup arguments and environment
-  if ((i += mkntcmdline(sb->cmdline + i, a->argv, 32767 - i)) >= 32767)
+  if ((i += mkntcmdline2(sb->cmdline + i, a->argv, 32767 - i, native)) >=
+      32767)
     return e2big();
   if (mkntenvblock(sb->envblock, a->envp, a->extravars, sb->envbuf) == -1)
     return -1;
@@ -198,10 +209,14 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
       } else {
         rc = -1;
         STRACE("CreateProcess() failed w/ %d", GetLastError());
+        // every failure carries an errno: posix_spawn() returns errno
+        // as its result and would otherwise report success with no child
         if (GetLastError() == kNtErrorSharingViolation) {
           etxtbsy();
         } else if (GetLastError() == kNtErrorInvalidName) {
           enoent();
+        } else {
+          __winerr();
         }
       }
       rc = __fix_enotdir(rc, sb->path);
@@ -246,7 +261,7 @@ textwindows int ntspawn(struct NtSpawnArgs *args) {
     rc = ntspawn2(args, sb);
     ntspawn_free(sb);
   } else {
-    rc = -1;
+    rc = enomem();
   }
   ALLOW_SIGNALS;
   return rc;
