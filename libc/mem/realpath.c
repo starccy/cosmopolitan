@@ -41,6 +41,11 @@ __static_yoink("musl_libc_notice");
 
 #define SYMLOOP_MAX 40
 
+static int IsAlpha(int c)
+{
+	return ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z');
+}
+
 // clang-format off
 
 static size_t GetSlashLen(const char *s)
@@ -106,6 +111,41 @@ char *realpath(const char *filename, char *resolved)
 	    (!filename[4] || filename[4] == '/')) {
 		return ResolvePath(resolved, filename, l);
 	}
+	if (IsWindows()) {
+		size_t i;
+		memcpy(output, filename, l+1);
+		for (i = 0; i < l; i++)
+			if (output[i] == '\\')
+				output[i] = '/';
+
+		/* Turn paths like "C:" into "/C"
+		 * Turn paths like "C:/..." into "/C/..." */
+		if (IsAlpha(output[0]) && output[1] == ':' &&
+		    (!output[2] || output[2] == '/')) {
+			output[1] = output[0];
+			output[0] = '/';
+		}
+
+		/* resolve the cwd along with the path, since win32 hands it
+		 * out as spelled, links and all */
+		if (output[0] != '/') {
+			char cwd[PATH_MAX];
+			size_t n;
+			if (__getcwd(cwd, sizeof cwd) == -1)
+				return 0;
+			n = strlen(cwd);
+			if (n && cwd[n-1] == '/')
+				n--;
+			if (n + 1 + l + 1 > PATH_MAX)
+				goto toolong;
+			memmove(output + n + 1, output, l + 1);
+			memcpy(output, cwd, n);
+			output[n] = '/';
+			l += n + 1;
+		}
+
+		filename = output;
+	}
 	p = sizeof stack - l - 1;
 	q = 0;
 	memcpy(stack+p, filename, l+1);
@@ -124,6 +164,12 @@ restart:
 			q=0;
 			output[q++] = '/';
 			p++;
+			/* posix leaves a leading "//" implementation-defined,
+			 * and on windows it names a network share (readlink()
+			 * on a share-target symlink emits //server/share), so
+			 * exactly two slashes survive there */
+			if (IsWindows() && stack[p] == '/' && stack[p+1] != '/')
+				output[q++] = '/';
 			continue;
 		}
 
@@ -166,6 +212,16 @@ restart:
 			/* When previous components are already known to be
 			 * directories, processing .. can skip readlink. */
 			if (!check_dir) goto skip_readlink;
+		}
+		/* the server and share components of a network share path
+		 * can't be opened on their own, so take both as-is;
+		 * resolution resumes below the share root */
+		if (IsWindows() && output[0] == '/' && output[1] == '/') {
+			int nslash = 0;
+			size_t t;
+			for (t = 2; t < q+l; t++)
+				if (output[t] == '/') nslash++;
+			if (nslash < 2) goto skip_readlink;
 		}
 		e = errno;
 		if ((rc = readlink(output, stack, p)) == -1) {
