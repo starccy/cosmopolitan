@@ -625,7 +625,6 @@ textwindows int __sig_kill(struct PosixThread *pt, int sig, int sic) {
 
 textwindows static void __sig_generate_impl(int sig, int sic) {
   struct Dll *e;
-  struct CosmoPib *pib = __get_pib();
   struct PosixThread *pt, *mark = 0;
   if (sig == SIGKILL)
     __sig_terminate(sig);
@@ -635,14 +634,6 @@ textwindows static void __sig_generate_impl(int sig, int sic) {
   if (__sig_ignored(sig)) {
     STRACE("ignoring %G", sig);
     return;
-  }
-  if (pib->sighandrvas[sig - 1] == (intptr_t)SIG_DFL) {
-    if (!__sig_is_stop_signal(sig))
-      __sig_terminate(sig);
-    if (!(sig = __sig_stop(sig)))
-      return;
-    if (__sig_ignored(sig))
-      return;
   }
   __sig_lock();
   sigset_t pending = atomic_load(__get_pib()->sigpending);
@@ -930,6 +921,8 @@ HAIRY static uint32_t __sig_worker(void *arg) {
         sigs &= ~(1ull << (sig - 1));
         __sig_generate(sig, SI_KERNEL);
       }
+      
+      __imp_SleepEx(POLL_INTERVAL_MS, 0);
       continue;
     }
 
