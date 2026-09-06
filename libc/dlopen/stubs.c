@@ -36,12 +36,6 @@ void *dlopen(const char *path, int mode) {
   return 0;
 }
 
-int dladdr(const void *addr, Dl_info *info) {
-  info->dli_sname = NULL;
-  info->dli_saddr = NULL;
-  return 0;
-}
-
 int dlinfo(void *addr, int req, void *info) {
   return -1;
 }
