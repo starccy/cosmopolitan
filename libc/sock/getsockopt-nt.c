@@ -59,6 +59,7 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
       return __winsockerr();
     *(int *)out_opt_optval = __errno_windows2linux(err);
     *inout_optlen = sizeof(int);
+    return 0;
   }
 
   if (level == SOL_SOCKET &&
