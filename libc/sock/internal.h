@@ -64,6 +64,7 @@ int sys_select_nt(int, fd_set *, fd_set *, fd_set *, const struct timespec *,
 
 size_t __iovec2nt(struct NtIovec[hasatleast 16], const struct iovec *, size_t);
 
+bool __winsock_recv_ready(int64_t, uint32_t);
 ssize_t __winsock_block(int64_t, uint32_t, bool, uint32_t, uint64_t,
                         int (*)(int64_t, struct NtOverlapped *, uint32_t *,
                                 void *),

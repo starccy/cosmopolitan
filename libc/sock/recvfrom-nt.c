@@ -66,8 +66,13 @@ textwindows ssize_t sys_recvfrom_nt(int fd, const struct iovec *iov,
   struct Fd *f = __get_pib()->fds.p + fd;
   sigset_t waitmask = __sig_block();
   uint32_t addrcapacity = opt_inout_srcaddrsize ? *opt_inout_srcaddrsize : 0;
-  rc = __winsock_block(f->handle, flags & ~_MSG_DONTWAIT,
-                       (f->flags & O_NONBLOCK) || (flags & _MSG_DONTWAIT),
+  
+  bool nonblock = (f->flags & O_NONBLOCK) || (flags & _MSG_DONTWAIT);
+  if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
+    __sig_unblock(waitmask);
+    return eagain();
+  }
+  rc = __winsock_block(f->handle, flags & ~_MSG_DONTWAIT, nonblock,
                        f->rcvtimeo, waitmask, sys_recvfrom_nt_start,
                        &(struct RecvFromArgs){iov, iovlen, opt_out_srcaddr,
                                               opt_inout_srcaddrsize});
