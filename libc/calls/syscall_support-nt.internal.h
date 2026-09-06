@@ -20,6 +20,7 @@ int sys_fcntl_nt_setfl(struct Fd *, unsigned) libcesque;
 int sys_pause_nt(void) libcesque;
 char __getcosmosdrive(void) libcesque pureconst;
 bool __hasregularparent(char16_t *) libcesque;
+bool __ntdriveexists(int) libcesque;
 int64_t __fix_enotdir(int64_t, char16_t *) libcesque;
 int64_t __fix_enotdir2(int64_t, char16_t *, char16_t *) libcesque;
 int64_t __winerr(void) libcesque;

@@ -96,6 +96,78 @@ textwindows static int __retntpath(char16_t *p, int n) {
   return n;
 }
 
+/**
+ * Returns true if drive letter exists.
+ *
+ * The drive bitmap is cached so the common "/C/..." costs nothing; a
+ * letter not in it asks the os again, so a drive attached after startup
+ * is still found.
+ */
+textwindows bool __ntdriveexists(int letter) {
+  static uint32_t drives;
+  uint32_t bit = 1u << ((letter | 32) - 'a');
+  if (__atomic_load_n(&drives, __ATOMIC_RELAXED) & bit)
+    return true;
+  uint32_t now = GetLogicalDrives();
+  __atomic_store_n(&drives, now, __ATOMIC_RELAXED);
+  return now & bit;
+}
+
+// length of the "//srv/share" or "//?/UNC/srv/share" prefix of a slashed
+// path, or 0 when it isn't a unc share path
+textwindows static int __uncrootlen(const char16_t *p, int n) {
+  int i = 2;
+  if (n < 5 || p[0] != '/' || p[1] != '/')
+    return 0;
+  if (p[2] == '?' && p[3] == '/' &&        //
+      (p[4] == 'U' || p[4] == 'u') &&      //
+      (p[5] == 'N' || p[5] == 'n') &&      //
+      (p[6] == 'C' || p[6] == 'c') &&      //
+      p[7] == '/') {
+    i = 8;
+  } else if (p[2] == '?' || p[2] == '.' || p[2] == '/') {
+    return 0;
+  }
+  int srv = i;
+  while (i < n && p[i] != '/')
+    ++i;
+  if (i == srv || i >= n)
+    return 0;
+  int share = ++i;
+  while (i < n && p[i] != '/')
+    ++i;
+  if (i == share)
+    return 0;
+  return i;
+}
+
+// turns "//srv/share/foo" into "\\?\UNC\srv\share\foo". what follows
+// the share is normalized on its own, so ".." stops at the share root
+// the way "/.." stays at "/". the prefix goes away again in
+// __mkntpathath() when the path is short enough to not need it.
+textwindows static int __pfxunc(char16_t *p, int n) {
+  int root = __uncrootlen(p, n);
+  if (!root)
+    return __retntpath(p, n);
+  if (n + 6 + 1 > PATH_MAX)
+    return enametoolong();
+  memmove(p + 8, p + 2, (n - 2 + 1) * sizeof(char16_t));
+  p[2] = '?';
+  p[3] = '/';
+  p[4] = 'U';
+  p[5] = 'N';
+  p[6] = 'C';
+  p[7] = '/';
+  n += 6;
+  root += 6;
+  while (n - root > 1 && p[root] == '/' && p[root + 1] == '/') {
+    memmove(p + root, p + root + 1, (n - root) * sizeof(char16_t));
+    --n;
+  }
+  n = root + __normunixpath(p + root, n - root);
+  return __retntpath(p, n);
+}
+
 textwindows static int __normdospath(int64_t dirhand, const char *path,
                                      char16_t path16[static PATH_MAX],
                                      bool used_explicit_drive_letter) {
@@ -132,6 +204,10 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
   if (isalpha(p[0]) && p[1] == ':' && p[2] != '/')
     return enotsup();
 
+  // a spelled out drive letter always means that drive, whereas "/c"
+  // below only does when drive c exists
+  bool spelled_drive = isalpha(p[0]) && p[1] == ':';
+
   // don't do anything to new technology paths
   if (p[0] == '/' && p[1] == '?' && p[2] == '?' && p[3] == '/')
     return __retntpath(p, n);
@@ -143,9 +219,12 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
         p[5] == ':') {
       memmove(p, p + 4, (n - 4 + 1) * sizeof(char16_t));
       n -= 4;
-    } else {
+    } else if (p[2] == '?' || p[2] == '.') {
       // otherwise return paths like \\?\pipe\cosmo\... as is
       return __retntpath(p, n);
+    } else {
+      // "//srv/share/foo" is a network share path
+      return __pfxunc(p, n);
     }
   }
 
@@ -160,11 +239,14 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
     return __pfxdrive(p, 0, __getcosmosdrive(), 0);
 
   // turn "/c" into "\\?\c:\"
-  if (p[0] == '/' && isalpha(p[1]) && !p[2])
+  // "/x" for a drive that doesn't exist is an ordinary name like "/bin"
+  if (p[0] == '/' && isalpha(p[1]) && !p[2] &&
+      (spelled_drive || __ntdriveexists(p[1])))
     return __pfxdrive(p, 0, p[1], 0);
 
   // turn "/c/foo" into "\\?\c:\foo"
-  if (p[0] == '/' && isalpha(p[1]) && p[2] == '/')
+  if (p[0] == '/' && isalpha(p[1]) && p[2] == '/' &&
+      (spelled_drive || __ntdriveexists(p[1])))
     return __pfxdrive(p, n, p[1], 3);
 
   // turn "/foo" into "\\?\c:\foo" depending on $SYSTEMDRIVE
@@ -224,6 +306,18 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
       } else if (dir[2] == '.' && dir[3] == '/') {
         // turn //./ device prefix into //?/
         dir[2] = '?';
+      } else if (dir[2] != '/') {
+        // add //?/UNC/ prefix to "//srv/share/..." network share path
+        if (dirlen + 6 + 1 > PATH_MAX)
+          return enametoolong();
+        memmove(dir + 8, dir + 2, (dirlen - 2 + 1) * sizeof(char16_t));
+        dir[2] = '?';
+        dir[3] = '/';
+        dir[4] = 'U';
+        dir[5] = 'N';
+        dir[6] = 'C';
+        dir[7] = '/';
+        dirlen += 6;
       }
     }
     if (dir[1] == '?' && dir[2] == '?' && dir[3] == '/' && isalpha(dir[4]) &&
@@ -257,7 +351,11 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
 
   // normalize user path combined with current location path
   // windows requires that unc paths be properly normalized!
-  filelen = __normunixpath(file + 2, filelen - 2) + 2;
+  // on a network share ".." must not climb out of the share
+  int root = __uncrootlen(file, filelen);
+  if (root < 2)
+    root = 2;
+  filelen = root + __normunixpath(file + root, filelen - root);
 
   // then turn back to dos
   for (int i = 0; i < filelen; ++i)
@@ -302,6 +400,19 @@ textwindows int __mkntpathath(int64_t dirhand, const char *path,
       file[5] == ':') {
     memmove(file, file + 4, (len - 4 + 1) * sizeof(char16_t));
     len -= 4;
+  } else if (len - 6 < 244 &&
+             len > 8 &&
+             file[0] == '\\' &&
+             file[1] == '\\' &&
+             file[2] == '?' &&
+             file[3] == '\\' &&
+             file[4] == 'U' &&
+             file[5] == 'N' &&
+             file[6] == 'C' &&
+             file[7] == '\\') {
+    // \\?\UNC\srv\share\x -> \\srv\share\x
+    memmove(file + 2, file + 8, (len - 8 + 1) * sizeof(char16_t));
+    len -= 6;
   }
 
   // now reject paths that windows might change silently

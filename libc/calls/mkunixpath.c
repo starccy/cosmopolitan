@@ -45,6 +45,18 @@ textwindows int __mkunixpath(const char16_t *path,
     if (p[i] == '\\')
       p[i] = '/';
 
+  // turn //?/UNC/srv/share/... into //srv/share/...
+  if (p[0] == '/' &&
+      p[1] == '/' &&
+      p[2] == '?' &&
+      p[3] == '/' &&
+      (p[4] == 'U' || p[4] == 'u') &&
+      (p[5] == 'N' || p[5] == 'n') &&
+      (p[6] == 'C' || p[6] == 'c') &&
+      p[7] == '/') {
+    memmove(p + 2, p + 8, n - 8 + 1);
+    n -= 6;
+  }
   // turn //?/c:/... and //./c:/... and /??/c:/... into c:/...
   // but don't convert stuff like //?/pipe/cosmo/...
   if (p[0] == '/' &&    //
