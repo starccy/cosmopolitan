@@ -497,8 +497,26 @@ textwindows int64_t __proc_search(int pid) {
   __proc_lock();
   // TODO(jart): we should increment a reference count when returning
   for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
-    if (pid == PROC_CONTAINER(e)->pid) {
-      handle = PROC_CONTAINER(e)->hProcess;
+    struct Proc *pr = PROC_CONTAINER(e);
+    if (pid == pr->pid) {
+      // a vfork()ed child that already called execve() has its real
+      // process handle in hProcess2 until the worker harvests the swap;
+      // hProcess is still the vfork event then, which kill() can't use
+      if (pr->isvfork) {
+        handle = pr->hProcess2 ? pr->hProcess2 : pr->hProcess;
+        break;
+      }
+      // a fork()ed child that already called execve() has exited with
+      // the real process handle in its exit code (see execve-nt.c); the
+      // worker swaps it in when it harvests, but a kill() in between
+      // must not land on the dead shell, so do the swap here
+      uint32_t code;
+      if (GetExitCodeProcess(pr->hProcess, &code) &&
+          (code & 0xFF000000u) == 0x23000000u) {
+        CloseHandle(pr->hProcess);
+        pr->hProcess = code & 0x00FFFFFF;
+      }
+      handle = pr->hProcess;
       break;
     }
   }
