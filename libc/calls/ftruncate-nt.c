@@ -28,6 +28,8 @@
 #include "libc/nt/runtime.h"
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/sig.h"
+#include "libc/nt/enum/fsctl.h"
+#include "libc/nt/struct/byhandlefileinformation.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #if SupportsWindows()
@@ -46,6 +48,17 @@ textwindows int sys_ftruncate_nt(int64_t handle, uint64_t length) {
   if (length > ~__get_pib()->rlimit[RLIMIT_FSIZE].rlim_cur) {
     RaiseSignal(SIGXFSZ);
     return efbig();
+  }
+
+  struct NtByHandleFileInformation info;
+  if (GetFileInformationByHandle(handle, &info)) {
+    uint64_t size = (uint64_t)info.nFileSizeHigh << 32 | info.nFileSizeLow;
+    if (length > size) {
+      uint8_t yes = 1;  // FILE_SET_SPARSE_BUFFER.SetSparse
+      uint32_t br;
+      DeviceIoControl(handle, kNtFsctlSetSparse, &yes, sizeof(yes), 0, 0, &br,
+                      0);
+    }
   }
 
   // ask operating system to extend file
