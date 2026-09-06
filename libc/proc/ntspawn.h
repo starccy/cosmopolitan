@@ -22,6 +22,7 @@ struct NtSpawnArgs {
 int mkntenvblock(char16_t[32767], char *const[], char *const[], char[32767]);
 int ntspawn(struct NtSpawnArgs *);
 size_t mkntcmdline(char16_t *, char *const[], size_t);
+size_t mkntcmdline2(char16_t *, char *const[], size_t, bool);
 void mungentpath(char *);
 
 COSMOPOLITAN_C_END_

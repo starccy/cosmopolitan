@@ -75,8 +75,13 @@ textwindows static bool LooksLikeCosmoDrivePath(const char *s) {
 // @see "Everyone quotes command line arguments the wrong way" MSDN
 // @see libc/runtime/getdosargv.c
 // @asyncsignalsafe
-textwindows size_t mkntcmdline(char16_t *cmdline, char *const argv[],
-                               size_t size) {
+// @param rewrite_paths says whether arguments spelled like "/x/..."
+//     become "x:\...": a native program wants that, an ape child reads
+//     unix paths itself and would rather see the argument as typed. a
+//     letter that names no drive is never rewritten, since "/t/f" is then
+//     a real directory on the cosmos drive (see __mkntpath)
+textwindows size_t mkntcmdline2(char16_t *cmdline, char *const argv[],
+                                size_t size, bool rewrite_paths) {
   char *arg;
   int slashes, n;
   bool needsquote;
@@ -85,7 +90,8 @@ textwindows size_t mkntcmdline(char16_t *cmdline, char *const argv[],
   for (k = i = 0; argv[i]; ++i) {
     if (i)
       APPEND(u' ');
-    if (LooksLikeCosmoDrivePath(argv[i]) &&
+    if (rewrite_paths && LooksLikeCosmoDrivePath(argv[i]) &&
+        __ntdriveexists(argv[i][1]) &&
         strlcpy(argbuf, argv[i], PATH_MAX) < PATH_MAX) {
       mungentpath(argbuf);
       arg = argbuf;
@@ -135,4 +141,9 @@ textwindows size_t mkntcmdline(char16_t *cmdline, char *const argv[],
   if (size)
     cmdline[MIN(k, size - 1)] = 0;
   return k;
+}
+
+textwindows size_t mkntcmdline(char16_t *cmdline, char *const argv[],
+                               size_t size) {
+  return mkntcmdline2(cmdline, argv, size, true);
 }
