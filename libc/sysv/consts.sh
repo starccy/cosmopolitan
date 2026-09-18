@@ -648,7 +648,7 @@ syscon	statfs	ST_NOSUID				2			2			8			8			8			8			8			0			# MNT_NOSUID on BSD
 syscon	statfs	ST_NODEV				4			4			16			16			0			16			16			0			# MNT_NODEV on BSD
 syscon	statfs	ST_NOEXEC				8			8			4			4			4			4			4			0			# MNT_NOEXEC on BSD
 syscon	statfs	ST_SYNCHRONOUS				16			16			2			2			2			2			2			0			# MNT_SYNCHRONOUS on BSD
-syscon	statfs	ST_NOATIME				0x0040			0x0040			0x10000000		0x10000000		0x10000000		0x00008000		0x04000000		0			# MNT_NOATIME on BSD
+syscon	statfs	ST_NOATIME				0x0400			0x0400			0x10000000		0x10000000		0x10000000		0x00008000		0x04000000		0			# MNT_NOATIME on BSD
 syscon	statfs	ST_RELATIME				0x1000			0x1000			0			0			0			0			0x00020000		0			# MNT_RELATIME on NetBSD
 syscon	statfs	ST_APPEND				0x0100			0x0100			0			0			0			0			0			0			#
 syscon	statfs	ST_IMMUTABLE				0x0200			0x0200			0			0			0			0			0			0			#
