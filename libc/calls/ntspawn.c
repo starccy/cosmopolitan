@@ -45,6 +45,10 @@
 #include "libc/proc/ntspawn.h"
 #include "libc/str/str.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/intrin/weaken.h"
+#include "libc/calls/struct/stat.h"
+#include "libc/calls/calls.h"
+#include "libc/sysv/consts/at.h"
 #if SupportsWindows()
 
 struct SpawnBlock {
@@ -57,6 +61,8 @@ struct SpawnBlock {
   char envbuf[32767];
   char16_t cwd[PATH_MAX];
 };
+
+int __ape_shim_exe_fallback(int, const char *, char *);
 
 textwindows static void *ntspawn_malloc(size_t size) {
   return HeapAlloc(GetProcessHeap(), 0, size);
@@ -142,7 +148,16 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
     sb->cmdline[i++] = ' ';
     sb->cmdline[i] = 0;
     // setup the true executable path
-    if (__mkntpathath(a->dirhand, argv[0], sb->path, false) == -1)
+    // the interpreter gets the same executable suffix retry as exec
+    const char *interp = argv[0];
+    char magic[PATH_MAX];
+    struct stat st;
+    if (_weaken(__ape_shim_exe_fallback) &&
+        (interp[0] == '/' || a->dirhand == AT_FDCWD) &&
+        fstatat(AT_FDCWD, interp, &st, 0) == -1 &&
+        _weaken(__ape_shim_exe_fallback)(AT_FDCWD, interp, magic))
+      interp = magic;
+    if (__mkntpathath(a->dirhand, interp, sb->path, false) == -1)
       return -1;
   } else {
     // it's something else
