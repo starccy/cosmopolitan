@@ -32,11 +32,20 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
+int __ape_shim_close_hook(int, int *);
+
 static int close_impl(int fd) {
 
   // handle obvious case
   if (fd < 0)
     return ebadf();
+
+  // let the shim see it first
+  if (!__vforked && _weaken(__ape_shim_close_hook)) {
+    int rc;
+    if (_weaken(__ape_shim_close_hook)(fd, &rc))
+      return rc;
+  }
 
   // give kprintf() the opportunity to dup() stderr
   if (fd == 2 && !__vforked && _weaken(kloghandle))

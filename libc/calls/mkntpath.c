@@ -16,6 +16,7 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/ctype.h"
+#include "libc/intrin/weaken.h"
 #include "libc/limits.h"
 #include "libc/nt/enum/fileflagandattributes.h"
 #include "libc/nt/files.h"
@@ -23,6 +24,9 @@
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+
+int __ape_shim_ntpath_rewrite(const char *, char *, size_t);
+void __ape_shim_ntpath_relative(const char16_t *, size_t);
 
 textwindows static size_t __normunixpath(char16_t *p, size_t n) {
   size_t i, j;
@@ -370,6 +374,17 @@ textwindows int __mkntpathath(int64_t dirhand, const char *path,
                               char16_t file[static PATH_MAX],
                               bool used_explicit_drive_letter) {
 
+  // let the shim rewrite the path first, if it's linked in
+  char rewritten[PATH_MAX];
+  if (_weaken(__ape_shim_ntpath_rewrite)) {
+    int rc = _weaken(__ape_shim_ntpath_rewrite)(path, rewritten,
+                                                sizeof(rewritten));
+    if (rc == -1)
+      return -1;
+    if (rc)
+      path = rewritten;
+  }
+
   // __mkntpath() normalizes away the trailing slash, so we need to
   // check if the user wanted it there early on in the process here
   int len = strlen(path);
@@ -429,6 +444,9 @@ textwindows int __mkntpathath(int64_t dirhand, const char *path,
       if (!(dwFileAttrs & kNtFileAttributeDirectory))
         return enotdir();
   }
+
+  if (dirhand != AT_FDCWD && _weaken(__ape_shim_ntpath_relative))
+    _weaken(__ape_shim_ntpath_relative)(file, len);
 
   return len;
 }

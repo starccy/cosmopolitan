@@ -37,7 +37,10 @@
 #include "libc/serialize.h"
 #include "libc/str/str.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/intrin/weaken.h"
 __static_yoink("musl_libc_notice");
+
+int __ape_shim_unc_collapsed(const char *);
 
 #define SYMLOOP_MAX 40
 
@@ -124,6 +127,18 @@ char *realpath(const char *filename, char *resolved)
 		    (!output[2] || output[2] == '/')) {
 			output[1] = output[0];
 			output[0] = '/';
+		}
+
+		/* a share path whose leading "//" unix path code collapsed
+		 * to "/" gets its second slash back, so the walk below sees
+		 * the //server/share form it knows */
+		if (_weaken(__ape_shim_unc_collapsed) &&
+		    _weaken(__ape_shim_unc_collapsed)(output)) {
+			if (l + 1 >= PATH_MAX)
+				goto toolong;
+			memmove(output + 1, output, l + 1);
+			output[0] = '/';
+			l++;
 		}
 
 		/* resolve the cwd along with the path, since win32 hands it

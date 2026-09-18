@@ -71,6 +71,8 @@ extern intptr_t __winmain_jmpbuf[5];
 extern struct CosmoTib *__winmain_tib;
 
 __msabi extern typeof(MapViewOfFileEx) *const __imp_MapViewOfFileEx;
+
+int __ape_shim_fork_copy_map(int64_t, struct Map *, size_t);
 __msabi extern typeof(TerminateProcess) *const __imp_TerminateProcess;
 __msabi extern typeof(TlsAlloc) *const __imp_TlsAlloc;
 __msabi extern typeof(VirtualProtectEx) *const __imp_VirtualProtectEx;
@@ -258,7 +260,10 @@ textwindows static int sys_fork_nt_parent(int child_pid, intptr_t hStopEvent) {
 
   // copy private memory maps
   int alloc_prot = -1;
+  char *skip_until = 0;
   for (struct Map *map = __maps_first(); map; map = __maps_next(map)) {
+    if (map->addr < skip_until)
+      continue;  // fragment of an allocation the shim copied whole
     if ((map->flags & MAP_TYPE) == MAP_SHARED)
       continue;  // shared memory doesn't need to be copied to subprocess
     if ((map->flags & MAP_NOFORK) && (map->flags & MAP_TYPE) != MAP_FILE)
@@ -272,6 +277,15 @@ textwindows static int sys_fork_nt_parent(int child_pid, intptr_t hStopEvent) {
           allocsize += m2->size;
         } else {
           break;
+        }
+      }
+      if (_weaken(__ape_shim_fork_copy_map)) {
+        int rc = _weaken(__ape_shim_fork_copy_map)(procinfo.hProcess, map,
+                                                   allocsize);
+        if (rc) {
+          ok = ok && rc > 0;
+          skip_until = map->addr + allocsize;
+          continue;
         }
       }
       if ((map->flags & MAP_NOFORK) && (map->flags & MAP_TYPE) == MAP_FILE) {
