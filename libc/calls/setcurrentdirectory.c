@@ -24,7 +24,11 @@
 #include "libc/nt/files.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
+#include "libc/calls/state.internal.h"
+#include "libc/nt/thunk/msabi.h"
 #include "libc/sysv/pib.h"
+
+__msabi extern typeof(SetCurrentDirectory) *const __imp_SetCurrentDirectoryW;
 
 textwindows static bool32 SetCurrentDirectoryImpl(const char16_t *lpPathName) {
   uint32_t dwFileAttr;
@@ -40,6 +44,9 @@ textwindows static bool32 SetCurrentDirectoryImpl(const char16_t *lpPathName) {
     errno = e;
     return false;
   }
+  
+  if (!__vforked)
+    __imp_SetCurrentDirectoryW(lpPathName);
   return true;
 }
 

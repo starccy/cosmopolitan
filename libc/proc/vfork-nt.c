@@ -30,6 +30,7 @@
 #include "libc/mem/mem.h"
 #include "libc/nt/events.h"
 #include "libc/nt/files.h"
+#include "libc/nt/memory.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/proc/proc.h"
@@ -40,6 +41,7 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #include "libc/thread/tls.h"
+#include "libc/calls/sig.internal.h"
 #if SupportsWindows()
 
 extern struct CosmoPib __pib;
@@ -96,6 +98,17 @@ textwindows void sys_vfork_nt_exec(intptr_t hProcess) {
   sigset_t sigmask = atomic_exchange(&tib->tib_sigmask, -1);
   struct CosmoPib *self = tib->tib_vfork;
   self->proc->hProcess2 = hProcess;
+  
+  int placeholder = self->pid;
+  int pid = GetProcessId(hProcess);
+  if (pid) {
+    self->proc->pid = pid;
+    self->pid = pid;
+    char16_t path[128];
+    UnmapViewOfFile(self->sigpending);
+    self->sigpending = 0;
+    DeleteFile(__sig_process_path(path, placeholder));
+  }
   sys_vfork_nt_finish(self, tib, sigmask);
 }
 
