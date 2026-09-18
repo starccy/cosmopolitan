@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/calls/struct/stat.h"
+#include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/strace.h"
 #include "libc/paths.h"
@@ -27,8 +28,23 @@
 #include "libc/sysv/consts/s.h"
 #include "libc/sysv/errfuns.h"
 
+static bool commandv_is_executable(const char *path, bool *seen_eacces) {
+  if (!access(path, X_OK)) {
+    struct stat st;
+    if (!stat(path, &st) && S_ISREG(st.st_mode))
+      return true;
+  } else if (errno == EACCES) {
+    *seen_eacces = true;
+  }
+  return false;
+}
+
 /**
  * Resolves full pathname of executable.
+ *
+ * On Windows a name with no extension that isn't found as it is gets
+ * tried with `.exe` and then `.com` appended, in each directory, which
+ * is how every resolver native to that platform treats a bare name.
  *
  * @return execve()'able path, or NULL w/ errno
  * @errno ENOENT, EACCES, ENOMEM
@@ -53,6 +69,11 @@ char *commandv(const char *name, char *pathbuf, size_t pathbufsz) {
     syspath = _PATH_DEFPATH;
   }
 
+  // a name that already has an extension is taken as it is
+  const char *dot = strrchr(name, '.');
+  const char *slash = strrchr(name, '/');
+  bool suffixable = IsWindows() && (!dot || (slash && dot < slash));
+
   // iterate through directories
   int old_errno = errno;
   bool seen_eacces = false;
@@ -62,21 +83,29 @@ char *commandv(const char *name, char *pathbuf, size_t pathbufsz) {
     b = strchrnul(a, ':');
     size_t dirlen = b - a;
     if (dirlen + 1 + namelen < pathbufsz) {
+      size_t len;
       if (dirlen) {
         memcpy(pathbuf, a, dirlen);
         pathbuf[dirlen] = '/';
         memcpy(pathbuf + dirlen + 1, name, namelen + 1);
+        len = dirlen + 1 + namelen;
       } else {
         memcpy(pathbuf, name, namelen + 1);
+        len = namelen;
       }
-      if (!access(pathbuf, X_OK)) {
-        struct stat st;
-        if (!stat(pathbuf, &st) && S_ISREG(st.st_mode)) {
-          errno = old_errno;
-          return pathbuf;
+      if (commandv_is_executable(pathbuf, &seen_eacces)) {
+        errno = old_errno;
+        return pathbuf;
+      }
+      if (suffixable && len + 4 + 1 <= pathbufsz) {
+        static const char kSuffixes[2][5] = {".exe", ".com"};
+        for (int i = 0; i < 2; ++i) {
+          memcpy(pathbuf + len, kSuffixes[i], 5);
+          if (commandv_is_executable(pathbuf, &seen_eacces)) {
+            errno = old_errno;
+            return pathbuf;
+          }
         }
-      } else if (errno == EACCES) {
-        seen_eacces = true;
       }
     } else {
       enametoolong();
