@@ -79,6 +79,7 @@ __privileged int __errno_windows2linux(int e) {
     case kNtErrorNotAllAssigned:
       return EPERM;
     case kNtErrorAccessDenied:
+    case kNtErrorSymlinkClassDisabled:
     case kNtErrorBadCommand:
     case kNtErrorBadLength:
     case kNtErrorCannotMake:
