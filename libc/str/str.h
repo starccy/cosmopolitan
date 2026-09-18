@@ -114,7 +114,7 @@ int getsubopt(char **, char *const *, char **) libcesque paramsnonnull();
 char *strsignal(int) returnsnonnull libcesque;
 char *strerror(int) returnsnonnull dontthrow dontcallback;
 errno_t strerror_r(int, char *, size_t) libcesque;
-char *__xpg_strerror_r(int, char *, size_t) libcesque;
+int __xpg_strerror_r(int, char *, size_t) libcesque;
 
 int bcmp(const void *, const void *, size_t) strlenesque;
 void bcopy(const void *, void *, size_t) memcpyesque;
