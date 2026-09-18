@@ -195,7 +195,8 @@ textwindows static void sys_fork_nt_child(void) {
   __get_pib()->fds.p[2].handle = GetStdHandle(kNtStdErrorHandle);
 }
 
-textwindows static int sys_fork_nt_parent(int child_pid, intptr_t hStopEvent) {
+textwindows static int sys_fork_nt_parent(int *child_pid_out,
+                                          intptr_t hStopEvent) {
 
   // allocate process object
   struct Proc *proc;
@@ -243,6 +244,14 @@ textwindows static int sys_fork_nt_parent(int child_pid, intptr_t hStopEvent) {
     return -1;
   }
   sys_fork_nt_free(cwd);
+
+  int child_pid = *child_pid_out = procinfo.dwProcessId;
+
+  atomic_ulong *child_sigpending;
+  if ((child_sigpending = __sig_map_process(child_pid, kNtOpenAlways))) {
+    atomic_store_explicit(child_sigpending, 0, memory_order_release);
+    UnmapViewOfFile(child_sigpending);
+  }
 
   // let's go
   bool ok = true;
@@ -356,16 +365,14 @@ textwindows int sys_fork_nt(void) {
   int rc;
   static int child_pid;
   static intptr_t hStopEvent;
-  atomic_ulong *child_sigpending;
   if (!(hStopEvent = CreateEvent(&kNtIsInheritable, 1, 0, 0)))  // manual reset
     return enomem();
-  child_pid = __generate_pid(&child_sigpending);
-  UnmapViewOfFile(child_sigpending);
+  child_pid = 0;
   __winmain_isfork = true;
   __winmain_tib = __get_tls_win32();
   if (!__builtin_setjmp(__winmain_jmpbuf)) {
-    rc = sys_fork_nt_parent(child_pid, hStopEvent);
-    if (rc == -1)
+    rc = sys_fork_nt_parent(&child_pid, hStopEvent);
+    if (rc == -1 && child_pid)
       DeleteFile(__sig_process_path(alloca(256), child_pid));
   } else {
     sys_fork_nt_child();

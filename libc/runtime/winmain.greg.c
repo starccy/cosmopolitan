@@ -337,12 +337,10 @@ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
   // TODO(jart): do something better to save/restore this
   pib->rlimit[RLIMIT_NOFILE].rlim_cur = ~1024L;
 
-  if ((pib->pid = WinGetPid(u"_COSMO_PID"))) {
-    if (!(pib->sigpending = __sig_map_process(pib->pid, kNtOpenAlways)))
-      pib->sigpending = &__fake_process_signals;
-  } else {
-    pib->pid = __generate_pid(&pib->sigpending);
-  }
+  if (!(pib->pid = WinGetPid(u"_COSMO_PID")))
+    pib->pid = __imp_GetCurrentProcessId();
+  if (!(pib->sigpending = __sig_map_process(pib->pid, kNtOpenAlways)))
+    pib->sigpending = &__fake_process_signals;
   if (!WinMainCwd(pib))
     return 9;
   atomic_store_explicit(pib->sigpending, 0, memory_order_release);
