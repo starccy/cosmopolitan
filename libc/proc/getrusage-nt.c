@@ -64,8 +64,10 @@ textwindows int sys_getrusage_nt(int who, struct rusage *usage) {
 
   if (!(who == RUSAGE_THREAD ? GetThreadTimes : GetProcessTimes)(
           me, &ftCreation, &ftExit, &ftKernel, &ftUser) ||
-      !GetProcessMemoryInfo(me, &memcount, sizeof(memcount)) ||
-      !GetProcessIoCounters(me, &iocount)) {
+      // these two only take a process, RUSAGE_THREAD or not
+      !GetProcessMemoryInfo(GetCurrentProcess(), &memcount,
+                            sizeof(memcount)) ||
+      !GetProcessIoCounters(GetCurrentProcess(), &iocount)) {
     return __winerr();
   }
 
