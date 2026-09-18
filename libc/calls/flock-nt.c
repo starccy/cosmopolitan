@@ -22,7 +22,9 @@
 #include "libc/intrin/fds.h"
 #include "libc/nt/enum/filelockflags.h"
 #include "libc/nt/files.h"
-#include "libc/nt/struct/byhandlefileinformation.h"
+#include "libc/nt/errors.h"
+#include "libc/nt/events.h"
+#include "libc/nt/runtime.h"
 #include "libc/nt/struct/overlapped.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
@@ -32,36 +34,48 @@
 #define _LOCK_NB kNtLockfileFailImmediately
 #define _LOCK_UN 8
 
+// flock() covers the whole file however long it is or becomes, so lock
+// every byte there could ever be rather than the current size (which
+// locks nothing at all on an empty file)
+#define _LOCK_LEN 0xffffffffu
+
+textwindows static bool32 sys_flock_nt_wait(int64_t h, bool32 ok,
+                                            struct NtOverlapped *ov) {
+  uint32_t exchanged;
+  if (!ok && GetLastError() == kNtErrorIoPending)
+    ok = true;
+  if (ok)
+    ok = GetOverlappedResult(h, ov, &exchanged, true);
+  return ok;
+}
+
 textwindows int sys_flock_nt(int fd, int op) {
   int64_t h;
-  struct NtByHandleFileInformation info;
+  bool32 ok;
   if (!__isfdkind(fd, kFdFile))
     return ebadf();
   h = __get_pib()->fds.p[fd].handle;
-  struct NtOverlapped ov = {.hEvent = h};
-
-  if (!GetFileInformationByHandle(h, &info)) {
-    return __winerr();
-  }
 
   if (op & _LOCK_UN) {
-    if (op & ~_LOCK_UN) {
+    if (op & ~_LOCK_UN)
       return einval();
-    }
-    if (UnlockFileEx(h, 0, info.nFileSizeLow, info.nFileSizeHigh, &ov)) {
-      return 0;
-    } else {
-      return -1;
-    }
-  }
-
-  if (op & ~(_LOCK_SH | _LOCK_EX | _LOCK_NB)) {
+  } else if (op & ~(_LOCK_SH | _LOCK_EX | _LOCK_NB)) {
     return einval();
   }
 
-  if (LockFileEx(h, op, 0, info.nFileSizeLow, info.nFileSizeHigh, &ov)) {
-    return 0;
-  } else {
-    return -1;
+  // a lock request replaces whatever lock this handle holds, which is
+  // how a shared lock gets converted to an exclusive one and back
+  intptr_t event = CreateEventTls();
+  struct NtOverlapped ov = {.hEvent = event};
+  ok = sys_flock_nt_wait(
+      h, UnlockFileEx(h, 0, _LOCK_LEN, _LOCK_LEN, &ov), &ov);
+  if (!ok && GetLastError() == kNtErrorNotLocked)
+    ok = true;
+  if (ok && !(op & _LOCK_UN)) {
+    ov = (struct NtOverlapped){.hEvent = event};
+    ok = sys_flock_nt_wait(
+        h, LockFileEx(h, op, 0, _LOCK_LEN, _LOCK_LEN, &ov), &ov);
   }
+  CloseEventTls(event);
+  return ok ? 0 : __winerr();
 }
