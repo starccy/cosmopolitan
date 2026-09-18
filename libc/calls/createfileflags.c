@@ -34,7 +34,7 @@ textwindows int GetNtOpenFlags(int flags, int mode, uint32_t *out_perm,
 
   if (flags & ~(O_ACCMODE | O_APPEND | O_CREAT | O_EXCL | O_TRUNC | O_NOCTTY |
                 O_DIRECTORY | O_UNLINK | O_NONBLOCK | O_CLOEXEC | O_DIRECT |
-                _O_TMPFILE | O_DSYNC | O_LARGEFILE))
+                _O_TMPFILE | O_SYNC | O_LARGEFILE))
     return einval();
 
   switch (flags & O_ACCMODE) {
