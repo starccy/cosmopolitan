@@ -24,7 +24,10 @@
 #include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
 #include "libc/sock/syscall_fd.internal.h"
+#include "libc/sysv/consts/so.h"
+#include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/sysv/errno.h"
 #include "libc/sysv/pib.h"
 
 /**
@@ -51,6 +54,10 @@ int getsockopt(int fd, int level, int optname, void *out_opt_optval,
     rc = enotsock();
   } else if (!IsWindows()) {
     rc = sys_getsockopt(fd, level, optname, out_opt_optval, out_optlen);
+    if (!rc && !IsLinux() && level == SOL_SOCKET && optname == SO_ERROR &&
+        out_opt_optval && out_optlen && *out_optlen >= sizeof(int) &&
+        *(int *)out_opt_optval)
+      *(int *)out_opt_optval = __errno_host2linux(*(int *)out_opt_optval);
   } else if (!__isfdopen(fd)) {
     rc = ebadf();
   } else if (__isfdkind(fd, kFdSocket)) {
