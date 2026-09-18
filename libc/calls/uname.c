@@ -159,6 +159,7 @@ int uname(struct utsname *uts) {
     GetBsdStr(CTL_HW, HW_MACHINE, uts->machine);
     rc = 0;
   } else if (IsWindows()) {
+    uts->version[0] = 0;
     stpcpy(uts->sysname, "Windows");
     stpcpy(uts->machine, "x86_64");
     GetNtVersion(uts->release);
