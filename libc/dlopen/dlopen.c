@@ -494,9 +494,6 @@ static uint8_t *movimm(uint8_t p[static 16], int reg, uint64_t val) {
 static void *foreign_thunk_sysv(void *func) {
   uint8_t *code, *p;
 #ifdef __x86_64__
-  // it is no longer needed
-  if (1)
-    return func;
   // movabs $func,%rax
   // movabs $foreign_tramp,%r10
   // jmp *%r10
@@ -666,7 +663,8 @@ static bool foreign_setup(void) {
     return false;  // if elf_exec() returns, it failed
   }
 #ifdef __x86_64__
-  __foreign.tib = __get_tls();
+  // read %fs:0 directly, __get_tls() is pureconst and would reuse cosmo_tib
+  __asm__("movq\t%%fs:0,%0" : "=r"(__foreign.tib));
   __set_tls(cosmo_tib);
 #endif
   __foreign.dlopen = foreign_thunk_sysv(__foreign.dlopen);
