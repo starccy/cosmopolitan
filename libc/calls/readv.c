@@ -37,6 +37,9 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
+int __ape_shim_read_before(int, const struct iovec *, int, ssize_t *);
+ssize_t __ape_shim_read_after(int, const struct iovec *, int, ssize_t);
+
 static size_t SumIovecBytes(const struct iovec *iov, int iovlen) {
   size_t count = 0;
   for (int i = 0; i < iovlen; ++i)
@@ -84,6 +87,11 @@ static ssize_t readv_impl(int fd, const struct iovec *iov, int iovlen) {
     }
   }
 
+  ssize_t rc;
+  if (_weaken(__ape_shim_read_before) &&
+      _weaken(__ape_shim_read_before)(fd, iov, iovlen, &rc))
+    return rc;
+
   if (__isfdkind(fd, kFdZip)) {
     return _weaken(__zipos_read)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, iov,
@@ -128,6 +136,8 @@ ssize_t readv(int fd, const struct iovec *iov, int iovlen) {
   ssize_t rc;
   BEGIN_CANCELATION_POINT;
   rc = readv_impl(fd, iov, iovlen);
+  if (_weaken(__ape_shim_read_after))
+    rc = _weaken(__ape_shim_read_after)(fd, iov, iovlen, rc);
   END_CANCELATION_POINT;
   STRACE("readv(%d, [%s], %d) → %'ld% m", fd, DescribeIovec(rc, iov, iovlen),
          iovlen, rc);

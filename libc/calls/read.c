@@ -35,6 +35,9 @@
 #include "libc/sysv/pib.h"
 #undef read
 
+int __ape_shim_read_before(int, const struct iovec *, int, ssize_t *);
+ssize_t __ape_shim_read_after(int, const struct iovec *, int, ssize_t);
+
 /**
  * Reads data from file descriptor.
  *
@@ -79,6 +82,10 @@ ssize_t read(int fd, void *buf, size_t size) {
     rc = ebadf();
   } else if (size && kisdangerous(buf)) {
     rc = efault();
+  } else if (_weaken(__ape_shim_read_before) &&
+             _weaken(__ape_shim_read_before)(fd, &(struct iovec){buf, size}, 1,
+                                             &rc)) {
+    // the hook did the read
   } else if (__isfdkind(fd, kFdZip)) {
     rc = _weaken(__zipos_read)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle,
@@ -94,7 +101,8 @@ ssize_t read(int fd, void *buf, size_t size) {
   } else {
     rc = enosys();
   }
-
+  if (_weaken(__ape_shim_read_after))
+    rc = _weaken(__ape_shim_read_after)(fd, &(struct iovec){buf, size}, 1, rc);
   END_CANCELATION_POINT;
   DATATRACE("read(%d, [%#.*hhs%s], %'zu) → %'zd% m", fd,
             (int)MAX(0, MIN(40, rc)), buf, rc > 40 ? "..." : "", size, rc);
