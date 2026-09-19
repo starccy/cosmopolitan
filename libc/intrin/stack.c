@@ -217,12 +217,17 @@ static void *slackmap(size_t stacksize, size_t guardsize) {
   return 0;
 }
 
+static size_t cosmo_stack_slack(size_t guardsize) {
+  return IsWindows() && guardsize ? 65536 : 0;
+}
+
 static errno_t cosmo_stack_munmap(char *stackaddr, size_t stacksize,
                                   size_t guardsize) {
   errno_t r = 0;
   errno_t e = errno;
-  if (!munmap(stackaddr - guardsize,  //
-              guardsize + stacksize)) {
+  size_t slack = cosmo_stack_slack(guardsize);
+  if (!munmap(stackaddr - guardsize - slack,  //
+              slack + guardsize + stacksize)) {
     r = errno;
     errno = e;
   }
@@ -403,21 +408,22 @@ errno_t cosmo_stack_alloc(size_t *inout_stacksize,  //
         return err;
       }
     } else {
-      char *map = mmap(0, guardsize + stacksize, PROT_READ | PROT_WRITE,
+      size_t slack = cosmo_stack_slack(guardsize);
+      char *map = mmap(0, slack + guardsize + stacksize, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       if (map == MAP_FAILED) {
         errno_t err = errno;
         errno = olde;
         return err;
       }
-      stackaddr = map + guardsize;
+      stackaddr = map + slack + guardsize;
       if (IsOpenbsd())
         if (!TellOpenbsdThisIsStackMemory(stackaddr, stacksize))
           notpossible;
       if (guardsize) {
-        if (mprotect(map, guardsize, PROT_NONE | PROT_GUARD)) {
+        if (mprotect(map + slack, guardsize, PROT_NONE | PROT_GUARD)) {
           errno_t err = errno;
-          munmap(map, guardsize + stacksize);
+          munmap(map, slack + guardsize + stacksize);
           errno = olde;
           return err;
         }
