@@ -113,7 +113,8 @@ textstartup void __maps_stack(char *stackaddr, int pagesz, int guardsize,
   if (guardsize) {
     __maps.guard.addr = stackaddr;
     __maps.guard.size = guardsize;
-    __maps.guard.prot = PROT_NONE | PROT_GUARD;
+    // WinMain calls this before PROT_GUARD has its value
+    __maps.guard.prot = PROT_NONE | (IsWindows() ? 0x100 : 0);
     __maps.guard.hand = MAPS_VIRTUAL;
     __maps.guard.flags = MAP_PRIVATE | MAP_ANONYMOUS;
     __maps_adder(&__maps.guard, pagesz);
