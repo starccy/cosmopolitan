@@ -124,7 +124,7 @@ static int SystemExec(void) {
     // the pipeline might die before the next element in the pipeline is
     // execve()d in which case the parent win32 pid spoofing breaks down
     // this is sort of the same thing as adding an implicit `; exit $?`.
-    int pid = fork();
+    int pid = vfork();
     if (pid == -1) {
       perror(args[0]);
       return (n = 0), 127;

@@ -24,9 +24,12 @@
 #include "libc/errno.h"
 #include "libc/intrin/weaken.h"
 #include "libc/log/log.h"
+#include "libc/macros.h"
 #include "libc/paths.h"
+#include "libc/proc/posix_spawn.h"
 #include "libc/runtime/runtime.h"
 #include "libc/str/str.h"
+#include "libc/system/plaincmd.internal.h"
 #include "libc/sysv/consts/ok.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/thread/thread.h"
@@ -59,6 +62,25 @@
  * @see systemve()
  * @threadsafe
  */
+static int system_spawn(const char *cmdline, const sigset_t *mask) {
+  int pid;
+  char buf[1024];
+  char *argv[64];
+  posix_spawnattr_t attr;
+  if (strlen(cmdline) >= sizeof(buf))
+    return 0;
+  if (!__plaincmd(cmdline, buf, argv, ARRAYLEN(argv)))
+    return 0;
+  if (posix_spawnattr_init(&attr))
+    return 0;
+  posix_spawnattr_setsigmask(&attr, mask);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
+  if (posix_spawnp(&pid, argv[0], 0, &attr, argv, environ))
+    pid = 0;
+  posix_spawnattr_destroy(&attr);
+  return pid;
+}
+
 int system(const char *cmdline) {
   int pid, wstatus;
   sigset_t chldmask, savemask;
@@ -69,7 +91,8 @@ int system(const char *cmdline) {
   sigaddset(&chldmask, SIGQUIT);
   sigaddset(&chldmask, SIGCHLD);
   sigprocmask(SIG_BLOCK, &chldmask, &savemask);
-  if (!(pid = fork())) {
+  pid = IsWindows() ? system_spawn(cmdline, &savemask) : 0;
+  if (!pid && !(pid = fork())) {
     sigprocmask(SIG_SETMASK, &savemask, 0);
     _Exit(_cocmd(3, (char *[]){"system", "-c", (char *)cmdline, 0}, environ));
   } else if (pid == -1) {
