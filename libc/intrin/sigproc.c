@@ -31,10 +31,12 @@
 #include "libc/nt/enum/filesharemode.h"
 #include "libc/nt/enum/pageflags.h"
 #include "libc/nt/errors.h"
+#include "libc/nt/events.h"
 #include "libc/nt/files.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
+#include "libc/nt/synchronization.h"
 #include "libc/nt/struct/overlapped.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/str/str.h"
@@ -47,15 +49,21 @@
 // this code is a mandatory dependency of winmain
 __msabi extern typeof(CloseHandle) *const __imp_CloseHandle;
 __msabi extern typeof(CreateDirectory) *const __imp_CreateDirectoryW;
+__msabi extern typeof(CreateEvent) *const __imp_CreateEventW;
 __msabi extern typeof(CreateFile) *const __imp_CreateFileW;
 __msabi extern typeof(CreateFileMapping) *const __imp_CreateFileMappingW;
 __msabi extern typeof(GetLastError) *const __imp_GetLastError;
 __msabi extern typeof(LockFileEx) *const __imp_LockFileEx;
 __msabi extern typeof(MapViewOfFileEx) *const __imp_MapViewOfFileEx;
+__msabi extern typeof(ResetEvent) *const __imp_ResetEvent;
 __msabi extern typeof(SetEndOfFile) *const __imp_SetEndOfFile;
+__msabi extern typeof(SetEvent) *const __imp_SetEvent;
 __msabi extern typeof(SetFilePointerEx) *const __imp_SetFilePointerEx;
+__msabi extern typeof(SleepEx) *const __imp_SleepEx;
 __msabi extern typeof(UnlockFileEx) *const __imp_UnlockFileEx;
 __msabi extern typeof(UnmapViewOfFile) *const __imp_UnmapViewOfFile;
+__msabi extern typeof(WaitForSingleObject)
+    *const __imp_WaitForSingleObject;
 
 textwindows static uint32_t ProcessPrng32(void) {
   uint32_t r;
@@ -158,6 +166,30 @@ textwindows char16_t *__sig_process_path(char16_t *path, uint32_t pid) {
 
 static intptr_t __sig_owner;
 
+// Event another process sets after writing to our signal file. It is
+// manual reset, since an execve() leaves two processes on one pid for a
+// moment and both wait on it.
+static intptr_t __sig_event;
+
+// Opens event of process, creating it if needed.
+textwindows static intptr_t __sig_open_event(int pid) {
+  char16_t name[32];
+  char16_t *p = name;
+  *p++ = 'c';
+  *p++ = 'o';
+  *p++ = 's';
+  *p++ = 'm';
+  *p++ = 'o';
+  *p++ = '.';
+  *p++ = 's';
+  *p++ = 'i';
+  *p++ = 'g';
+  *p++ = '.';
+  p = __itoa16(p, pid);
+  *p = 0;
+  return __imp_CreateEventW(0, true, false, name);
+}
+
 textwindows static bool __sig_lock_owner(intptr_t hand) {
   struct NtOverlapped ov = {.Pointer = SIG_OWNER_BYTE};
   return __imp_LockFileEx(hand, 0, 0, 1, 0, &ov);
@@ -240,8 +272,31 @@ textwindows atomic_ulong *__sig_map_target(int pid, bool *owned) {
 // while this process lives.
 textwindows atomic_ulong *__sig_own_process(int pid) {
   __sig_owner = 0;  // after fork() this is the parent's, which we don't have
+  __sig_event = __sig_open_event(pid);
   return __sig_map(pid, kNtOpenAlways, kNtFileShareRead | kNtFileShareWrite,
                    &__sig_owner, 0);
+}
+
+// Tells process there's something new in its signal file.
+textwindows void __sig_wake_process(int pid) {
+  intptr_t event;
+  if ((event = __sig_open_event(pid))) {
+    __imp_SetEvent(event);
+    __imp_CloseHandle(event);
+  }
+}
+
+// Sleeps until another process signals us, or a tick goes by.
+//
+// The tick remains for senders that set no event, and for signals which
+// stay pending because every thread blocks them.
+textwindows void __sig_pause(void) {
+  if (__sig_event) {
+    __imp_WaitForSingleObject(__sig_event, POLL_INTERVAL_MS);
+    __imp_ResetEvent(__sig_event);
+  } else {
+    __imp_SleepEx(POLL_INTERVAL_MS, 0);
+  }
 }
 
 // Gives up ownership so the file can be deleted.
