@@ -180,10 +180,11 @@ errno_t posix_spawn(int *pid, const char *path,
   sigfillset(&blockall);
   sigprocmask(SIG_SETMASK, &blockall, &oldmask);
   pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
-  if (!(flags & POSIX_SPAWN_USEVFORK)) {
-    use_vfork = false;
-  } else if (IsWindows()) {
+  if (IsWindows()) {
+    // fork() copies the whole address space there
     use_vfork = true;
+  } else if (!(flags & POSIX_SPAWN_USEVFORK)) {
+    use_vfork = false;
   } else {
     use_vfork = atomic_load_explicit(&has_vfork, memory_order_acquire);
   }
@@ -195,8 +196,6 @@ errno_t posix_spawn(int *pid, const char *path,
   }
   if (use_vfork) {
     child = vfork();
-  } else if (IsWindows()) {
-    child = fork();
   } else {
     // on unix systems without a true vfork() it shouldn't be necessary
     // to call fork() which locks all the mutexes that exist beacuse we
