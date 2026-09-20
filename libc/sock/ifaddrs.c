@@ -40,6 +40,7 @@ struct IfAddr {
   struct sockaddr_in addr;
   struct sockaddr_in netmask;
   struct sockaddr_in bstaddr;
+  char pad[sizeof(struct sockaddr_storage)];
 };
 
 struct IfAddr6Info {
@@ -54,6 +55,7 @@ struct IfAddr6 {
   struct sockaddr_in6 netmask;
   struct sockaddr_in6 bstaddr;  // unused
   struct IfAddr6Info info;
+  char pad[sizeof(struct sockaddr_storage)];
 };
 
 /**
