@@ -27,6 +27,7 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/cosmotime.h"
 #include "libc/dce.h"
+#include "libc/errno.h"
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/weaken.h"
@@ -38,6 +39,7 @@
 #include "libc/nt/events.h"
 #include "libc/nt/files.h"
 #include "libc/nt/ipc.h"
+#include "libc/nt/memory.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/pollfd.h"
 #include "libc/nt/synchronization.h"
@@ -88,12 +90,12 @@ textwindows static uint32_t sys_poll_nt_waitms(struct timespec deadline) {
 // both signals and posix thread cancelation, while the poll is polling
 textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
                                           struct timespec deadline,
-                                          sigset_t waitmask) {
+                                          sigset_t waitmask,
+                                          struct sys_pollfd_nt *sockfds,
+                                          int *sockindices) {
   int fileindices[64];
-  int sockindices[64];
   int64_t filehands[64];
   int i, rc, ev, kind, gotsocks;
-  struct sys_pollfd_nt sockfds[64];
   uint32_t cm, fi, sn, pn, avail, waitfor, already_slept;
 
   // ensure revents is cleared
@@ -110,7 +112,6 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
       kind = __get_pib()->fds.p[fds[i].fd].kind;
       if (kind == kFdSocket) {
         // we can use WSAPoll() for these fds
-        unassert(sn < ARRAYLEN(sockfds));
         // WSAPoll whines if we pass POLLNVAL, POLLHUP, or POLLERR.
         sockindices[sn] = i;
         sockfds[sn].handle = __get_pib()->fds.p[fds[i].fd].handle;
@@ -120,7 +121,10 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
         ++sn;
       } else if (kind == kFdFile || kind == kFdConsole) {
         // we can use WaitForMultipleObjects() for these fds
-        unassert(pn < ARRAYLEN(fileindices) - 1);  // last slot for signal event
+        if (pn == ARRAYLEN(fileindices) - 1) {  // last slot for signal event
+          rc = einval();
+          break;
+        }
         fileindices[pn] = i;
         filehands[pn] = __get_pib()->fds.p[fds[i].fd].handle;
         ++pn;
@@ -307,8 +311,10 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
 textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
                                         struct timespec deadline,
                                         const sigset_t waitmask) {
-  int i, n, rc, got = 0;
-  struct timespec now, next, target;
+  int sockindices[64];
+  int i, n, rc, files, got = 0;
+  struct sys_pollfd_nt sockfds[64];
+  struct timespec now, next, target, wall;
 
   // we normally don't check for signals until we decide to wait, since
   // it's nice to have functions like write() be unlikely to EINTR, but
@@ -319,14 +325,38 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
 
   // fast path
   if (nfds <= 63)
-    return sys_poll_nt_actual(fds, nfds, deadline, waitmask);
+    return sys_poll_nt_actual(fds, nfds, deadline, waitmask, sockfds,
+                              sockindices);
+
+  __fds_lock();
+  for (files = i = 0; i < nfds; ++i) {
+    if (fds[i].fd >= 0 && __isfdopen(fds[i].fd)) {
+      int kind = __get_pib()->fds.p[fds[i].fd].kind;
+      files += kind == kFdFile || kind == kFdConsole;
+    }
+  }
+  __fds_unlock();
+  if (files <= 63) {
+    void *mem;
+    size_t each = sizeof(struct sys_pollfd_nt) + sizeof(int);
+    if ((mem = HeapAlloc(GetProcessHeap(), 0, nfds * each))) {
+      rc = sys_poll_nt_actual(
+          fds, nfds, deadline, waitmask, mem,
+          (int *)((char *)mem + nfds * sizeof(struct sys_pollfd_nt)));
+      HeapFree(GetProcessHeap(), 0, mem);
+      // a descriptor can turn into a file between the count and the call
+      if (rc != -1 || errno != EINVAL)
+        return rc;
+    }
+  }
 
   // clumsy path
   for (;;) {
     for (i = 0; i < nfds; i += 63) {
       n = nfds - i;
       n = n > 63 ? 63 : n;
-      rc = sys_poll_nt_actual(fds + i, n, timespec_zero, waitmask);
+      rc = sys_poll_nt_actual(fds + i, n, timespec_zero, waitmask, sockfds,
+                              sockindices);
       if (rc == -1)
         return -1;
       got += rc;
@@ -342,7 +372,10 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
     } else {
       target = next;
     }
-    if (_park_norestart(target, waitmask) == -1)
+    // _park_norestart() wants its deadline on the wall clock
+    sys_clock_gettime_nt(0, &wall);
+    wall = timespec_add(wall, timespec_sub(target, now));
+    if (_park_norestart(wall, waitmask) == -1)
       return -1;
   }
 }
