@@ -247,11 +247,7 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
 
   int child_pid = *child_pid_out = procinfo.dwProcessId;
 
-  atomic_ulong *child_sigpending;
-  if ((child_sigpending = __sig_map_process(child_pid, kNtOpenAlways))) {
-    atomic_store_explicit(child_sigpending, 0, memory_order_release);
-    UnmapViewOfFile(child_sigpending);
-  }
+  proc->hSigGuard = __sig_guard_process(child_pid);
 
   // let's go
   bool ok = true;
@@ -356,6 +352,8 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
       eagain();  // posix fork() only specifies two errors
     TerminateProcess(procinfo.hProcess, SIGKILL);
     CloseHandle(procinfo.hProcess);
+    if (proc->hSigGuard)
+      CloseHandle(proc->hSigGuard);
     dll_make_first(&__proc.free, &proc->elem);
     return -1;
   }
@@ -377,7 +375,7 @@ textwindows int sys_fork_nt(void) {
   } else {
     sys_fork_nt_child();
     __get_pib()->pid = child_pid;
-    __get_pib()->sigpending = __sig_map_process(child_pid, kNtOpenAlways);
+    __get_pib()->sigpending = __sig_own_process(child_pid);
     __get_pib()->hStopEvent = hStopEvent;
     __get_pib()->hStopChurn = __proc.hStopChurn;
     rc = 0;

@@ -25,6 +25,7 @@
 #include "libc/nt/enum/accessmask.h"
 #include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/fileflagandattributes.h"
+#include "libc/nt/enum/filelockflags.h"
 #include "libc/nt/enum/filemapflags.h"
 #include "libc/nt/enum/filemovemethod.h"
 #include "libc/nt/enum/filesharemode.h"
@@ -34,6 +35,7 @@
 #include "libc/nt/memory.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
+#include "libc/nt/struct/overlapped.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/str/str.h"
 #ifdef __x86_64__
@@ -48,9 +50,12 @@ __msabi extern typeof(CreateDirectory) *const __imp_CreateDirectoryW;
 __msabi extern typeof(CreateFile) *const __imp_CreateFileW;
 __msabi extern typeof(CreateFileMapping) *const __imp_CreateFileMappingW;
 __msabi extern typeof(GetLastError) *const __imp_GetLastError;
+__msabi extern typeof(LockFileEx) *const __imp_LockFileEx;
 __msabi extern typeof(MapViewOfFileEx) *const __imp_MapViewOfFileEx;
 __msabi extern typeof(SetEndOfFile) *const __imp_SetEndOfFile;
 __msabi extern typeof(SetFilePointerEx) *const __imp_SetFilePointerEx;
+__msabi extern typeof(UnlockFileEx) *const __imp_UnlockFileEx;
+__msabi extern typeof(UnmapViewOfFile) *const __imp_UnmapViewOfFile;
 
 textwindows static uint32_t ProcessPrng32(void) {
   uint32_t r;
@@ -147,13 +152,40 @@ textwindows char16_t *__sig_process_path(char16_t *path, uint32_t pid) {
   return path;
 }
 
-textwindows atomic_ulong *__sig_map_process(int pid, int disposition) {
+// Byte a live process holds a shared lock on, so a stale file from a
+// recycled pid can be told apart (shared since execve() overlaps pids).
+#define SIG_OWNER_BYTE 16
+
+static intptr_t __sig_owner;
+
+textwindows static bool __sig_lock_owner(intptr_t hand) {
+  struct NtOverlapped ov = {.Pointer = SIG_OWNER_BYTE};
+  return __imp_LockFileEx(hand, 0, 0, 1, 0, &ov);
+}
+
+textwindows static bool __sig_has_owner(intptr_t hand) {
+  struct NtOverlapped ov = {.Pointer = SIG_OWNER_BYTE};
+  if (!__imp_LockFileEx(
+          hand, kNtLockfileExclusiveLock | kNtLockfileFailImmediately, 0, 1, 0,
+          &ov))
+    return true;
+  __imp_UnlockFileEx(hand, 0, 1, 0, &ov);
+  return false;
+}
+
+// Maps signal file of process.
+//
+// When `owner` is given the file is locked as owned, and the handle
+// holding that lock is stored there rather than closed. When `owned` is
+// given it is told whether some process holds that lock.
+textwindows static atomic_ulong *__sig_map(int pid, int disposition,
+                                           uint32_t share, intptr_t *owner,
+                                           bool *owned) {
   char16_t path[128];
   __sig_process_path(path, pid);
   intptr_t hand;
   for (;;) {
-    hand = __imp_CreateFileW(path, kNtGenericRead | kNtGenericWrite,
-                             kNtFileShareRead | kNtFileShareWrite, 0,
+    hand = __imp_CreateFileW(path, kNtGenericRead | kNtGenericWrite, share, 0,
                              disposition, kNtFileAttributeNormal, 0);
     if (hand != -1)
       break;
@@ -165,8 +197,13 @@ textwindows atomic_ulong *__sig_map_process(int pid, int disposition) {
     }
     return 0;
   }
-  __imp_SetFilePointerEx(hand, 8, 0, kNtFileBegin);
-  __imp_SetEndOfFile(hand);
+  if (owned)
+    *owned = __sig_has_owner(hand);
+  // an existing file has its size already
+  if (disposition != kNtOpenExisting) {
+    __imp_SetFilePointerEx(hand, 8, 0, kNtFileBegin);
+    __imp_SetEndOfFile(hand);
+  }
   intptr_t map = __imp_CreateFileMappingW(hand, 0, kNtPageReadwrite, 0, 8, 0);
   if (!map) {
     __imp_CloseHandle(hand);
@@ -175,8 +212,62 @@ textwindows atomic_ulong *__sig_map_process(int pid, int disposition) {
   atomic_ulong *sigs =
       __imp_MapViewOfFileEx(map, kNtFileMapRead | kNtFileMapWrite, 0, 0, 8, 0);
   __imp_CloseHandle(map);
-  __imp_CloseHandle(hand);
+  if (sigs && owner && __sig_lock_owner(hand)) {
+    *owner = hand;
+  } else {
+    __imp_CloseHandle(hand);
+  }
   return sigs;
+}
+
+textwindows atomic_ulong *__sig_map_process(int pid, int disposition) {
+  return __sig_map(pid, disposition, kNtFileShareRead | kNtFileShareWrite, 0,
+                   0);
+}
+
+// Maps signal file of a process to be signalled.
+//
+// A file can outlive its process, so `owned` says whether a living one
+// holds it.
+textwindows atomic_ulong *__sig_map_target(int pid, bool *owned) {
+  return __sig_map(pid, kNtOpenExisting, kNtFileShareRead | kNtFileShareWrite,
+                   0, owned);
+}
+
+// Maps signal file of calling process and marks it as owned.
+//
+// The handle isn't shared for deletion, so nobody can take the file away
+// while this process lives.
+textwindows atomic_ulong *__sig_own_process(int pid) {
+  __sig_owner = 0;  // after fork() this is the parent's, which we don't have
+  return __sig_map(pid, kNtOpenAlways, kNtFileShareRead | kNtFileShareWrite,
+                   &__sig_owner, 0);
+}
+
+// Gives up ownership so the file can be deleted.
+textwindows void __sig_disown_process(void) {
+  if (__sig_owner) {
+    __imp_CloseHandle(__sig_owner);
+    __sig_owner = 0;
+  }
+}
+
+// Creates signal file of a process being forked, owned on its behalf.
+//
+// A forked child is a valid target for kill() before it has got around to
+// owning its file. The returned handle keeps the file owned until then;
+// it is shared for deletion so the child can still remove the file.
+textwindows intptr_t __sig_guard_process(int pid) {
+  intptr_t guard = 0;
+  atomic_ulong *sigs =
+      __sig_map(pid, kNtOpenAlways,
+                kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete,
+                &guard, 0);
+  if (sigs) {
+    atomic_store_explicit(sigs, 0, memory_order_release);
+    __imp_UnmapViewOfFile(sigs);
+  }
+  return guard;
 }
 
 #endif /* __x86_64__ */
