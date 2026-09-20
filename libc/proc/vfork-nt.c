@@ -54,6 +54,8 @@ textwindows static void sys_vfork_nt_unref_cursors(struct CursorRefs r) {
   free(r.p);
 }
 
+extern atomic_ulong __fake_process_signals;
+
 textwindows dontinline dontinstrument wontreturn void sys_vfork_nt_return(
     jmp_buf jb, int rc) {
   STRACE("vfork() → %d% m", rc);
@@ -106,7 +108,7 @@ textwindows void sys_vfork_nt_exec(intptr_t hProcess) {
     self->pid = pid;
     char16_t path[128];
     UnmapViewOfFile(self->sigpending);
-    self->sigpending = 0;
+    self->sigpending = &__fake_process_signals;
     DeleteFile(__sig_process_path(path, placeholder));
   }
   sys_vfork_nt_finish(self, tib, sigmask);
