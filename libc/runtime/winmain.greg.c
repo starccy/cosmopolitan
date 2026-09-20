@@ -339,7 +339,7 @@ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
 
   if (!(pib->pid = WinGetPid(u"_COSMO_PID")))
     pib->pid = __imp_GetCurrentProcessId();
-  if (!(pib->sigpending = __sig_map_process(pib->pid, kNtOpenAlways)))
+  if (!(pib->sigpending = __sig_own_process(pib->pid)))
     pib->sigpending = &__fake_process_signals;
   if (!WinMainCwd(pib))
     return 9;

@@ -112,6 +112,7 @@ textwindows void TerminateThisProcess(uint32_t dwExitCode) {
     if (__get_pib()->sigpending != &__fake_process_signals) {
       if (__sig_trylock()) {
         __imp_UnmapViewOfFile(__get_pib()->sigpending);
+        __sig_disown_process();
         char16_t path[128];
         __imp_DeleteFileW(__sig_process_path(path, __get_pib()->pid));
         __get_pib()->sigpending = &__fake_process_signals;

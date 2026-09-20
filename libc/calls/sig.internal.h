@@ -40,6 +40,10 @@ void __sig_init(void);
 int __sig_stop(int);
 char16_t *__sig_process_path(char16_t *, uint32_t);
 atomic_ulong *__sig_map_process(int, int);
+atomic_ulong *__sig_map_target(int, bool *);
+atomic_ulong *__sig_own_process(int);
+void __sig_disown_process(void);
+intptr_t __sig_guard_process(int);
 bool __sig_cant_be_ignored(int);
 
 COSMOPOLITAN_C_END_

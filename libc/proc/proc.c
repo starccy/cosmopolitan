@@ -212,6 +212,16 @@ textwindows static uint32_t __proc_native_wstatus(uint32_t code) {
 }
 
 // performs accounting on exited process
+// Drops the ownership fork() took of the child's signal file on its
+// behalf. After execve() the new program owns the file itself if it is
+// one of ours, and a native one never will.
+textwindows static void __proc_unguard(struct Proc *pr, bool exited) {
+  if (pr->hSigGuard && (exited || __proc_is_native_child(pr->hProcess))) {
+    CloseHandle(pr->hSigGuard);
+    pr->hSigGuard = 0;
+  }
+}
+
 // multiple threads can wait on a process
 // it's important that only one calls this
 textwindows int __proc_harvest(struct Proc *pr, bool iswait4) {
@@ -252,12 +262,17 @@ textwindows int __proc_harvest(struct Proc *pr, bool iswait4) {
     // handle child execve()
     CloseHandle(pr->hProcess);
     pr->hProcess = dwExitCode & 0x00FFFFFF;
+    __proc_unguard(pr, false);
   } else {
     // handle child _Exit()
+    __proc_unguard(pr, true);
     if (dwExitCode == 0xc9af3d51u)
       dwExitCode = kNtStillActive;
     else if (!pr->isvfork && __proc_is_native_child(pr->hProcess))
-      dwExitCode = __proc_native_wstatus(dwExitCode);
+      // an exit code kill() put there is a signal, not an exit status
+      dwExitCode = pr->killsig && dwExitCode == pr->killsig
+                       ? dwExitCode
+                       : __proc_native_wstatus(dwExitCode);
     pr->dwExitCode = dwExitCode;
     if (pr->status == PROC_STOPPED) {
       dll_remove(&__proc.stopped, &pr->stopelem);
@@ -320,6 +335,7 @@ textwindows dontinstrument static uint32_t __proc_worker(void *arg) {
         CloseHandle(pr->hStopEvent);
         if (pr->hProcess2)
           CloseHandle(pr->hProcess2);
+        __proc_unguard(pr, true);
       }
     }
 
@@ -490,6 +506,22 @@ textwindows void __proc_add(struct Proc *proc) {
 
 // returns owned handle of direct child process
 // this is intended for the __proc_handle() implementation
+// Notes that kill() terminated a child with `sig` as its exit code.
+textwindows void __proc_killed(int pid, int sig) {
+  struct Dll *e;
+  BLOCK_SIGNALS;
+  __proc_lock();
+  for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
+    struct Proc *pr = PROC_CONTAINER(e);
+    if (pid == pr->pid) {
+      pr->killsig = sig;
+      break;
+    }
+  }
+  __proc_unlock();
+  ALLOW_SIGNALS;
+}
+
 textwindows int64_t __proc_search(int pid) {
   struct Dll *e;
   int64_t handle = 0;
@@ -515,6 +547,7 @@ textwindows int64_t __proc_search(int pid) {
           (code & 0xFF000000u) == 0x23000000u) {
         CloseHandle(pr->hProcess);
         pr->hProcess = code & 0x00FFFFFF;
+        __proc_unguard(pr, false);
       }
       handle = pr->hProcess;
       break;

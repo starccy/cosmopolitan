@@ -22,9 +22,11 @@ struct Proc {
   int stopwaiters;
   uint32_t dwExitCode;
   bool isvfork;
+  int killsig;
   intptr_t hProcess;
   intptr_t hProcess2;
   intptr_t hStopEvent;
+  intptr_t hSigGuard;
   struct Dll elem;
   struct Dll stopelem;
   struct rusage ru;
@@ -51,6 +53,7 @@ extern struct Procs __proc;
 
 void __proc_lock(void);
 void __proc_unlock(void);
+void __proc_killed(int, int);
 int64_t __proc_handle(int);
 int64_t __proc_search(int);
 struct Proc *__proc_new(void);

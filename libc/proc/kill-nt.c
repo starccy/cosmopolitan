@@ -26,11 +26,13 @@
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/dll.h"
 #include "libc/intrin/strace.h"
+#include "libc/mem/alloca.h"
 #include "libc/nt/console.h"
 #include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/ctrlevent.h"
 #include "libc/nt/enum/processaccess.h"
 #include "libc/nt/errors.h"
+#include "libc/nt/files.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
@@ -38,6 +40,22 @@
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/errfuns.h"
 #if SupportsWindows()
+
+// Sets `sig` pending in the signal file of `pid`, if a process is there
+// to read it. A living owner holds a lock on the file, and a file nobody
+// holds is a leftover, which gets deleted.
+textwindows static bool sys_kill_nt_post(int pid, int sig) {
+  bool owned;
+  atomic_ulong *sigproc;
+  if (!(sigproc = __sig_map_target(pid, &owned)))
+    return false;
+  if (owned && sig > 0)
+    atomic_fetch_or_explicit(sigproc, 1ull << (sig - 1), memory_order_release);
+  UnmapViewOfFile(sigproc);
+  if (!owned)
+    DeleteFile(__sig_process_path(alloca(256), pid));
+  return owned;
+}
 
 textwindows int sys_kill_nt(int pid, int sig) {
 
@@ -66,15 +84,9 @@ textwindows int sys_kill_nt(int pid, int sig) {
         BLOCK_SIGNALS;
         __proc_lock();
         for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
-          atomic_ulong *sigproc;
           struct Proc *pr = PROC_CONTAINER(e);
-          if (sig != 9 && (sigproc = __sig_map_process(pid, kNtOpenExisting))) {
-            atomic_fetch_or_explicit(sigproc, 1ull << (sig - 1),
-                                     memory_order_release);
-            UnmapViewOfFile(sigproc);
-          } else {
+          if (sig == 9 || !sys_kill_nt_post(pr->pid, sig))
             TerminateProcess(pr->hProcess, sig);
-          }
         }
         __proc_unlock();
         ALLOW_SIGNALS;
@@ -85,39 +97,40 @@ textwindows int sys_kill_nt(int pid, int sig) {
     }
   }
 
-  // attempt to signal via shared memory file
-  //
-  // now that we know the process exists, if it has a shared memory file
-  // then we can be reasonably certain it's a cosmo process which should
-  // be trusted to deliver its signal, unless it's a nine exterminations
-  if (pid > 0 && sig != 9) {
-    atomic_ulong *sigproc;
-    if ((sigproc = __sig_map_process(pid, kNtOpenExisting))) {
-      if (sig > 0)
-        atomic_fetch_or_explicit(sigproc, 1ull << (sig - 1),
-                                 memory_order_release);
-      UnmapViewOfFile(sigproc);
-      if (sig != 9)
-        return 0;
-    }
-  }
-
   // find existing handle we own for process
   //
-  // this step should come first to verify process existence. this is
-  // because there's no guarantee that just because the shared memory
-  // file exists, the process actually exists.
-  int64_t handle, closeme = 0;
-  if (!(handle = __proc_handle(pid))) {
+  // this comes first because it settles an execve() the child may have
+  // just done, which decides who owns its signal file
+  int64_t handle = __proc_handle(pid), closeme = 0;
+
+  // attempt to signal via shared memory file
+  //
+  // a file some process owns means a cosmo process that can be trusted
+  // to deliver its signal, unless it's a nine exterminations
+  if (pid > 0 && sig != 9 && sys_kill_nt_post(pid, sig))
+    return 0;
+
+  if (!handle) {
     if (!(handle = OpenProcess(kNtProcessTerminate, false, pid)))
       return esrch();
     closeme = handle;
+  }
+
+  // the process exists and takes no signals, so the null signal is
+  // done, and so is any signal whose default action is to be ignored
+  if (!sig || sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH ||
+      sig == SIGCONT) {
+    if (closeme)
+      CloseHandle(closeme);
+    return 0;
   }
 
   // perform actual kill
   // process will report WIFSIGNALED with WTERMSIG(sig)
   if (sig != 9)
     STRACE("warning: kill() sending %G via terminate", sig);
+  if (!closeme)
+    __proc_killed(pid, sig);
   bool32 ok = TerminateProcess(handle, sig);
   if (closeme)
     CloseHandle(closeme);
