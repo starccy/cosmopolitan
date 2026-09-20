@@ -20,14 +20,50 @@
 #include "libc/calls/calls.h"
 #include "libc/errno.h"
 #include "libc/intrin/weaken.h"
+#include "libc/dce.h"
+#include "libc/macros.h"
 #include "libc/paths.h"
+#include "libc/proc/posix_spawn.h"
 #include "libc/runtime/runtime.h"
 #include "libc/stdio/internal.h"
 #include "libc/stdio/stdio.h"
+#include "libc/str/str.h"
+#include "libc/system/plaincmd.internal.h"
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/thread/thread.h"
+
+
+// Spawns `cmdline` without the interpreter, when it has no use for one.
+static int popen_spawn(const char *cmdline, FILE *f, int childfd, int stdfd) {
+  int pid;
+  char buf[1024];
+  char *argv[64];
+  posix_spawn_file_actions_t fa;
+  if (childfd == stdfd)
+    return 0;  // dup2() onto itself would leave it close-on-exec
+  if (strlen(cmdline) >= sizeof(buf))
+    return 0;
+  if (!__plaincmd(cmdline, buf, argv, ARRAYLEN(argv)))
+    return 0;
+  if (posix_spawn_file_actions_init(&fa))
+    return 0;
+  bool ok = !posix_spawn_file_actions_adddup2(&fa, childfd, stdfd);
+  // streams of earlier popen() calls aren't to be open in the child
+  __stdio_lock();
+  for (struct Dll *e = dll_first(__stdio.files); e;
+       e = dll_next(__stdio.files, e)) {
+    FILE *f2 = FILE_CONTAINER(e);
+    if (f != f2 && f2->pid && f2->fd != -1 && f2->fd != stdfd)
+      ok = ok && !posix_spawn_file_actions_addclose(&fa, f2->fd);
+  }
+  __stdio_unlock();
+  if (!ok || posix_spawnp(&pid, argv[0], &fa, 0, argv, environ))
+    pid = 0;
+  posix_spawn_file_actions_destroy(&fa);
+  return pid;
+}
 
 /**
  * Spawns subprocess and returns pipe stream.
@@ -63,7 +99,10 @@ FILE *popen(const char *cmdline, const char *mode) {
   if (pipe2(pipefds, O_CLOEXEC) == -1)
     return NULL;
   if ((f = fdopen(pipefds[dir], mode))) {
-    switch ((pid = fork())) {
+    pid = IsWindows() ? popen_spawn(cmdline, f, pipefds[!dir], !dir) : 0;
+    if (!pid)
+      pid = fork();
+    switch (pid) {
       case 0:
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wanalyzer-fd-leak"
