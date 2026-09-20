@@ -21,14 +21,52 @@
 #include "libc/calls/sigtimedwait.internal.h"
 #include "libc/calls/struct/siginfo.internal.h"
 #include "libc/calls/struct/sigset.internal.h"
+#include "libc/calls/struct/timespec.h"
 #include "libc/calls/struct/timespec.internal.h"
 #include "libc/calls/syscall_support-sysv.internal.h"
+#include "libc/cosmotime.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/clock.h"
 #include "libc/sysv/errfuns.h"
 
 int sys_sigtimedwait_nt(const sigset_t *, siginfo_t *, const struct timespec *);
+int sys_sigwait(const uint32_t *, int *);
+
+static int sys_sigtimedwait_xnu(const sigset_t *set, siginfo_t *opt_info,
+                                const struct timespec *opt_timeout) {
+  int sig;
+  uint32_t set2 = __linux2mask(*set);
+  if (opt_timeout) {
+    long nap = 1000000;
+    struct timespec deadline = timespec_add(timespec_mono(), *opt_timeout);
+    for (;;) {
+      uint64_t pending[2] = {0};
+      if (sys_sigpending(pending, 8) == -1)
+        return -1;
+      if ((uint32_t)pending[0] & set2)
+        break;
+      struct timespec left = timespec_sub(deadline, timespec_mono());
+      if (timespec_cmp(left, timespec_zero) <= 0)
+        return eagain();
+      struct timespec ts = {0, nap};
+      if (timespec_cmp(ts, left) > 0)
+        ts = left;
+      if (clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, 0))
+        return eintr();
+      if (nap < 10000000)
+        nap *= 2;
+    }
+  }
+  if (sys_sigwait(&set2, &sig) == -1)
+    return -1;
+  if (opt_info) {
+    bzero(opt_info, sizeof(*opt_info));
+    opt_info->si_signo = __sig2linux(sig);
+  }
+  return sig;
+}
 
 /**
  * Waits for signal synchronously, w/ timeout.
@@ -79,6 +117,8 @@ int sigtimedwait(const sigset_t *set, siginfo_t *opt_info,
       __siginfo2cosmo(opt_info, &si);
   } else if (IsWindows()) {
     rc = sys_sigtimedwait_nt(set, opt_info, opt_timeout);
+  } else if (IsXnu()) {
+    rc = sys_sigtimedwait_xnu(set, opt_info, opt_timeout);
   } else {
     rc = enosys();
   }
