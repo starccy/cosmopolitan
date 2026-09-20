@@ -66,6 +66,8 @@
 #define POLLWRNORM_ 0x0010
 #define POLLWRBAND_ 0x0020  // MSDN undocumented
 #define POLLPRI_    0x0400  // MSDN unsupported
+
+#define POLL_PIPE_MS 10
 // </sync libc/sysv/consts.sh>
 
 __msabi extern typeof(WaitForMultipleObjects)
@@ -96,6 +98,7 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
   int fileindices[64];
   int64_t filehands[64];
   int i, rc, ev, kind, gotsocks;
+  bool gotpipe = false;
   uint32_t cm, fi, sn, pn, avail, waitfor, already_slept;
 
   // ensure revents is cleared
@@ -165,6 +168,7 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
       if ((ev & POLLWRNORM_) && !(ev & POLLRDNORM_)) {
         fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
       } else if (GetFileType(filehands[i]) == kNtFileTypePipe) {
+        gotpipe = true;
         if (PeekNamedPipe(filehands[i], 0, 0, 0, &avail, 0)) {
           if (avail)
             fds[fi].revents = POLLRDNORM_;
@@ -194,6 +198,8 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
 
     // determine how long to wait
     waitfor = sys_poll_nt_waitms(deadline);
+    if (gotpipe && waitfor > POLL_PIPE_MS)
+      waitfor = POLL_PIPE_MS;
 
     // check for events and/or readiness on sockets
     // we always do this due to issues with POLLOUT
@@ -366,7 +372,8 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
     now = sys_clock_gettime_monotonic_nt();
     if (timespec_cmp(now, deadline) >= 0)
       return 0;
-    next = timespec_add(now, timespec_frommillis(POLL_INTERVAL_MS));
+    // what's here is mostly pipes, or it would have fit in one call
+    next = timespec_add(now, timespec_frommillis(POLL_PIPE_MS));
     if (timespec_cmp(next, deadline) >= 0) {
       target = deadline;
     } else {
