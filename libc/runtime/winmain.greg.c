@@ -53,6 +53,7 @@
 #include "libc/serialize.h"
 #include "libc/sock/internal.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/map.h"
 #include "libc/sysv/consts/prot.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/pib.h"
@@ -62,6 +63,8 @@
 __static_yoink("__rlimit_init");
 
 #define abi __msabi textwindows dontinstrument
+
+#define kStackSlack 65536
 
 // clang-format off
 __msabi extern typeof(AddVectoredExceptionHandler) *const __imp_AddVectoredExceptionHandler;
@@ -210,6 +213,12 @@ abi wontreturn static void WinInit(const char16_t *cmdline) {
     _weaken(__maps_stack)(stackaddr, si.dwPageSize, GetGuardSize(), stacksize,
                           (intptr_t)ape_stack_prot);
   }
+  if (__imp_VirtualAllocEx(GetCurrentProcess(), stackaddr - kStackSlack,
+                           kStackSlack, kNtMemReserve | kNtMemCommit,
+                           kNtPageReadwrite) &&
+      _weaken(__maps_track))
+    _weaken(__maps_track)(stackaddr - kStackSlack, kStackSlack,
+                          PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
   struct WinArgs *wa =
       (struct WinArgs *)(stackaddr + (stacksize - sizeof(struct WinArgs)));
 
