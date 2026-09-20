@@ -238,7 +238,7 @@ textwindows int __sig_stop(int sig) {
   // busy loop until we've dequeued a SIGCONT signal
   while (~atomic_fetch_and(__get_pib()->sigpending, ~(1ull << (SIGCONT - 1))) &
          (1ull << (SIGCONT - 1)))
-    __imp_SleepEx(POLL_INTERVAL_MS, 0);
+    __sig_pause();
 
   STRACE("continuing process");
 
@@ -922,7 +922,7 @@ HAIRY static uint32_t __sig_worker(void *arg) {
         __sig_generate(sig, SI_KERNEL);
       }
       
-      __imp_SleepEx(POLL_INTERVAL_MS, 0);
+      __sig_pause();
       continue;
     }
 
@@ -976,7 +976,7 @@ HAIRY static uint32_t __sig_worker(void *arg) {
     __sig_worker_unlock();
 
     // wait until next scheduler quantum
-    __imp_SleepEx(POLL_INTERVAL_MS, 0);
+    __sig_pause();
   }
   __builtin_unreachable();
 }

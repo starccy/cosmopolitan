@@ -49,8 +49,10 @@ textwindows static bool sys_kill_nt_post(int pid, int sig) {
   atomic_ulong *sigproc;
   if (!(sigproc = __sig_map_target(pid, &owned)))
     return false;
-  if (owned && sig > 0)
+  if (owned && sig > 0) {
     atomic_fetch_or_explicit(sigproc, 1ull << (sig - 1), memory_order_release);
+    __sig_wake_process(pid);
+  }
   UnmapViewOfFile(sigproc);
   if (!owned)
     DeleteFile(__sig_process_path(alloca(256), pid));

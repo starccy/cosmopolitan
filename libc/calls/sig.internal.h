@@ -43,6 +43,8 @@ atomic_ulong *__sig_map_process(int, int);
 atomic_ulong *__sig_map_target(int, bool *);
 atomic_ulong *__sig_own_process(int);
 void __sig_disown_process(void);
+void __sig_wake_process(int);
+void __sig_pause(void);
 intptr_t __sig_guard_process(int);
 bool __sig_cant_be_ignored(int);
 
