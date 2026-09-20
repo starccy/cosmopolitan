@@ -89,7 +89,7 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
     uint32_t err = GetLastError();
     if (err == kNtErrorSymlinkClassDisabled || err == kNtErrorCantAccessFile)
       return eacces();
-    return __winerr();
+    return __fix_enotdir(__winerr(), sb->path);
   }
   uint32_t got;
   bool32 ok = ReadFile(fh, p, pe - p, &got, 0);
