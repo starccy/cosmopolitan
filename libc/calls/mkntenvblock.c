@@ -17,6 +17,7 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
+#include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/ctype.h"
 #include "libc/intrin/getenv.h"
 #include "libc/mem/alloca.h"
@@ -52,26 +53,26 @@ static textwindows int Compare(const char *l, const char *r) {
 
 static textwindows int InsertString(struct EnvBuilder *env, const char *str) {
   int c, i, cmp;
-  char *var, *path = 0;
+  char *var;
 
   if (!str)
     return 0;
 
-  // copy key=val to buf
+  // copy key=val to buf, spelling a unix path value the DOS way
   var = env->buf + env->bufi;
   do {
     c = *str++;
     if (env->bufi + 2 > 32767)
       return e2big();
     env->buf[env->bufi++] = c;
-    if (c == '=' && str[0] == '/' && isalpha(str[1]) && str[2] == '/') {
-      path = env->buf + env->bufi;
+    if (c == '=' && str[0] == '/') {
+      int n = __unixtodospath(str, env->buf + env->bufi, 32767 - env->bufi);
+      if (n == -1)
+        return e2big();
+      env->bufi += n + 1;
+      break;
     }
   } while (c);
-
-  // fixup key=/c/... → key=c:\...
-  if (path)
-    mungentpath(path);
 
   // append key=val to sorted list using insertion sort technique
   for (i = env->vari;; --i) {

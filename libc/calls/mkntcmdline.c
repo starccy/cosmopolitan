@@ -62,6 +62,18 @@ textwindows static bool LooksLikeCosmoDrivePath(const char *s) {
          s[2] == '/';
 }
 
+// "/xx/..." is a cosmos drive path if it exists there, otherwise a native
+// switch like "/nologo". "/x" and "/x/..." are drive spellings, handled
+// above, so the switch "/c" never becomes "C:\c"
+textwindows static bool IsExistingRootPath(const char *s) {
+  char16_t path16[PATH_MAX];
+  if (s[0] != '/' || !s[1] || s[1] == '/')
+    return false;
+  if (isalpha(s[1]) && (s[2] == '/' || !s[2]))
+    return false;
+  return __mkntpath(s, path16) != -1 && GetFileAttributes(path16) != -1u;
+}
+
 // Converts System V argv to Windows-style command line.
 //
 // Escaping is performed and it's designed to round-trip with
@@ -90,10 +102,11 @@ textwindows size_t mkntcmdline2(char16_t *cmdline, char *const argv[],
   for (k = i = 0; argv[i]; ++i) {
     if (i)
       APPEND(u' ');
-    if (rewrite_paths && LooksLikeCosmoDrivePath(argv[i]) &&
-        __ntdriveexists(argv[i][1]) &&
-        strlcpy(argbuf, argv[i], PATH_MAX) < PATH_MAX) {
-      mungentpath(argbuf);
+    if (rewrite_paths &&
+        ((LooksLikeCosmoDrivePath(argv[i]) && __ntdriveexists(argv[i][1])) ||
+         (!i && argv[i][0] == '/' && argv[i][1] && argv[i][1] != '/') ||
+         IsExistingRootPath(argv[i])) &&
+        __unixtodospath(argv[i], argbuf, PATH_MAX) != -1) {
       arg = argbuf;
     } else {
       arg = argv[i];

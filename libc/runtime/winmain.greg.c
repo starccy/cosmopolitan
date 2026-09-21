@@ -108,6 +108,18 @@ __funline int IsAlpha(int c) {
   return ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z');
 }
 
+// same lookup as __getcosmosdrive(), which needs environ to exist
+static abi char GetCosmosDrive(void) {
+  char16_t b[3];
+  if (__imp_GetEnvironmentVariableW(u"COSMOSDRIVE", b, 3) == 2 &&
+      IsAlpha(b[0]) && b[1] == ':')
+    return b[0];
+  if (__imp_GetEnvironmentVariableW(u"SYSTEMDRIVE", b, 3) == 2 &&
+      IsAlpha(b[0]) && b[1] == ':')
+    return b[0];
+  return 'C';
+}
+
 abi static char16_t *StrStr(const char16_t *haystack, const char16_t *needle) {
   size_t i;
   for (;;) {
@@ -252,7 +264,8 @@ abi wontreturn static void WinInit(const char16_t *cmdline) {
   int count = GetDosArgv(cmdline, wa->argblock, ARRAYLEN(wa->argblock),
                          wa->argv, ARRAYLEN(wa->argv));
 
-  // unixify dos absolute paths
+  // unixify dos absolute paths, spelled the way __mkunixpath() does
+  char drive = GetCosmosDrive();
   for (int i = 0; wa->argv[i]; ++i) {
     if (IsAlpha(wa->argv[i][0]) &&  //
         wa->argv[i][1] == ':' &&    //
@@ -264,13 +277,14 @@ abi wontreturn static void WinInit(const char16_t *cmdline) {
       for (int j = 0; wa->argv[i][j]; ++j)
         if (wa->argv[i][j] == '\\')
           wa->argv[i][j] = '/';
+      __strip_cosmos_drive(wa->argv[i], drive);
     }
   }
 
   // translate utf-16 win32 environment into utf-8 environment variables
   char16_t *env16 = __imp_GetEnvironmentStringsW();
   GetDosEnviron(env16, wa->envblock, ARRAYLEN(wa->envblock) - 8, wa->envp,
-                ARRAYLEN(wa->envp) - 1);
+                ARRAYLEN(wa->envp) - 1, drive);
   __imp_FreeEnvironmentStringsW(env16);
   __envp = &wa->envp[0];
 

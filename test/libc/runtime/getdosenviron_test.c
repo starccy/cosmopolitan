@@ -28,7 +28,7 @@ TEST(GetDosEnviron, testOneVariable) {
   char *block = calloc(1, size);
   char16_t *env = memcpy(calloc(1, sizeof(kEnv)), kEnv, sizeof(kEnv));
   char **envp = calloc(1, max * sizeof(char *));
-  EXPECT_EQ(1, GetDosEnviron(env, block, size, envp, max));
+  EXPECT_EQ(1, GetDosEnviron(env, block, size, envp, max, 'C'));
   EXPECT_STREQ("A=Und wird die Welt auch in Flammen stehen", envp[0]);
   EXPECT_EQ(NULL, envp[1]);
   ASSERT_BINEQ(u"A=Und wird die Welt auch in Flammen stehen  ", block);
@@ -47,7 +47,7 @@ TEST(GetDosEnviron, testTwoVariables) {
   char *block = calloc(1, size);
   char16_t *env = memcpy(calloc(1, sizeof(kEnv)), kEnv, sizeof(kEnv));
   char **envp = calloc(1, max * sizeof(char *));
-  EXPECT_EQ(2, GetDosEnviron(env, block, size, envp, max));
+  EXPECT_EQ(2, GetDosEnviron(env, block, size, envp, max, 'C'));
   EXPECT_STREQ("𐌰𐌱𐌲𐌳=Und wird die Welt auch in Flammen stehen", envp[0]);
   EXPECT_STREQ("𐌴𐌵𐌶𐌷=Wir werden wieder auferstehen", envp[1]);
   EXPECT_EQ(NULL, envp[2]);
@@ -64,7 +64,7 @@ TEST(GetDosEnviron, testOverrun_truncatesWithGrace) {
   char *block = calloc(1, size);
   char16_t *env = memcpy(calloc(1, sizeof(kEnv)), kEnv, sizeof(kEnv));
   char **envp = calloc(1, max * sizeof(char *));
-  EXPECT_EQ(1, GetDosEnviron(env, block, size, envp, max));
+  EXPECT_EQ(1, GetDosEnviron(env, block, size, envp, max, 'C'));
   EXPECT_STREQ("A=Und wird die Welt ", envp[0]);
   EXPECT_EQ(NULL, envp[1]);
   ASSERT_BINEQ(u"A=Und wird die Welt   ", block);
@@ -75,13 +75,13 @@ TEST(GetDosEnviron, testOverrun_truncatesWithGrace) {
 }
 
 TEST(GetDosEnviron, testEmpty_doesntTouchMemory) {
-  EXPECT_EQ(0, GetDosEnviron(u"", NULL, 0, NULL, 0));
+  EXPECT_EQ(0, GetDosEnviron(u"", NULL, 0, NULL, 0, 'C'));
 }
 
 TEST(GetDosEnviron, testEmpty_zeroTerminatesWheneverPossible_1) {
   size_t max = 1;
   char **envp = calloc(1, max * sizeof(char *));
-  EXPECT_EQ(0, GetDosEnviron(u"", NULL, 0, envp, max));
+  EXPECT_EQ(0, GetDosEnviron(u"", NULL, 0, envp, max, 'C'));
   EXPECT_EQ(NULL, envp[0]);
   free(envp);
 }
@@ -89,7 +89,7 @@ TEST(GetDosEnviron, testEmpty_zeroTerminatesWheneverPossible_1) {
 TEST(GetDosEnviron, testEmpty_zeroTerminatesWheneverPossible_2) {
   size_t size = 1;
   char *block = calloc(1, size);
-  EXPECT_EQ(0, GetDosEnviron(u"", block, size, NULL, 0));
+  EXPECT_EQ(0, GetDosEnviron(u"", block, size, NULL, 0, 'C'));
   EXPECT_BINEQ(u" ", block);
   free(block);
 }
@@ -97,7 +97,24 @@ TEST(GetDosEnviron, testEmpty_zeroTerminatesWheneverPossible_2) {
 TEST(GetDosEnviron, testEmpty_zeroTerminatesWheneverPossible_3) {
   size_t size = 2;
   char *block = calloc(1, size);
-  EXPECT_EQ(0, GetDosEnviron(u"", block, size, NULL, 0));
+  EXPECT_EQ(0, GetDosEnviron(u"", block, size, NULL, 0, 'C'));
   EXPECT_BINEQ(u" ", block);
+  free(block);
+}
+
+TEST(GetDosEnviron, cosmosDriveIsRoot) {
+  size_t max = 5;
+  size_t size = 256;
+  char *block = calloc(1, size);
+  char **envp = calloc(max, sizeof(char *));
+  EXPECT_EQ(4, GetDosEnviron(u"A=C:\\xx\\y\0B=D:\\xx\0P=C:\\aa;D:\\bb;C:\\cc\0"
+                              u"Q=C:\\D\\x\0",
+                              block, size, envp, max, 'C'));
+  EXPECT_STREQ("A=/xx/y", envp[0]);
+  EXPECT_STREQ("B=/D/xx", envp[1]);
+  EXPECT_STREQ("P=/aa:/D/bb:/cc", envp[2]);
+  // a single letter next would read as another drive, so this one stays
+  EXPECT_STREQ("Q=/C/D/x", envp[3]);
+  free(envp);
   free(block);
 }

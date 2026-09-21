@@ -71,7 +71,24 @@ static abi axdx_t Recode16to8(char *dst, size_t dstsize, const char16_t *src) {
   return r;
 }
 
-static abi void FixPath(char *path) {
+static abi void Move(char *d, const char *s) {
+  while ((*d++ = *s++)) {
+  }
+}
+
+abi void __strip_cosmos_drive(char *p, char drive) {
+  if (p[0] != '/' || ToUpper(p[1]) != ToUpper(drive))
+    return;
+  if (p[2] == '/') {
+    if (IsAlpha(p[3]) && (p[4] == '/' || p[4] == ';' || !p[4]))
+      return;
+    Move(p, p + 2);
+  } else if (p[2] == ';' || !p[2]) {
+    Move(p + 1, p + 2);
+  }
+}
+
+static abi void FixPath(char *path, char drive) {
   char *p;
 
   // turn backslash into slash
@@ -81,16 +98,18 @@ static abi void FixPath(char *path) {
     }
   }
 
-  // turn c:/... into /c/...
+  // turn c:/... into /c/... and drop the cosmos drive
   p = path;
   if (IsAlpha(p[0]) && p[1] == ':' && p[2] == '/') {
     p[1] = p[0];
     p[0] = '/';
+    __strip_cosmos_drive(p, drive);
   }
   for (; *p; ++p) {
     if (p[0] == ';' && IsAlpha(p[1]) && p[2] == ':' && p[3] == '/') {
       p[2] = p[1];
       p[1] = '/';
+      __strip_cosmos_drive(p + 1, drive);
     }
   }
 
@@ -109,9 +128,10 @@ static abi void FixPath(char *path) {
 // @param size is the byte capacity of buf
 // @param envp stores NULL-terminated string pointer list (optional)
 // @param max is the pointer count capacity of envp
+// @param drive is the cosmos drive letter, dropped from paths
 // @return number of variables decoded, excluding NULL-terminator
 abi int GetDosEnviron(const char16_t *env, char *buf, size_t size, char **envp,
-                      size_t max) {
+                      size_t max, char drive) {
   int i;
   char *p;
   axdx_t r;
@@ -123,7 +143,7 @@ abi int GetDosEnviron(const char16_t *env, char *buf, size_t size, char **envp,
     r = Recode16to8(buf, size, env);
     if ((p = MemChr(buf, '=', r.ax)) && IsAlpha(p[1]) && p[2] == ':' &&
         (p[3] == '\\' || p[3] == '/')) {
-      FixPath(p + 1);
+      FixPath(p + 1, drive);
     }
     size -= r.ax + 1;
     buf += r.ax + 1;
