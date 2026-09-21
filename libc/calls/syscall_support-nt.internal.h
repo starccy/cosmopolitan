@@ -12,6 +12,7 @@ bool isregularfile_nt(const char *) libcesque;
 bool issymlink_nt(const char *) libcesque;
 bool32 sys_fchmod_nt_handle(intptr_t, uint32_t) libcesque;
 char16_t *__create_pipe_name(char16_t *) libcesque;
+int __unixtodospath(const char *, char *, size_t) libcesque;
 int __mkntpath(const char *, char16_t[static PATH_MAX]) libcesque;
 int __mkntpathat(int, const char *, char16_t[static 1024]) libcesque;
 int __mkunixpath(const char16_t *, char[static PATH_MAX]) libcesque;

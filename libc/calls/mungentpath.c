@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/ctype.h"
 #include "libc/proc/ntspawn.h"
 
@@ -49,4 +50,43 @@ textwindows void mungentpath(char *path) {
       *p = '\\';
     }
   }
+}
+
+// Spells a unix path, or a colon separated list of them in the DOS way.
+// Returns the length, or -1 when out is too small.
+textwindows int __unixtodospath(const char *path, char *out, size_t size) {
+  size_t k = 0;
+  const char *p = path;
+  char drive = __getcosmosdrive();
+#define PUT(c)     \
+  do {             \
+    if (k < size)  \
+      out[k] = c;  \
+    ++k;           \
+  } while (0)
+  for (;;) {
+    if (p[0] == '/' && p[1] != '/') {
+      if (isalpha(p[1]) && p[2] == '/') {
+        PUT(p[1]);
+        PUT(':');
+        p += 2;
+      } else {
+        PUT(drive);
+        PUT(':');
+      }
+    }
+    while (*p && !(p[0] == ':' && p[1] != '\\')) {
+      PUT(*p == '/' ? '\\' : *p);
+      ++p;
+    }
+    if (!*p)
+      break;
+    PUT(';');
+    ++p;
+  }
+#undef PUT
+  if (k >= size)
+    return -1;
+  out[k] = 0;
+  return k;
 }
