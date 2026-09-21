@@ -6,5 +6,6 @@
 #define MADV_SEQUENTIAL 2
 #define MADV_WILLNEED   3
 #define MADV_DONTNEED   4
+#define MADV_FREE       8
 
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_MADV_H_ */

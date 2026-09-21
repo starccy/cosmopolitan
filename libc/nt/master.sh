@@ -221,6 +221,7 @@ imp	'LockResource'						LockResource						kernel32	1
 imp	'MoveFile'						MoveFileW						kernel32	2
 imp	'MultiByteToWideChar'					MultiByteToWideChar					kernel32	6
 imp	'OfferVirtualMemory'					OfferVirtualMemory					kernel32	3
+imp	'DiscardVirtualMemory'					DiscardVirtualMemory					kernel32	2
 imp	'OpenThread'						OpenThread						kernel32	3
 imp	'PeekConsoleInput'					PeekConsoleInputW					kernel32	4
 imp	'PeekNamedPipe'						PeekNamedPipe						kernel32	6

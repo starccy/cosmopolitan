@@ -117,6 +117,7 @@ bool32 PrefetchVirtualMemory(int64_t hProcess, uintptr_t NumberOfEntries,
                              uint32_t reserved_Flags);
 bool32 OfferVirtualMemory(void *inout_VirtualAddress, size_t Size,
                           int Priority);
+bool32 DiscardVirtualMemory(void *inout_VirtualAddress, size_t Size);
 
 #if ShouldUseMsabiAttribute()
 #include "libc/nt/thunk/memory.inc"
