@@ -151,7 +151,8 @@ textwindows int sys_fstat_nt_handle(int64_t handle, const char16_t *path,
     }
 
     st.st_blocks = ROUNDUP(st.st_size, st.st_blksize) / 512;
-  } else if (GetVolumeInformationByHandle(
+  } else if (ft == kNtFileTypeDisk &&
+             GetVolumeInformationByHandle(
                  handle, 0, 0, &wst.dwVolumeSerialNumber, 0, 0, 0, 0)) {
     st.st_dev = MAKEDEV(0, wst.dwVolumeSerialNumber);
     st.st_mode = S_IFDIR | 0555;
