@@ -60,6 +60,13 @@ textwindows errno_t sys_posix_madvise_nt(char *addr, size_t size, int advice) {
         // does. Codebases like GCC explicitly make the assumption that
         // DONTNEED pages can be reclaimed just by touching them. WIN32
         // says we need to call ReclaimVirtualMemory() before touching.
+        // DiscardVirtualMemory() has no such rule: the pages lose their
+        // contents and read back as zeros on the next touch, which is
+        // what linux does for private anonymous memory. It only works on
+        // committed private pages, so file views are left alone and a
+        // failure on reserved pages is not an error
+        if (map->hand == MAPS_VIRTUAL)
+          DiscardVirtualMemory(beg, end - beg);
         break;
       default:
         err = EINVAL;

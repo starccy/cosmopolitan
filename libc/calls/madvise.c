@@ -36,12 +36,22 @@
  */
 int madvise(void *addr, size_t len, int advice) {
 
+  int sysadvice = advice;
   switch (advice) {
     case MADV_NORMAL:
     case MADV_RANDOM:
     case MADV_WILLNEED:
     case MADV_SEQUENTIAL:
     case MADV_DONTNEED:
+      break;
+    case MADV_FREE:
+      if (IsXnu() || IsFreebsd()) {
+        sysadvice = 5;
+      } else if (IsNetbsd() || IsOpenbsd()) {
+        sysadvice = 6;
+      } else if (IsWindows()) {
+        sysadvice = MADV_DONTNEED;
+      }
       break;
     default:
       return einval();
@@ -58,9 +68,9 @@ int madvise(void *addr, size_t len, int advice) {
 
   int rc = 0;
   if (!IsWindows()) {
-    rc = sys_madvise(addr, len, advice);
+    rc = sys_madvise(addr, len, sysadvice);
   } else {
-    errno_t err = sys_posix_madvise_nt(addr, len, advice);
+    errno_t err = sys_posix_madvise_nt(addr, len, sysadvice);
     if (err) {
       errno = err;
       rc = -1;
