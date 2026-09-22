@@ -46,8 +46,9 @@ textwindows int __mkunixpath(const char16_t *path,
       p[i] = '/';
 
   // turn //?/UNC/srv/share/... into //srv/share/...
+  // symlink targets come spelled /??/UNC/srv/share/... as well
   if (p[0] == '/' &&
-      p[1] == '/' &&
+      (p[1] == '/' || p[1] == '?') &&
       p[2] == '?' &&
       p[3] == '/' &&
       (p[4] == 'U' || p[4] == 'u') &&
@@ -55,6 +56,7 @@ textwindows int __mkunixpath(const char16_t *path,
       (p[6] == 'C' || p[6] == 'c') &&
       p[7] == '/') {
     memmove(p + 2, p + 8, n - 8 + 1);
+    p[1] = '/';
     n -= 6;
   }
   // turn //?/c:/... and //./c:/... and /??/c:/... into c:/...
