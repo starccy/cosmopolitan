@@ -56,6 +56,8 @@ struct siginfo {
 
 typedef struct siginfo siginfo_t;
 
+int waitid(int, int, siginfo_t *, int) libcesque;
+
 #ifdef _COSMO_SOURCE
 void __minicrash(int, siginfo_t *, void *) libcesque;
 char __is_stack_overflow(siginfo_t *, void *) libcesque;

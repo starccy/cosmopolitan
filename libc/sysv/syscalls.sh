@@ -260,7 +260,7 @@ scall	sys_mq_timedreceive	0x1b1ffffffffff0f3	0x0b7	globl # won't polyfill
 scall	sys_mq_notify		0x106ffffffffff0f4	0x0b8	globl # won't polyfill
 scall	sys_mq_getsetattr	0xfffffffffffff0f5	0x0b9	globl # won't polyfill
 scall	sys_kexec_load		0xfffffffffffff0f6	0x068	globl # no wrapper
-scall	sys_waitid		0xfffffffff28ad8f7	0x05f	globl # Linux 2.6.9+; no wrapper
+scall	sys_waitid		0xfff8a0fff28ad8f7	0x05f	globl hidden # Linux 2.6.9+; OpenBSD 7.1+
 scall	sys_add_key		0xfffffffffffff0f8	0x0d9	globl # no wrapper
 scall	sys_request_key		0xfffffffffffff0f9	0x0da	globl # no wrapper
 scall	sys_keyctl		0xfffffffffffff0fa	0x0db	globl # no wrapper
@@ -756,7 +756,7 @@ scall	sys_rtprio_thread	0xffffff1d2fffffff	0xfff	globl # no wrapper
 #scall	uuidgen			0x163fff188fffffff	0xfff	globl
 #scall	vadvise			0xffffff048fffffff	0xfff	globl
 #scall	wait			0xffffff054fffffff	0xfff	globl
-#scall	wait6			0x1e1fff214fffffff	0xfff	globl
+scall	sys_wait6		0x9e1fffa14fffffff	0xfff	globl hidden
 #scall	yield			0xffffff141fffffff	0xfff	globl
 #──────────────────────────OPENBSD───────────────────────────────────────────
 #scall	__thrsleep		0xfff05effffffffff	0xfff	globl

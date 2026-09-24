@@ -36,6 +36,7 @@
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/consts/w.h"
+#include "libc/sysv/consts/waitid.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #if SupportsWindows()
@@ -81,12 +82,17 @@ textwindows static int __proc_wstatus(uint32_t dwExitCode) {
   }
 }
 
+// with peek the status is reported but the process is left where it is,
+// which is what WNOWAIT asks for
 textwindows static int __proc_unstop(struct Proc *pr, int *wstatus,
-                                     struct rusage *opt_out_rusage) {
+                                     struct rusage *opt_out_rusage,
+                                     bool peek) {
   if (wstatus)
     *wstatus = __proc_wstatus(pr->dwExitCode);
   if (opt_out_rusage)
     *opt_out_rusage = (struct rusage){0};
+  if (peek)
+    return pr->pid;
   dll_remove(&__proc.stopped, &pr->stopelem);
   if (dll_is_empty(__proc.stopped))
     ResetEvent(__proc.hasstopped);
@@ -96,11 +102,14 @@ textwindows static int __proc_unstop(struct Proc *pr, int *wstatus,
 }
 
 textwindows static int __proc_reap_zombie(struct Proc *pr, int *wstatus,
-                                          struct rusage *opt_out_rusage) {
+                                          struct rusage *opt_out_rusage,
+                                          bool peek) {
   if (wstatus)
     *wstatus = __proc_wstatus(pr->dwExitCode);
   if (opt_out_rusage)
     *opt_out_rusage = pr->ru;
+  if (peek)
+    return pr->pid;
   dll_remove(&__proc.zombies, &pr->elem);
   pr->status = PROC_UNDEAD;
   dll_make_first(&__proc.undead, &pr->elem);
@@ -108,21 +117,27 @@ textwindows static int __proc_reap_zombie(struct Proc *pr, int *wstatus,
   return pr->pid;
 }
 
+// options are waitid's: WUNTRACED (WSTOPPED) and WEXITED pick the events,
+// WNOWAIT leaves the process in place
 textwindows static int __proc_check(int pid, int *wstatus, int options,
                                     struct rusage *opt_out_rusage) {
   struct Dll *e;
+  bool peek = !!(options & WNOWAIT);
   if (options & WUNTRACED) {
     for (e = dll_first(__proc.stopped); e; e = dll_next(__proc.stopped, e)) {
       struct Proc *pr = STOP_PROC_CONTAINER(e);
       if (pid == -1 || pid == pr->pid)
-        return __proc_unstop(pr, wstatus, opt_out_rusage);
+        return __proc_unstop(pr, wstatus, opt_out_rusage, peek);
     }
   }
+  if (!(options & WEXITED))
+    return 0;
   for (e = dll_first(__proc.zombies); e; e = dll_next(__proc.zombies, e)) {
     struct Proc *pr = PROC_CONTAINER(e);
     if (pid == -1 || pid == pr->pid) {
-      int rc = __proc_reap_zombie(pr, wstatus, opt_out_rusage);
-      if (!(__get_pib()->sighandrvas[SIGCHLD - 1] == (uintptr_t)SIG_IGN ||
+      int rc = __proc_reap_zombie(pr, wstatus, opt_out_rusage, peek);
+      if (peek ||
+          !(__get_pib()->sighandrvas[SIGCHLD - 1] == (uintptr_t)SIG_IGN ||
             (__get_pib()->sighandflags[SIGCHLD - 1] & SA_NOCLDWAIT)))
         return rc;
     }
@@ -171,11 +186,17 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
     struct Proc *pr = 0;
     if (pid == -1) {
       // wait for any status change
-      hands[0] = __proc.haszombies;
-      ++__proc.waiters;
-      if (options & WUNTRACED) {
+      if (options & WEXITED) {
+        hands[0] = __proc.haszombies;
+        ++__proc.waiters;
+        if (options & WUNTRACED) {
+          ++__proc.stopwaiters;
+          hands[handcount++] = __proc.hasstopped;
+        }
+      } else {
+        // a stop is the only thing that can wake this wait
+        hands[0] = __proc.hasstopped;
         ++__proc.stopwaiters;
-        hands[handcount++] = __proc.hasstopped;
       }
     } else {
       // wait on specific child
@@ -189,7 +210,8 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
         // by making the waiter count non-zero, the proc daemon stops
         // being obligated to monitor this process. this means we may
         // need to assume responsibility later on for zombifying this
-        ++pr->waiters;
+        if (options & WEXITED)
+          ++pr->waiters;
         hands[0] = pr->hProcess;
         if (options & WUNTRACED) {
           ++pr->stopwaiters;
@@ -222,13 +244,16 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
 
     // clear our waiter status
     if (pr) {
-      --pr->waiters;
+      if (options & WEXITED)
+        --pr->waiters;
       if (options & WUNTRACED)
         --pr->stopwaiters;
-    } else {
+    } else if (options & WEXITED) {
       --__proc.waiters;
       if (options & WUNTRACED)
         --__proc.stopwaiters;
+    } else {
+      --__proc.stopwaiters;
     }
 
     // handle weird case that can happen with auto zombie reaping
@@ -268,7 +293,12 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
         break;
       case PROC_ZOMBIE:
         // exit happened and we're the first to know
-        rc = __proc_reap_zombie(pr, wstatus, rusage);
+        if (!(options & WEXITED)) {
+          // it was stops we wanted, and there won't be any more
+          __proc_unlock();
+          return echild();
+        }
+        rc = __proc_reap_zombie(pr, wstatus, rusage, options & WNOWAIT);
         __proc_unlock();
         return rc;
       case PROC_UNDEAD:
@@ -278,7 +308,7 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
         __proc_unlock();
         return echild();
       case PROC_STOPPED:
-        rc = __proc_unstop(pr, wstatus, rusage);
+        rc = __proc_unstop(pr, wstatus, rusage, options & WNOWAIT);
         __proc_unlock();
         if (options & WUNTRACED)
           return rc;
@@ -286,6 +316,18 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
       default:
         __builtin_unreachable();
     }
+  }
+}
+
+// the tracker only generates SIGCHLD when no one's waiting, so a
+// child reaped by a wait call never produced one. raise it now
+// if a handler is installed; it may then see a child twice, which
+// handlers put up with on linux too
+textwindows static void __proc_raise_sigchld(int ws) {
+  if (WIFEXITED(ws) || WIFSIGNALED(ws)) {
+    uintptr_t h = __get_pib()->sighandrvas[SIGCHLD - 1];
+    if (h && h != (uintptr_t)SIG_IGN)
+      raise(SIGCHLD);
   }
 }
 
@@ -303,19 +345,43 @@ textwindows int sys_wait4_nt(int pid, int *opt_out_wstatus, int options,
   if (pid < -1)
     pid = -pid;
   sigset_t m = __sig_block();
-  int rc = __proc_wait(pid, opt_out_wstatus, options, opt_out_rusage,
-                       m | 1ull << (SIGCHLD - 1));
+  int rc = __proc_wait(pid, opt_out_wstatus, options | WEXITED,
+                       opt_out_rusage, m | 1ull << (SIGCHLD - 1));
   __sig_unblock(m);
-  // the tracker only generates SIGCHLD when no one's waiting, so a
-  // child reaped by this very call never produced one. raise it now
-  // if a handler is installed; it may then see a child twice, which
-  // handlers put up with on linux too
-  if (rc > 0 && opt_out_wstatus &&
-      (WIFEXITED(*opt_out_wstatus) || WIFSIGNALED(*opt_out_wstatus))) {
-    uintptr_t h = __get_pib()->sighandrvas[SIGCHLD - 1];
-    if (h && h != (uintptr_t)SIG_IGN)
-      raise(SIGCHLD);
+  if (rc > 0 && opt_out_wstatus)
+    __proc_raise_sigchld(*opt_out_wstatus);
+  return rc;
+}
+
+// returns the pid whose status was reported, 0 for WNOHANG with nothing
+// to report, or -1 with errno
+textwindows int sys_waitid_nt(int idtype, int id, int *wstatus,
+                              int options) {
+  int pid;
+  switch (idtype) {
+    case P_ALL:
+      pid = -1;
+      break;
+    case P_PID:
+      pid = id;
+      break;
+    case P_PGID:
+      // no process groups on NT, see sys_wait4_nt
+      pid = id ? id : -1;
+      break;
+    default:
+      return einval();
   }
+  // a continue is never noticed here, so a wait for one alone could not
+  // return; an exit is reported instead, the way wait4 does it
+  options &= ~WCONTINUED;
+  if (!(options & (WEXITED | WSTOPPED)))
+    options |= WEXITED;
+  sigset_t m = __sig_block();
+  int rc = __proc_wait(pid, wstatus, options, 0, m | 1ull << (SIGCHLD - 1));
+  __sig_unblock(m);
+  if (rc > 0 && !(options & WNOWAIT))
+    __proc_raise_sigchld(*wstatus);
   return rc;
 }
 
