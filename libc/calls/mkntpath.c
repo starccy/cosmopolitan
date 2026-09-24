@@ -370,20 +370,35 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
   return filelen;
 }
 
+// the rewrites a unix path goes through before conversion: the shim's,
+// if one is linked in, then the "\\server" directory of uncserver.c.
+// returns the path to convert (path itself, or buf), or null with errno
+dontinline textwindows static const char *__rewritepath(const char *path,
+                                                        char *buf) {
+  char tmp[PATH_MAX];
+  if (_weaken(__ape_shim_ntpath_rewrite)) {
+    int rc = _weaken(__ape_shim_ntpath_rewrite)(path, tmp, sizeof(tmp));
+    if (rc == -1)
+      return 0;
+    if (rc) {
+      memcpy(buf, tmp, strlen(tmp) + 1);
+      path = buf;
+    }
+  }
+  if (__unc_fixpath(path, tmp, sizeof(tmp))) {
+    memcpy(buf, tmp, strlen(tmp) + 1);
+    path = buf;
+  }
+  return path;
+}
+
 textwindows int __mkntpathath(int64_t dirhand, const char *path,
                               char16_t file[static PATH_MAX],
                               bool used_explicit_drive_letter) {
 
-  // let the shim rewrite the path first, if it's linked in
   char rewritten[PATH_MAX];
-  if (_weaken(__ape_shim_ntpath_rewrite)) {
-    int rc = _weaken(__ape_shim_ntpath_rewrite)(path, rewritten,
-                                                sizeof(rewritten));
-    if (rc == -1)
-      return -1;
-    if (rc)
-      path = rewritten;
-  }
+  if (!(path = __rewritepath(path, rewritten)))
+    return -1;
 
   // __mkntpath() normalizes away the trailing slash, so we need to
   // check if the user wanted it there early on in the process here
