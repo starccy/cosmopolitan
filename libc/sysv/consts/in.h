@@ -16,6 +16,7 @@
 #define IN_IGNORED       0x8000
 #define IN_ISDIR         0x40000000
 #define IN_MASK_ADD      0x20000000
+#define IN_MASK_CREATE   0x10000000
 #define IN_MODIFY        2
 #define IN_MOVE          192
 #define IN_MOVED_FROM    0x40

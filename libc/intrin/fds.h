@@ -54,6 +54,7 @@ struct Fd {
   int evflags;       // EFD_SEMAPHORE
   int evpeer;        // eventfd off windows: the hidden socket end
   void *tftimer;     // timerfd off linux: its posix timer
+  void *inotify;     // inotify off linux: the watches and the queue
   void *epset;       // epoll on windows: the interest list
 };
 

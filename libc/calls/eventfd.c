@@ -10,6 +10,7 @@
 #include "libc/errno.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/efd.h"
 #include "libc/sysv/consts/f.h"
@@ -156,9 +157,11 @@ static ssize_t eventfd_write_pipe(int fd, struct Fd *f, uint64_t v) {
 }
 
 ssize_t __eventfd_read(int fd, void *buf, size_t size) {
+  struct Fd *f = __get_pib()->fds.p + fd;
+  if ((f->evflags & __EFD_INOTIFY) && _weaken(__inotify_read))
+    return _weaken(__inotify_read)(fd, f, buf, size);
   if (size < 8)
     return einval();
-  struct Fd *f = __get_pib()->fds.p + fd;
   if (IsWindows())
     return sys_read_eventfd_nt(f, buf);
   return eventfd_read_pipe(fd, f, buf);
@@ -196,17 +199,26 @@ int __eventfd_drain(int fd) {
 
 ssize_t __eventfd_write(int fd, const void *buf, size_t size) {
   uint64_t v;
+  struct Fd *f = __get_pib()->fds.p + fd;
+  if (f->evflags & __EFD_INOTIFY)
+    return ebadf();
   if (size < 8)
     return einval();
   memcpy(&v, buf, sizeof(v));
   if (v == 0xffffffffffffffffull)
     return einval();
-  struct Fd *f = __get_pib()->fds.p + fd;
   if (f->evflags & __EFD_TIMERFD)
     return einval();
   if (IsWindows())
     return sys_write_eventfd_nt(f, v);
   return eventfd_write_pipe(fd, f, v);
+}
+
+// the counter in the fd table on every host, for what rides on it
+int __eventfd_emu(unsigned initval, int flags) {
+  if (IsWindows())
+    return sys_eventfd_nt(initval, flags);
+  return sys_eventfd_pipe(initval, flags);
 }
 
 /**

@@ -267,8 +267,8 @@ scall	sys_keyctl		0xfffffffffffff0fa	0x0db	globl # no wrapper
 scall	sys_ioprio_set		0xfffffffffffff0fb	0x01e	globl
 scall	sys_ioprio_get		0xfffffffffffff0fc	0x01f	globl
 scall	sys_inotify_init	0xfffffffffffff0fd	0xfff	globl # no wrapper
-scall	sys_inotify_add_watch	0xfffffffffffff0fe	0xfff	globl # no wrapper
-scall	sys_inotify_rm_watch	0xfffffffffffff0ff	0xfff	globl # no wrapper
+scall	sys_inotify_add_watch	0xfffffffffffff0fe	0x01b	globl
+scall	sys_inotify_rm_watch	0xfffffffffffff0ff	0x01c	globl
 scall	__sys_openat		0x9d49419f329cf901	0x838	globl hidden # Linux 2.6.16+ (c. 2007)
 scall	__sys_openat_nc		0x1d41411f321d0101	0x038	globl hidden # openat_nocancel() on xnu
 scall	sys_mkdirat		0x1cd13e1f021db102	0x022	globl hidden
@@ -303,7 +303,7 @@ scall	__sys_pipe2		0x1c506521effff125	0x03b	globl hidden # Linux 2.6.27+
 scall	sys_epoll_pwait		0xfffffffffffff919	0x816	globl hidden
 scall	sys_epoll_create1	0xfffffffffffff123	0x014	globl hidden
 scall	sys_perf_event_open	0xfffffffffffff12a	0x0f1	globl # no wrapper
-scall	sys_inotify_init1	0xfffffffffffff126	0x01a	globl # no wrapper
+scall	sys_inotify_init1	0xfffffffffffff126	0x01a	globl
 scall	sys_tgsigqueueinfo	0xfffffffffffff129	0x0f0	globl # no wrapper; officially rt_tgsigqueueinfo on gnu/systemd
 scall	sys_signalfd		0xfffffffffffff11a	0xfff	globl # no wrapper
 scall	sys_signalfd4		0xfffffffffffff121	0x04a	globl # no wrapper
