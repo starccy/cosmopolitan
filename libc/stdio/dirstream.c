@@ -64,6 +64,8 @@
 #include "libc/zip.h"
 #include "libc/procfs/procfs.internal.h"
 
+textwindows static uint32_t GetVirtualRoots(void);
+
 /**
  * @fileoverview Directory Streams for Linux+Mac+Windows+FreeBSD+OpenBSD.
  *
@@ -111,6 +113,7 @@ struct dirstream {
       bool gotdot;
       bool gotdotdot;
       uint32_t drives;
+      uint32_t virts;
       struct NtWin32FindData windata;
       char16_t name16[PATH_MAX];
       uint32_t name16len;
@@ -177,8 +180,10 @@ textwindows dontinline static int fdopendir_nt(DIR *res, int fd) {
     char unixpath[PATH_MAX];
     if (__mkunixpath(res->name16, unixpath) == -1)
       return -1;
-    if ((res->isroot = (unixpath[0] == '/' && !unixpath[1])))
+    if ((res->isroot = (unixpath[0] == '/' && !unixpath[1]))) {
       res->drives = GetLogicalDrives();
+      res->virts = GetVirtualRoots();
+    }
   }
   if (res->name16len > 1 && res->name16[res->name16len - 1] != u'\\')
     res->name16[res->name16len++] = u'\\';
@@ -195,6 +200,21 @@ textwindows static uint8_t GetNtDirentType(struct NtWin32FindData *w) {
   if (w->dwFileAttributes & kNtFileAttributeDirectory)
     return DT_DIR;
   return DT_REG;
+}
+
+// the directories cosmo serves itself, which opendir("/") lists on
+// windows next to the drive letters, so a program that walks the tree
+// from the root finds them: /proc and /sys when the procfs emulation is
+// linked, /zip when the executable carries a zip store. a bit per name
+static const char kVirtualRoots[3][5] = {"proc", "sys", "zip"};
+
+textwindows static uint32_t GetVirtualRoots(void) {
+  uint32_t virts = 0;
+  if (_weaken(__procfs_open))
+    virts |= 1 | 2;
+  if (_weaken(__zipos_get) && _weaken(__zipos_get)())
+    virts |= 4;
+  return virts;
 }
 
 textwindows dontinline static struct dirent *readdir_nt(DIR *dir) {
@@ -228,6 +248,16 @@ TryAgain:
         dir->ent.d_name[1] = 0;
         dir->ent.d_type = DT_DIR;
         dir->ent.d_ino = (uint64_t)wst.nFileIndexHigh << 32 | wst.nFileIndexLow;
+        return &dir->ent;
+      }
+      if (dir->virts) {
+        // synthesize the directories cosmo serves itself
+        int index = bsf(dir->virts);
+        dir->virts &= ~(1u << index);
+        dir->ent.d_off = dir->index;
+        strcpy(dir->ent.d_name, kVirtualRoots[index]);
+        dir->ent.d_type = DT_DIR;
+        dir->ent.d_ino = 0x76697274 + index;
         return &dir->ent;
       }
       // UNIX always yields "." and ".."
@@ -321,6 +351,13 @@ GiveUpOnGettingInode:
     pretend_this_file_doesnt_exist = true;
   if (dir->isroot && tpr.ax == 1 && isalpha(dir->ent.d_name[0]))
     pretend_this_file_doesnt_exist = true;
+  // a real C:\proc is unreachable as /proc, which names the emulation;
+  // the synthesized entry stands for it
+  if (dir->isroot)
+    for (int i = 0; i < ARRAYLEN(kVirtualRoots); ++i)
+      if ((dir->virts & (1u << i)) &&
+          !strcasecmp(dir->ent.d_name, kVirtualRoots[i]))
+        pretend_this_file_doesnt_exist = true;
   dir->ent.d_type = GetNtDirentType(&dir->windata);
   dir->isdone = !FindNextFile(dir->hand, &dir->windata);
   if (pretend_this_file_doesnt_exist)
@@ -727,8 +764,10 @@ static void rewinddir_impl(DIR *dir) {
   } else {
     dir->gotdot = false;
     dir->gotdotdot = false;
-    if (dir->isroot)
+    if (dir->isroot) {
       dir->drives = GetLogicalDrives();
+      dir->virts = GetVirtualRoots();
+    }
     FindClose(dir->hand);
     if ((dir->hand = FindFirstFile(dir->name16, &dir->windata)) != -1) {
       dir->isdone = false;
