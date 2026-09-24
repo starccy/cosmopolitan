@@ -76,13 +76,13 @@ static char *_DescribeAccessMode(char buf[13], int amode) {
  * @raise ENOTDIR if a directory component in `path` exists as non-directory
  * @raise EILSEQ on Windows if `path` has bad utf-8 of control characters
  * @raise ENOENT if component of `path` doesn't exist or `path` is empty
- * @raise ENOTSUP if `path` is a zip file and `dirfd` isn't `AT_FDCWD`
  * @note on Linux `flags` is only supported on Linux 5.8+
  * @asyncsignalsafe
  */
 int faccessat(int dirfd, const char *path, int amode, int flags) {
   int e, rc;
   struct ZiposUri zipname;
+  char zbuf[ZIPOS_PATH_MAX + 8];
   if (kisdangerous(path)) {
     rc = efault();
   } else if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS)) ||
@@ -91,8 +91,9 @@ int faccessat(int dirfd, const char *path, int amode, int flags) {
   } else if (_weaken(__procfs_access) &&
              (rc = _weaken(__procfs_access)(dirfd, path, amode)) != -2) {
     // the /proc emulation answered
-  } else if (__isfdkind(dirfd, kFdZip)) {
-    rc = enotsup();
+  } else if (_weaken(__zipos_atpath) &&
+             !(path = _weaken(__zipos_atpath)(&dirfd, path, zbuf, sizeof(zbuf)))) {
+    rc = -1;
   } else if (_weaken(__zipos_open) &&
              _weaken(__zipos_parseuri)(path, &zipname) != -1) {
     rc = _weaken(__zipos_access)(&zipname, amode);

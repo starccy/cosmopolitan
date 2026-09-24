@@ -24,6 +24,7 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
+#include "libc/intrin/atomic.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
@@ -55,9 +56,17 @@ static int close_impl(int fd) {
   if (__vforked && !(IsWindows() || IsMetal()))
     return sys_close(fd);
 
-  // atomically close file descriptor table entry
+  // a plain unix descriptor keeps no state in the table. the kernel may
+  // hand its number to another thread the moment it is closed, and an
+  // inotify close can take a while in there, so the slot must not be
+  // marked reserved meanwhile: that thread's close of the same number
+  // would then come back EBADF without ever reaching the kernel
   int rc = 0;
   struct Fd *f = __get_pib()->fds.p + fd;
+  if (!(IsWindows() || IsMetal()) &&
+      atomic_load_explicit(&f->kind, memory_order_acquire) == kFdEmpty)
+    return sys_close(fd);
+  // atomically close file descriptor table entry
   if (IsWindows() && _weaken(__epoll_forget))
     _weaken(__epoll_forget)(fd);
   switch (atomic_exchange(&f->kind, kFdReserved)) {

@@ -56,6 +56,10 @@ int __zipos_access(struct ZiposUri *name, int amode) {
   if (amode & ~(R_OK | W_OK | X_OK)) {
     return einval();
   }
+  // the zip store is a read-only file system
+  if (amode & W_OK) {
+    return erofs();
+  }
   if (((amode & X_OK) && !(mode & 0111)) ||
       ((amode & W_OK) && !(mode & 0222)) ||
       ((amode & R_OK) && !(mode & 0444))) {

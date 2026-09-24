@@ -23,6 +23,7 @@
 #include "libc/cosmo.h"
 #include "libc/dce.h"
 #include "libc/fmt/conv.h"
+#include "libc/intrin/atomic.h"
 #include "libc/intrin/cmpxchg.h"
 #include "libc/intrin/promises.h"
 #include "libc/intrin/strace.h"
@@ -157,4 +158,10 @@ static void __zipos_init(void) {
 struct Zipos *__zipos_get(void) {
   cosmo_once(&__zipos_once, __zipos_init);
   return __zipos.cdir ? &__zipos : 0;
+}
+
+// whether __zipos_init() is running right now (cosmo_once's CALLING
+// state); the path lookups it makes must not come back into zipos
+bool __zipos_initializing(void) {
+  return atomic_load_explicit(&__zipos_once, memory_order_acquire) == 2;
 }

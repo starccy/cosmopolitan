@@ -30,6 +30,7 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/str/str.h"
 #include "libc/calls/calls.h"
+#include "libc/calls/struct/stat.h"
 #include "libc/procfs/procfs.internal.h"
 
 /**
@@ -99,6 +100,9 @@ static bool IsApeLoader(const char *s, size_t n) {
 ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
   char mybuf[1];
   ssize_t bytes;
+  struct stat st;
+  struct ZiposUri zipname;
+  char zbuf[ZIPOS_PATH_MAX + 8];
   if (IsLinux() && !bufsiz) {
     // the linux kernel will einval if bufsiz is zero. linux is the only
     // os that does this. it's much simpler if we reserve einval for the
@@ -112,10 +116,17 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
              (bytes = _weaken(__procfs_readlink)(dirfd, path, buf, bufsiz)) !=
                  -2) {
     // the /proc emulation answered
-  } else if (_weaken(__zipos_notat) &&
-             (bytes = __zipos_notat(dirfd, path)) == -1) {
-    STRACE("TODO: zipos support for readlinkat");
-    bytes = einval();
+  } else if (_weaken(__zipos_atpath) &&
+             !(path = _weaken(__zipos_atpath)(&dirfd, path, zbuf, sizeof(zbuf)))) {
+    bytes = -1;
+  } else if (_weaken(__zipos_stat) &&
+             _weaken(__zipos_parseuri)(path, &zipname) != -1) {
+    // the zip store has no symbolic links
+    if (!_weaken(__zipos_stat)(&zipname, &st)) {
+      bytes = einval();
+    } else {
+      bytes = -1;
+    }
   } else if (!IsWindows()) {
     bytes = sys_readlinkat(__dirfd2host(dirfd), path, buf, bufsiz);
     // on linux the kernel names the file it exec'd, which is the ape
