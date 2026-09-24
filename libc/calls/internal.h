@@ -26,10 +26,16 @@ void __printfds(struct Fd *, size_t);
 int __sigcheck(sigset_t, bool);
 struct Fd;
 #define __EFD_TIMERFD 0x10000  // evflags: the eventfd is a timerfd
+#define __EFD_INOTIFY 0x20000  // evflags: the eventfd is an inotify
 uint64_t __eventfd_take(struct Fd *);
 int __eventfd_post(int, uint64_t);
 int __eventfd_drain(int);
 void __timerfd_close(struct Fd *);
+int __eventfd_emu(unsigned, int);
+int __eventfd_wait_nt(int64_t, sigset_t);
+ssize_t __inotify_read(int, struct Fd *, void *, size_t);
+void __inotify_ref(struct Fd *);
+void __inotify_close(struct Fd *);
 bool __eventfd_add(struct Fd *, uint64_t, bool *);
 ssize_t __eventfd_read(int, void *, size_t);
 ssize_t __eventfd_write(int, const void *, size_t);

@@ -48,7 +48,7 @@ textwindows int sys_eventfd_nt(unsigned initval, int flags) {
 
 // blocks until the event is signaled, a signal handler ran without
 // SA_RESTART, or the thread is canceled. 0 to look again, -1 w/ errno
-textwindows static int WaitForEventFd(int64_t h, sigset_t waitmask) {
+textwindows int __eventfd_wait_nt(int64_t h, sigset_t waitmask) {
   intptr_t sev;
   if (!(sev = __interruptible_start(waitmask)))
     return __winerr();
@@ -94,7 +94,7 @@ textwindows ssize_t sys_read_eventfd_nt(struct Fd *f, void *buf) {
       rc = eagain();
       break;
     }
-    if (WaitForEventFd(f->handle, m) == -1) {
+    if (__eventfd_wait_nt(f->handle, m) == -1) {
       rc = -1;
       break;
     }

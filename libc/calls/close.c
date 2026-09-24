@@ -82,8 +82,12 @@ static int close_impl(int fd) {
         rc = _weaken(__zipos_close)(fd);
       break;
     case kFdEvent:
-      if ((f->evflags & __EFD_TIMERFD) && _weaken(__timerfd_close))
-        _weaken(__timerfd_close)(f);
+      if (!__vforked) {
+        if ((f->evflags & __EFD_TIMERFD) && _weaken(__timerfd_close))
+          _weaken(__timerfd_close)(f);
+        if ((f->evflags & __EFD_INOTIFY) && _weaken(__inotify_close))
+          _weaken(__inotify_close)(f);
+      }
       if (IsWindows()) {
         if (!__vforked || f->was_created_during_vfork)
           if (!CloseHandle(f->handle))

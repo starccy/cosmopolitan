@@ -173,6 +173,12 @@ void MapGenericMask(uint32_t *AccessMask,
 
 int64_t FindFirstFile(const char16_t *lpFileName,
                       struct NtWin32FindData *out_lpFindFileData);
+bool32 ReadDirectoryChangesW(int64_t hDirectory, void *out_lpBuffer,
+                             uint32_t nBufferLength, bool32 bWatchSubtree,
+                             uint32_t dwNotifyFilter,
+                             uint32_t *opt_out_lpBytesReturned,
+                             struct NtOverlapped *opt_inout_lpOverlapped,
+                             void *opt_lpCompletionRoutine);
 int64_t FindFirstFileEx(const char16_t *lpFileName, int fInfoLevelId,
                         void *out_lpFindFileData, int fSearchOp,
                         void *reserved_lpSearchFilter,

@@ -239,6 +239,7 @@ imp	'ReadConsoleInput'					ReadConsoleInputW					kernel32	4
 imp	'ReadConsoleOutput'					ReadConsoleOutputW					kernel32	5
 imp	'ReadConsoleOutputAttribute'				ReadConsoleOutputAttribute				kernel32	5
 imp	'ReadConsoleOutputCharacter'				ReadConsoleOutputCharacterW				kernel32	5
+imp	'ReadDirectoryChangesW'					ReadDirectoryChangesW					kernel32	8
 imp	'ReadFile'						ReadFile						kernel32	5
 imp	'ReadFileEx'						ReadFileEx						kernel32	5
 imp	'ReadFileScatter'					ReadFileScatter						kernel32	5
