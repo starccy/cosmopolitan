@@ -71,6 +71,16 @@ i32 sys_mkdirat(i32, const char *, u32);
 i32 sys_mkfifo(const char *, u32);
 i32 sys_mknod(const char *, u32, u64);
 i32 sys_mknodat(i32, const char *, u32, u64);
+struct itimerspec;
+struct rlimit;
+i32 sys_eventfd2(u32, i32);
+i32 sys_prlimit(i32, i32, const struct rlimit *, struct rlimit *);
+i32 sys_sethostname(const char *, u64);
+i64 sys_tee(i32, i32, u64, u32);
+i32 sys_timerfd_create(i32, i32);
+i32 sys_timerfd_gettime(i32, struct itimerspec *);
+i32 sys_timerfd_settime(i32, i32, const struct itimerspec *,
+                        struct itimerspec *);
 i32 sys_mprotect(void *, u64, i32);
 i32 sys_msync(void *, u64, i32);
 i32 sys_munmap(void *, u64);
