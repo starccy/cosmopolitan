@@ -18,6 +18,8 @@ int __unixtodospath(const char *, char *, size_t) libcesque;
 int __mkntpath(const char *, char16_t[static PATH_MAX]) libcesque;
 int __mkntpathat(int, const char *, char16_t[static 1024]) libcesque;
 int __mkunixpath(const char16_t *, char[static PATH_MAX]) libcesque;
+int __unc_fixpath(const char *, char *, size_t);
+int __unc_cwd(char *, size_t);
 int __readntsym(intptr_t, char[static PATH_MAX], uint32_t *) libcesque;
 int sys_fcntl_nt_setfl(struct Fd *, unsigned) libcesque;
 int sys_pause_nt(void) libcesque;

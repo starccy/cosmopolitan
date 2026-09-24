@@ -95,6 +95,9 @@ dontinline textwindows static int sys_getcwd_nt(char *buf, size_t size) {
   int n8 = __mkunixpath(p16, p8);
   if (n8 == -1)
     return -1;
+  int m = __unc_cwd(p8, PATH_MAX);
+  if (m > 0)
+    n8 = m - 1;
   if (_weaken(__ape_shim_getcwd_hook)) {
     int m = _weaken(__ape_shim_getcwd_hook)(p8, PATH_MAX);
     if (m > 0)
