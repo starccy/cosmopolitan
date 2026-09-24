@@ -24,6 +24,7 @@
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/strace.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -50,7 +51,7 @@ int symlinkat(const char *target, int newdirfd, const char *linkpath) {
   } else if (!*target || !*linkpath) {
     rc = enoent();
   } else if (!IsWindows()) {
-    rc = sys_symlinkat(target, newdirfd, linkpath);
+    rc = sys_symlinkat(target, __dirfd2host(newdirfd), linkpath);
   } else {
     rc = sys_symlinkat_nt(target, newdirfd, linkpath);
   }

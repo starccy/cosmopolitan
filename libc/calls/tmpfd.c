@@ -77,7 +77,7 @@ int tmpfd(void) {
   char path[PATH_MAX + 1];
   if (IsLinux()) {
     e = errno;
-    if ((fd = open(__get_tmpdir(), O_RDWR | _O_TMPFILE | O_DIRECTORY, 0600)) !=
+    if ((fd = open(__get_tmpdir(), O_RDWR | O_TMPFILE, 0600)) !=
         -1) {
       return fd;
     } else {

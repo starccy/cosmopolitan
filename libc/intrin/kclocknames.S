@@ -18,13 +18,18 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/fmt/magnumstrs.internal.h"
 #include "libc/macros.h"
+#include "libc/sysv/consts/clock.h"
 
 	.macro	.e e s
-	.long	\e - kClockNames
+	.long	.Lv\@ - kClockNames
 	.long	.L\@ - kClockNames
 	.rodata.str1.1
 .L\@:	.string	"\s"
 	.previous
+	.pushsection .rodata.kClockValues,"a",@progbits
+	.balign	4
+.Lv\@:	.long	\e
+	.popsection
 	.endm
 
 	.section .rodata,"a",@progbits

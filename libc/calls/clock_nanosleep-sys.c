@@ -25,6 +25,7 @@
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/thread/thread.h"
 
@@ -33,7 +34,7 @@ int sys_clock_nanosleep(int clock, int flags,  //
   int rc;
   BEGIN_CANCELATION_POINT;
   if (IsLinux() || IsFreebsd() || IsNetbsd()) {
-    rc = __sys_clock_nanosleep(clock, flags, req, rem);
+    rc = __sys_clock_nanosleep(__clock2host(clock), flags, req, rem);
   } else if (IsXnu()) {
     rc = sys_clock_nanosleep_xnu(clock, flags, req, rem);
   } else if (IsOpenbsd()) {

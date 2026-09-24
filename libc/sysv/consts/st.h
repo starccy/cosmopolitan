@@ -1,32 +1,17 @@
 #ifndef COSMOPOLITAN_LIBC_SYSV_CONSTS_ST_H_
 #define COSMOPOLITAN_LIBC_SYSV_CONSTS_ST_H_
-COSMOPOLITAN_C_START_
 
-extern const int ST_APPEND;
-extern const int ST_IMMUTABLE;
-extern const int ST_MANDLOCK;
-extern const int ST_NOATIME;
-extern const int ST_NODEV;
-extern const int ST_NODIRATIME;
-extern const int ST_NOEXEC;
-extern const int ST_NOSUID;
-extern const int ST_RDONLY;
-extern const int ST_RELATIME;
-extern const int ST_SYNCHRONOUS;
-extern const int ST_WRITE;
+#define ST_RDONLY      0x0001
+#define ST_NOSUID      0x0002
+#define ST_NODEV       0x0004
+#define ST_NOEXEC      0x0008
+#define ST_SYNCHRONOUS 0x0010
+#define ST_MANDLOCK    0x0040
+#define ST_WRITE       0x0080
+#define ST_APPEND      0x0100
+#define ST_IMMUTABLE   0x0200
+#define ST_NOATIME     0x0400
+#define ST_NODIRATIME  0x0800
+#define ST_RELATIME    0x1000
 
-#define ST_APPEND      ST_APPEND
-#define ST_IMMUTABLE   ST_IMMUTABLE
-#define ST_MANDLOCK    ST_MANDLOCK
-#define ST_NOATIME     ST_NOATIME
-#define ST_NODEV       ST_NODEV
-#define ST_NODIRATIME  ST_NODIRATIME
-#define ST_NOEXEC      ST_NOEXEC
-#define ST_NOSUID      ST_NOSUID
-#define ST_RDONLY      ST_RDONLY
-#define ST_RELATIME    ST_RELATIME
-#define ST_SYNCHRONOUS ST_SYNCHRONOUS
-#define ST_WRITE       ST_WRITE
-
-COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_ST_H_ */

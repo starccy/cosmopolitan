@@ -21,6 +21,8 @@
 #include "libc/calls/struct/rusage.internal.h"
 #include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/dce.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/errfuns.h"
 
 static int sys_wait4_wstatus2linux(int ws) {
   // translate wait status
@@ -41,6 +43,8 @@ static int sys_wait4_wstatus2linux(int ws) {
 int sys_wait4(int pid, int *opt_out_wstatus, int options,
               struct rusage *opt_out_rusage) {
   int rc;
+  if ((options = __wait2host(options)) == -1)
+    return einval();
   if ((rc = __sys_wait4(pid, opt_out_wstatus, options, opt_out_rusage)) != -1) {
     if (opt_out_rusage)
       __rusage2linux(opt_out_rusage);

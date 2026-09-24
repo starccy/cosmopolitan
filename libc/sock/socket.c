@@ -22,6 +22,7 @@
 #include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -43,10 +44,11 @@ int socket(int family, int type, int protocol) {
   int rc;
   if (family == AF_UNSPEC)
     family = AF_INET;
-  if (family == -1) {
+  int hfam = __af2host(family);
+  if (hfam == -1) {
     rc = eafnosupport();
   } else if (!IsWindows()) {
-    rc = sys_socket(family, type, protocol);
+    rc = sys_socket(hfam, type, protocol);
   } else {
     rc = sys_socket_nt(family, type, protocol);
   }

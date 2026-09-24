@@ -29,6 +29,7 @@
 #include "libc/sock/struct/linger.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
@@ -36,6 +37,9 @@
 #if SupportsWindows()
 
 __msabi extern typeof(__sys_getsockopt_nt) *const __imp_getsockopt;
+
+__HOSTCONST(int, SOL_SOCKET);
+__HOSTCONST(int, SO_ERROR);
 
 textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
                                   void *out_opt_optval,
@@ -55,7 +59,8 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
       return einval();
     int err;
     uint32_t len = sizeof(err);
-    if (__imp_getsockopt(fd->handle, SOL_SOCKET, SO_ERROR, &err, &len) == -1)
+    if (__imp_getsockopt(fd->handle, __host_SOL_SOCKET, __host_SO_ERROR, &err,
+                         &len) == -1)
       return __winsockerr();
     *(int *)out_opt_optval = __errno_windows2linux(err);
     *inout_optlen = sizeof(int);
@@ -76,8 +81,12 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
     return 0;
   }
 
+  int hopt = __sockopt2host(level, optname);
+  if (!hopt)
+    return enoprotoopt();
+
   // TODO(jart): Use WSAIoctl?
-  if (__imp_getsockopt(fd->handle, level, optname, out_opt_optval,
+  if (__imp_getsockopt(fd->handle, __sol2host(level), hopt, out_opt_optval,
                        inout_optlen) == -1)
     return __winsockerr();
 

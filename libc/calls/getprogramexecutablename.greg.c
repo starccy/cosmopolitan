@@ -35,6 +35,7 @@
 #include "libc/serialize.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/ok.h"
 
 #ifdef __x86_64__
@@ -119,7 +120,7 @@ static int TryPath(const char *q) {
     return 0;
   if (!CopyWithCwd(q, g_prog.u.buf, g_prog.u.buf + sizeof(g_prog.u.buf)))
     return 0;
-  return !sys_faccessat(AT_FDCWD, g_prog.u.buf, F_OK, 0);
+  return !sys_faccessat(__dirfd2host(AT_FDCWD), g_prog.u.buf, F_OK, 0);
 }
 
 // if the loader passed a relative path, prepend cwd to it.
@@ -187,8 +188,9 @@ static inline void InitProgramExecutableNameImpl(void) {
     }
   }
   if (IsLinux()) {
-    if ((got = sys_readlinkat(AT_FDCWD, "/proc/self/exe", b, n)) > 0 ||
-        (got = sys_readlinkat(AT_FDCWD, "/proc/curproc/file", b, n)) > 0) {
+    if ((got = sys_readlinkat(__dirfd2host(AT_FDCWD), "/proc/self/exe", b, n)) > 0 ||
+        (got = sys_readlinkat(__dirfd2host(AT_FDCWD), "/proc/curproc/file", b,
+                              n)) > 0) {
       b[got] = 0;
       if (!OldApeLoader(b)) {
         goto UseBuf;

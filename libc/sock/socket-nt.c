@@ -19,6 +19,7 @@
 #include "libc/calls/internal.h"
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/sock.h"
 #if SupportsWindows()
@@ -40,7 +41,7 @@ textwindows int sys_socket_nt(int family, int type, int protocol) {
   if (fd == -1)
     return -1;
   truetype = type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK);
-  if ((h = WSASocket(family, truetype, protocol, NULL, 0,
+  if ((h = WSASocket(__af2host(family), truetype, protocol, NULL, 0,
                      kNtWsaFlagOverlapped)) != -1) {
     oflags = O_RDWR;
     if (type & SOCK_CLOEXEC)

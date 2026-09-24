@@ -27,6 +27,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/runtime/zipos.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 int sys_fchmodat_linux(int, const char *, unsigned, int);
@@ -66,9 +67,11 @@ int sys_fchmodat2(int, const char *, unsigned, int);
  * @see fchmod()
  */
 int fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
-  int rc;
+  int rc, hflags;
   if (kisdangerous(path)) {
     rc = efault();
+  } else if ((hflags = __at2host(flags)) == -1) {
+    rc = einval();
   } else if (_weaken(__zipos_notat) &&
              (rc = __zipos_notat(dirfd, path)) == -1) {
     rc = erofs();
@@ -83,7 +86,7 @@ int fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
         ALLOW_CANCELATION;
       }
     } else {
-      rc = sys_fchmodat(dirfd, path, mode, flags);
+      rc = sys_fchmodat(__dirfd2host(dirfd), path, mode, hflags);
     }
   } else {
     rc = sys_fchmodat_nt(dirfd, path, mode, flags);

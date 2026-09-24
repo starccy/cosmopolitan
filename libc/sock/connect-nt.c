@@ -36,6 +36,7 @@
 #include "libc/sysv/consts/fio.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/poll.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
@@ -49,6 +50,9 @@
 __msabi extern typeof(__sys_getsockopt_nt) *const __imp_getsockopt;
 __msabi extern typeof(__sys_ioctlsocket_nt) *const __imp_ioctlsocket;
 __msabi extern typeof(__sys_select_nt) *const __imp_select;
+
+__HOSTCONST(int, SOL_SOCKET);
+__HOSTCONST(int, SO_ERROR);
 
 textwindows static int sys_connect_nt_impl(struct Fd *f, const void *addr,
                                            uint32_t addrsize,
@@ -65,17 +69,20 @@ textwindows static int sys_connect_nt_impl(struct Fd *f, const void *addr,
 
   // winsock requires bind() be called beforehand
   if (!f->isbound) {
-    struct sockaddr_storage ss = {0};
-    ss.ss_family = ((struct sockaddr *)addr)->sa_family;
-    if (sys_bind_nt(f, &ss, sizeof(ss)) == -1)
+    struct sockaddr_storage any = {0};
+    any.ss_family = ((struct sockaddr *)addr)->sa_family;
+    if (sys_bind_nt(f, &any, sizeof(any)) == -1)
       return -1;
   }
+
+  struct sockaddr_storage ss;
+  addr = __sockaddr2nt(addr, addrsize, &ss);
 
   if (f->connecting == UNCONNECTED) {
 
     // make sure winsock is in non-blocking mode
     uint32_t mode = 1;
-    if (__imp_ioctlsocket(f->handle, FIONBIO, &mode))
+    if (__imp_ioctlsocket(f->handle, __ioctl2host(FIONBIO), &mode))
       return __winsockerr();
 
     // perform non-blocking connect
@@ -164,7 +171,8 @@ textwindows static int sys_connect_nt_impl(struct Fd *f, const void *addr,
     if (exfds.fd_count) {
       int err;
       uint32_t len = sizeof(err);
-      if (__imp_getsockopt(f->handle, SOL_SOCKET, SO_ERROR, &err, &len) == -1)
+      if (__imp_getsockopt(f->handle, __host_SOL_SOCKET, __host_SO_ERROR, &err,
+                           &len) == -1)
         return __winsockerr();
       if (!err)
         return eio();  // should be impossible

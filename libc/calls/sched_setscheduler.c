@@ -23,6 +23,7 @@
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/thread/tls.h"
 
@@ -84,11 +85,14 @@ int sched_setscheduler(int pid, int policy, const struct sched_param *param) {
   }
 
   if (rc != -1) {
-    old = rc;
-    if (IsNetbsd()) {
-      rc = sys_sched_setparam_netbsd(pid, P_ALL_LWPS, policy, param);
+    old = __sched2linux(rc);
+    if (__sched2host(policy) == 127) {
+      rc = einval();
+    } else if (IsNetbsd()) {
+      rc = sys_sched_setparam_netbsd(pid, P_ALL_LWPS, __sched2host(policy),
+                                     param);
     } else {
-      rc = sys_sched_setscheduler(pid, policy, param);
+      rc = sys_sched_setscheduler(pid, __sched2host(policy), param);
     }
     if (rc != -1) {
       rc = old;

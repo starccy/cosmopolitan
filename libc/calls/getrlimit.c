@@ -35,6 +35,9 @@ static int getrlimit_impl(int resource, struct rlimit *rlim) {
     return einval();
   if (kisdangerous(rlim))
     return efault();
+  // the resources past RLIMIT_AS only exist on linux
+  if (IsBsd() && resource > RLIMIT_AS)
+    return einval();
 
   // if it's not unix or not working then we're done
   if (IsWindows() || IsMetal() || (IsXnu() && resource == RLIMIT_AS)) {

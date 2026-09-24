@@ -26,9 +26,12 @@
 #include "libc/macros.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/syslib.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/ss.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/thread/tls.h"
+
+__HOSTCONST(int, SS_DISABLE);
 
 static void sigaltstack2bsd(struct sigaltstack_bsd *bsd,
                             const struct sigaltstack *linux) {
@@ -39,7 +42,9 @@ static void sigaltstack2bsd(struct sigaltstack_bsd *bsd,
   flags = linux->ss_flags;
   size = linux->ss_size;
   bsd->ss_sp = sp;
-  bsd->ss_flags = flags;
+  bsd->ss_flags = flags & SS_ONSTACK;
+  if (flags & SS_DISABLE)
+    bsd->ss_flags |= __host_SS_DISABLE;
   bsd->ss_size = size;
 }
 
@@ -52,7 +57,9 @@ static void sigaltstack2linux(struct sigaltstack *linux,
   flags = bsd->ss_flags;
   size = bsd->ss_size;
   linux->ss_sp = sp;
-  linux->ss_flags = flags;
+  linux->ss_flags = flags & SS_ONSTACK;
+  if (flags & __host_SS_DISABLE)
+    linux->ss_flags |= SS_DISABLE;
   linux->ss_size = size;
 }
 

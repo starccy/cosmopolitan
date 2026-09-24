@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/atomic.h"
 #include "libc/sysv/consts/clock.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/thread/freebsd.internal.h"
 
 int sys_umtx_timedwait_uint_cp(atomic_int *, int, int, size_t,
@@ -32,7 +33,7 @@ int sys_umtx_timedwait_uint(atomic_int *p, int expect, bool pshare, int clock,
     tm_p = 0;
     size = 0;
   } else {
-    timo._clockid = clock;
+    timo._clockid = __clock2host(clock);
     timo._flags = UMTX_ABSTIME;
     timo._timeout = *abstime;
     tm_p = &timo;

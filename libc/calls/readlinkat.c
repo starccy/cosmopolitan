@@ -26,6 +26,7 @@
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/stdio/sysparam.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/str/str.h"
 #include "libc/calls/calls.h"
@@ -121,7 +122,7 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
     STRACE("TODO: zipos support for readlinkat");
     bytes = einval();
   } else if (!IsWindows()) {
-    bytes = sys_readlinkat(dirfd, path, buf, bufsiz);
+    bytes = sys_readlinkat(__dirfd2host(dirfd), path, buf, bufsiz);
     // on linux the kernel names the file it exec'd, which is the ape
     // loader when an ape is run through one. a program locating itself
     // this way would re-exec, self-update or find its resources next to

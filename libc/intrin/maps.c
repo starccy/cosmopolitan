@@ -37,6 +37,7 @@
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/stack.h"
 #include "libc/runtime/syslib.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/map.h"
 #include "libc/sysv/consts/prot.h"
 #include "libc/thread/posixthread.internal.h"
@@ -150,13 +151,14 @@ static void *__maps_valloc(void *addr, size_t size) {
   // MacOS and Windows have bottom-up allocators, so they're unlikely
   // to interfere with our top down allocation style.
   if (IsXnuSilicon()) {
-    res = (void *)_sysret(__syslib->__mmap(0, size, PROT_READ | PROT_WRITE,
-                                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    res = (void *)_sysret(
+        __syslib->__mmap(0, size, PROT_READ | PROT_WRITE,
+                         __mmap2host(MAP_PRIVATE | MAP_ANONYMOUS), -1, 0));
   } else if (IsWindows()) {
     res = VirtualAlloc(0, size, kNtMemReserve | kNtMemCommit, kNtPageReadwrite);
   } else {
     res = __sys_mmap(addr, size, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0, 0);
+                     __mmap2host(MAP_PRIVATE | MAP_ANONYMOUS), -1, 0, 0);
   }
   if (res == MAP_FAILED)
     res = 0;

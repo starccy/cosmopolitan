@@ -52,7 +52,7 @@ textwindows int tcgetattr_nt(int fd, struct termios *tio) {
   memcpy(tio->c_cc, __ttyconf.c_cc, NCCS);
   tio->c_iflag = IUTF8;
   tio->c_lflag = ECHOE;
-  tio->c_cflag = CS8 | CREAD;
+  tio->c_cflag = CS8 | CREAD | B38400;
   tio->_c_ispeed = B38400;
   tio->_c_ospeed = B38400;
 

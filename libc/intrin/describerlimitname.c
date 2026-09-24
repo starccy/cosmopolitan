@@ -46,6 +46,18 @@ const char *_DescribeRlimitName(char buf[20], int resource) {
       return "RLIMIT_MEMLOCK";
     case RLIMIT_AS:
       return "RLIMIT_AS";
+    case RLIMIT_LOCKS:
+      return "RLIMIT_LOCKS";
+    case RLIMIT_SIGPENDING:
+      return "RLIMIT_SIGPENDING";
+    case RLIMIT_MSGQUEUE:
+      return "RLIMIT_MSGQUEUE";
+    case RLIMIT_NICE:
+      return "RLIMIT_NICE";
+    case RLIMIT_RTPRIO:
+      return "RLIMIT_RTPRIO";
+    case RLIMIT_RTTIME:
+      return "RLIMIT_RTTIME";
     default:
       FormatInt32(buf, resource);
       return buf;

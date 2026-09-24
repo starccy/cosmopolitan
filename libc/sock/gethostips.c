@@ -28,6 +28,7 @@
 #include "libc/sock/sock.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/ipproto.h"
 #include "libc/sysv/consts/sio.h"
 #include "libc/sysv/consts/sock.h"
@@ -45,7 +46,7 @@ static uint32_t *GetUnixIps(void) {
   b = malloc(z);
   memcpy(c, &z, 8);
   memcpy(c + (IsXnu() ? 4 : 8), &b, 8);
-  if (sys_ioctl(fd, SIOCGIFCONF, &c) != -1) {
+  if (sys_ioctl(fd, __ioctl2host(SIOCGIFCONF), &c) != -1) {
     for (p = b, e = p + MIN(z, READ32LE(c)); p + 16 + 16 <= e;
          p += IsBsd() ? 16 + MAX(16, p[16] & 255) : 40) {
       if ((p[IsBsd() ? 17 : 16] & 255) != AF_INET)

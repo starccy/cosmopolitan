@@ -21,19 +21,8 @@
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
-#define CBAUD   0x100f
-#define CBAUDEX 0x1000
-
-/**
- * Returns input baud rate.
- * @asyncsignalsafe
- */
 uint32_t cfgetispeed(const struct termios *t) {
-  if (IsLinux()) {
-    return t->c_cflag & CBAUD;
-  } else {
-    return t->_c_ispeed;
-  }
+  return t->c_cflag & CBAUD;
 }
 
 /**
@@ -41,11 +30,7 @@ uint32_t cfgetispeed(const struct termios *t) {
  * @asyncsignalsafe
  */
 uint32_t cfgetospeed(const struct termios *t) {
-  if (IsLinux()) {
-    return t->c_cflag & CBAUD;
-  } else {
-    return t->_c_ospeed;
-  }
+  return t->c_cflag & CBAUD;
 }
 
 /**
@@ -57,18 +42,11 @@ uint32_t cfgetospeed(const struct termios *t) {
  * @asyncsignalsafe
  */
 int cfsetospeed(struct termios *t, uint32_t speed) {
-  if (IsLinux()) {
-    if (!(speed & ~CBAUD)) {
-      t->c_cflag &= ~CBAUD;
-      t->c_cflag |= speed;
-      return 0;
-    } else {
-      return einval();
-    }
-  } else {
-    t->_c_ospeed = speed;
-    return 0;
-  }
+  if (speed & ~CBAUD)
+    return einval();
+  t->c_cflag &= ~CBAUD;
+  t->c_cflag |= speed;
+  return 0;
 }
 
 /**
@@ -80,16 +58,7 @@ int cfsetospeed(struct termios *t, uint32_t speed) {
  * @asyncsignalsafe
  */
 int cfsetispeed(struct termios *t, uint32_t speed) {
-  if (IsLinux()) {
-    if (speed) {
-      return cfsetospeed(t, speed);
-    } else {
-      return 0;
-    }
-  } else {
-    t->_c_ispeed = speed;
-    return 0;
-  }
+  return speed ? cfsetospeed(t, speed) : 0;
 }
 
 /**

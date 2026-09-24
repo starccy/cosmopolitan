@@ -109,10 +109,13 @@ int __xoflags(int flags) {
     }
     if ((flags & O_SYNC) == O_SYNC)
       flags2 |= 0x00000080;
-    if (flags & _O_PATH)
-      return einval();
+    // a plain open, minus the ability to reach a file the caller can't
+    // read; better than failing callers that chose O_PATH at compile time
+    if (flags & _O_PATH) {
+      // do nothing
+    }
     if (flags & _O_TMPFILE)
-      return einval();
+      return enotsup();
   }
 
   return flags2;

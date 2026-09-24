@@ -19,11 +19,12 @@
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/sock/internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/sock.h"
 
 int sys_socketpair(int family, int type, int protocol, int sv[2]) {
   int e = errno;
-  if (__sys_socketpair(family, type, protocol, sv) != -1)
+  if (__sys_socketpair(family, __socktype2host(type), protocol, sv) != -1)
     return 0;
   if ((type & (SOCK_CLOEXEC | SOCK_NONBLOCK)) &&
       (errno == EINVAL || errno == EPROTOTYPE || errno == EPROTONOSUPPORT)) {

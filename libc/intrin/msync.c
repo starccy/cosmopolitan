@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/msync.h"
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
@@ -75,13 +76,9 @@ int msync(void *addr, size_t size, int flags) {
     if (sysflags == (MS_ASYNC | MS_INVALIDATE))
       sysflags = MS_INVALIDATE;
 
-  // FreeBSD specifies MS_SYNC as 0 so we shift the Cosmo constants
-  if (IsFreebsd())
-    sysflags >>= 1;
-
   BEGIN_CANCELATION_POINT;
   if (!IsWindows()) {
-    rc = sys_msync(addr, size, sysflags);
+    rc = sys_msync(addr, size, __msync2host(sysflags));
   } else {
     rc = sys_msync_nt(addr, size, sysflags);
   }

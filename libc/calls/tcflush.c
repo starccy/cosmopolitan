@@ -30,6 +30,7 @@
 #include "libc/nt/comms.h"
 #include "libc/nt/console.h"
 #include "libc/sysv/consts/fileno.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
@@ -39,6 +40,10 @@
 
 #define kNtPurgeTxclear 4
 #define kNtPurgeRxclear 8
+
+__HOSTCONST(int, TCIFLUSH);
+__HOSTCONST(int, TCOFLUSH);
+__HOSTCONST(int, TCIOFLUSH);
 
 static const char *DescribeFlush(char buf[12], int action) {
   if (action == TCIFLUSH)
@@ -90,7 +95,10 @@ int tcflush(int fd, int queue) {
   } else if (IsLinux()) {
     rc = sys_ioctl(fd, TCFLSH, queue);
   } else if (IsBsd()) {
-    rc = sys_ioctl(fd, TIOCFLUSH, &queue);
+    int host = queue == TCIFLUSH    ? __host_TCIFLUSH
+               : queue == TCOFLUSH ? __host_TCOFLUSH
+                                   : __host_TCIOFLUSH;
+    rc = sys_ioctl(fd, TIOCFLUSH, &host);
   } else if (IsWindows()) {
     rc = sys_tcflush_nt(fd, queue);
   } else {

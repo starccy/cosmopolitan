@@ -25,6 +25,7 @@
 #include "libc/limits.h"
 #include "libc/macros.h"
 #include "libc/nt/enum/fsinformationclass.h"
+#include "libc/nt/enum/statfs.h"
 #include "libc/nt/enum/status.h"
 #include "libc/nt/files.h"
 #include "libc/nt/ntdll.h"
@@ -32,6 +33,7 @@
 #include "libc/nt/struct/filefsfullsizeinformation.h"
 #include "libc/nt/struct/iostatusblock.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/st.h"
 #include "libc/sysv/errfuns.h"
 
 textwindows int sys_fstatfs_nt(int64_t handle, struct statfs *f) {
@@ -70,7 +72,7 @@ textwindows int sys_fstatfs_nt(int64_t handle, struct statfs *f) {
   f->f_fstypename[j] = 0;
   f->f_type = h;
   f->f_fsid = (fsid_t){{VolumeSerialNumber}};
-  f->f_flags = FileSystemFlags;
+  f->f_flags = FileSystemFlags & kNtFileReadOnlyVolume ? ST_RDONLY : 0;
   f->f_bsize = fs.BytesPerSector;
   f->f_bsize *= fs.SectorsPerAllocationUnit;
   f->f_frsize = f->f_bsize;

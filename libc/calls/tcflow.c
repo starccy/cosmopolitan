@@ -28,6 +28,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/mem/alloca.h"
 #include "libc/nt/comms.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
@@ -39,6 +40,11 @@
 #define TIOCSTART 0x2000746e  // bsd
 #define TIOCIXON  0x20007481  // xnu
 #define TIOCIXOFF 0x20007480  // xnu
+
+__HOSTCONST(unsigned long, TCGETS);
+__HOSTCONST(int, VSTART);
+__HOSTCONST(int, VSTOP);
+__HOSTCONST(int, _POSIX_VDISABLE);
 
 static const char *DescribeFlow(char buf[12], int action) {
   if (action == TCOOFF)
@@ -56,10 +62,10 @@ static const char *DescribeFlow(char buf[12], int action) {
 static int sys_tcflow_bsd_write(int fd, int cc) {
   unsigned char c;
   struct termios_bsd term;
-  if (sys_ioctl(fd, TCGETS, &term) == -1) {
+  if (sys_ioctl(fd, __host_TCGETS, &term) == -1) {
     return -1;
   }
-  if ((c = term.c_cc[cc]) != _POSIX_VDISABLE &&
+  if ((c = term.c_cc[cc]) != __host__POSIX_VDISABLE &&
       sys_write(fd, &c, sizeof(c)) == -1) {
     return -1;
   }
@@ -76,13 +82,13 @@ static int sys_tcflow_bsd(int fd, int action) {
       if (IsXnu()) {
         return sys_ioctl(fd, TIOCIXON, 0);
       } else {
-        return sys_tcflow_bsd_write(fd, VSTART);
+        return sys_tcflow_bsd_write(fd, __host_VSTART);
       }
     case TCIOFF:
       if (IsXnu()) {
         return sys_ioctl(fd, TIOCIXOFF, 0);
       } else {
-        return sys_tcflow_bsd_write(fd, VSTOP);
+        return sys_tcflow_bsd_write(fd, __host_VSTOP);
       }
       return 0;
     default:

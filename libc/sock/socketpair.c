@@ -20,6 +20,7 @@
 #include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/host.internal.h"
 
 /**
  * Creates bidirectional pipe, e.g.
@@ -40,7 +41,7 @@ int socketpair(int family, int type, int protocol, int sv[2]) {
   if (family == AF_UNSPEC)
     family = AF_UNIX;
   if (!IsWindows()) {
-    return sys_socketpair(family, type, protocol, sv);
+    return sys_socketpair(__af2host(family), type, protocol, sv);
   } else {
     return sys_socketpair_nt(family, type, protocol, sv);
   }

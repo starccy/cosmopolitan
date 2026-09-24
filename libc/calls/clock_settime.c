@@ -23,6 +23,7 @@
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
 #include "libc/sysv/consts/clock.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -31,9 +32,7 @@
 int clock_settime(int clockid, const struct timespec *ts) {
   int rc;
   struct timeval tv;
-  if (clockid == 127) {
-    rc = einval();  // 127 is used by consts.sh to mean unsupported
-  } else if (!ts) {
+  if (!ts) {
     rc = efault();
   } else if (IsXnu()) {
     if (clockid == CLOCK_REALTIME) {
@@ -42,8 +41,10 @@ int clock_settime(int clockid, const struct timespec *ts) {
     } else {
       rc = einval();
     }
+  } else if (__clock2host(clockid) == 127) {
+    rc = einval();  // 127 is used by consts.sh to mean unsupported
   } else {
-    rc = sys_clock_settime(clockid, ts);
+    rc = sys_clock_settime(__clock2host(clockid), ts);
   }
   STRACE("clock_settime(%s, %s) → %d% m", DescribeClockName(clockid),
          DescribeTimespec(0, ts), rc);

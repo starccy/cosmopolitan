@@ -92,7 +92,7 @@ int mtx_timedlock(mtx_t *mtx, const struct timespec *abs_deadline) {
   if (abs_deadline)
     abs_deadline_value = *abs_deadline;
   uint64_t word = atomic_load_explicit(&mtx->_word, memory_order_relaxed);
-  if (!(MUTEX_TYPE(word) & PTHREAD_MUTEX_RECURSIVE)) {
+  if (MUTEX_TYPE(word) != PTHREAD_MUTEX_RECURSIVE) {
     switch (nsync_mu_clocklock((nsync_mu *)mtx, CLOCK_REALTIME,
                                abs_deadline_value)) {
       case 0:
@@ -129,7 +129,7 @@ int mtx_timedlock(mtx_t *mtx, const struct timespec *abs_deadline) {
  */
 int mtx_lock(mtx_t *mtx) {
   uint64_t word = atomic_load_explicit(&mtx->_word, memory_order_relaxed);
-  if (!(MUTEX_TYPE(word) & PTHREAD_MUTEX_RECURSIVE))
+  if (MUTEX_TYPE(word) != PTHREAD_MUTEX_RECURSIVE)
     return nsync_mu_clocklock((nsync_mu *)mtx, CLOCK_REALTIME,
                               nsync_time_no_deadline);
   return mtx_timedlock_recursive(mtx, nsync_time_no_deadline, word);

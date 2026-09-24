@@ -52,7 +52,7 @@ dontinline static int mtx_unlock_recursive(mtx_t *mtx, uint64_t word) {
  */
 int mtx_unlock(mtx_t *mtx) {
   uint64_t word = atomic_load_explicit(&mtx->_word, memory_order_relaxed);
-  if (!(MUTEX_TYPE(word) & PTHREAD_MUTEX_RECURSIVE)) {
+  if (MUTEX_TYPE(word) != PTHREAD_MUTEX_RECURSIVE) {
     nsync_mu_unlock((nsync_mu *)mtx);
     return thrd_success;
   }

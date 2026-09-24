@@ -27,6 +27,7 @@
 #include "libc/intrin/weaken.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -72,7 +73,8 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd,
               (rc = __zipos_notat(newdirfd, newpath)) == -1)) {
     rc = erofs();
   } else if (!IsWindows()) {
-    rc = sys_renameat(olddirfd, oldpath, newdirfd, newpath);
+    rc = sys_renameat(__dirfd2host(olddirfd), oldpath, __dirfd2host(newdirfd),
+                      newpath);
   } else {
     rc = sys_renameat_nt(olddirfd, oldpath, newdirfd, newpath);
   }

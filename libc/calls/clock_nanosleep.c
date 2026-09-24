@@ -23,6 +23,7 @@
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
 #include "libc/sysv/consts/clock.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/timer.h"
 
 int sys_clock_nanosleep(int, int, const struct timespec *, struct timespec *);
@@ -94,7 +95,7 @@ errno_t clock_nanosleep(int clock, int flags,        //
     clock = CLOCK_REALTIME;
   if (IsLinux() && clock == CLOCK_MONOTONIC_COARSE)
     clock = CLOCK_MONOTONIC;
-  if (clock == 127 ||              //
+  if (__clock2host(clock) == 127 ||  //
       (flags & ~TIMER_ABSTIME) ||  //
       req->tv_sec < 0 ||           //
       !(0 <= req->tv_nsec && req->tv_nsec <= 999999999))

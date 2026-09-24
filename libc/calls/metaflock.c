@@ -18,6 +18,27 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/struct/flock.h"
 #include "libc/dce.h"
+#include "libc/sysv/consts/f.h"
+#include "libc/sysv/consts/host.internal.h"
+
+__HOSTCONST(int, F_RDLCK);
+__HOSTCONST(int, F_WRLCK);
+
+static int16_t locktype2linux(int16_t type) {
+  if (type == __host_F_RDLCK)
+    return F_RDLCK;
+  if (type == __host_F_WRLCK)
+    return F_WRLCK;
+  return type;
+}
+
+static int16_t locktype2host(int16_t type) {
+  if (type == F_RDLCK)
+    return __host_F_RDLCK;
+  if (type == F_WRLCK)
+    return __host_F_WRLCK;
+  return type;
+}
 
 union metaflock {
   struct flock cosmo;
@@ -78,13 +99,13 @@ void flock2cosmo(uintptr_t memory) {
     l_start = u->xnu.l_start;
     l_len = u->xnu.l_len;
     l_pid = u->xnu.l_pid;
-    l_type = u->xnu.l_type;
+    l_type = locktype2linux(u->xnu.l_type);
     l_whence = u->xnu.l_whence;
   } else if (IsFreebsd()) {
     l_start = u->freebsd.l_start;
     l_len = u->freebsd.l_len;
     l_pid = u->freebsd.l_pid;
-    l_type = u->freebsd.l_type;
+    l_type = locktype2linux(u->freebsd.l_type);
     l_whence = u->freebsd.l_whence;
     l_sysid = u->freebsd.l_sysid;
     u->cosmo.l_sysid = l_sysid;
@@ -92,13 +113,13 @@ void flock2cosmo(uintptr_t memory) {
     l_start = u->openbsd.l_start;
     l_len = u->openbsd.l_len;
     l_pid = u->openbsd.l_pid;
-    l_type = u->openbsd.l_type;
+    l_type = locktype2linux(u->openbsd.l_type);
     l_whence = u->openbsd.l_whence;
   } else if (IsNetbsd()) {
     l_start = u->netbsd.l_start;
     l_len = u->netbsd.l_len;
     l_pid = u->netbsd.l_pid;
-    l_type = u->netbsd.l_type;
+    l_type = locktype2linux(u->netbsd.l_type);
     l_whence = u->netbsd.l_whence;
   } else {
     return;
@@ -135,26 +156,26 @@ void cosmo2flock(uintptr_t memory) {
     u->xnu.l_start = l_start;
     u->xnu.l_len = l_len;
     u->xnu.l_pid = l_pid;
-    u->xnu.l_type = l_type;
+    u->xnu.l_type = locktype2host(l_type);
     u->xnu.l_whence = l_whence;
   } else if (IsFreebsd()) {
     u->freebsd.l_start = l_start;
     u->freebsd.l_len = l_len;
     u->freebsd.l_pid = l_pid;
-    u->freebsd.l_type = l_type;
+    u->freebsd.l_type = locktype2host(l_type);
     u->freebsd.l_whence = l_whence;
     u->freebsd.l_sysid = l_sysid;
   } else if (IsOpenbsd()) {
     u->openbsd.l_start = l_start;
     u->openbsd.l_len = l_len;
     u->openbsd.l_pid = l_pid;
-    u->openbsd.l_type = l_type;
+    u->openbsd.l_type = locktype2host(l_type);
     u->openbsd.l_whence = l_whence;
   } else if (IsNetbsd()) {
     u->netbsd.l_start = l_start;
     u->netbsd.l_len = l_len;
     u->netbsd.l_pid = l_pid;
-    u->netbsd.l_type = l_type;
+    u->netbsd.l_type = locktype2host(l_type);
     u->netbsd.l_whence = l_whence;
   }
 }

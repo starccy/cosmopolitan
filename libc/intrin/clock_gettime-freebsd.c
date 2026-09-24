@@ -27,6 +27,7 @@
 #include "libc/nexgen32e/x86feature.h"
 #include "libc/sysv/consts/auxv.h"
 #include "libc/sysv/consts/clock.h"
+#include "libc/sysv/consts/host.internal.h"
 
 #define VDSO_TK_VER_CURR        1
 #define VDSO_TH_ALGO_X86_TSC    1
@@ -237,5 +238,5 @@ static bool sys_clock_gettime_freebsd_vdso(int clock, struct timespec *ts) {
 int sys_clock_gettime_freebsd(int clock, struct timespec *ts) {
   if (sys_clock_gettime_freebsd_vdso(clock, ts))
     return 0;
-  return sys_clock_gettime(clock, ts);
+  return sys_clock_gettime(__clock2host(clock), ts);
 }

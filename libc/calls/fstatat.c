@@ -79,10 +79,17 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
   // execve() depends on this
   int rc;
   struct ZiposUri zipname;
-  if (flags & ~AT_SYMLINK_NOFOLLOW) {
+  if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT)) {
     rc = einval();
   } else if (kisdangerous(path) || kisdangerous(st)) {
     rc = efault();
+  } else if ((flags & AT_EMPTY_PATH) && !*path) {
+    // the descriptor itself, the way linux reads an empty path
+    if (dirfd == AT_FDCWD) {
+      rc = fstatat(dirfd, ".", st, flags & ~AT_EMPTY_PATH);
+    } else {
+      rc = fstat(dirfd, st);
+    }
   } else if (__isfdkind(dirfd, kFdZip)) {
     STRACE("zipos dirfd not supported yet");
     rc = einval();

@@ -44,17 +44,8 @@
 #define SIGTHR    32 /* internal to pthreads */
 #define SIGIOT    SIGABRT
 
-#define SIG_BLOCK   SIG_BLOCK
-#define SIG_SETMASK SIG_SETMASK
-#define SIG_UNBLOCK SIG_UNBLOCK
+#define SIG_BLOCK   0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
 
-#ifndef __ASSEMBLER__
-COSMOPOLITAN_C_START_
-
-extern const int SIG_BLOCK;
-extern const int SIG_SETMASK;
-extern const int SIG_UNBLOCK;
-
-COSMOPOLITAN_C_END_
-#endif /* __ASSEMBLER__ */
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_SIG_H_ */

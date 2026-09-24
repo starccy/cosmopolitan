@@ -30,6 +30,7 @@
 #include "libc/sock/internal.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/fio.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/poll.h"
 #include "libc/sysv/consts/sock.h"
@@ -53,7 +54,7 @@ textwindows static int sys_accept_nt_impl(struct Fd *f,
   // be canceled by CancelIoEx, which makes it quite useless to us sadly
   // this can't be called in listen(), because then fork() will break it
   uint32_t mode = 1;
-  if (__imp_ioctlsocket(f->handle, FIONBIO, &mode))
+  if (__imp_ioctlsocket(f->handle, __ioctl2host(FIONBIO), &mode))
     return __winsockerr();
 
   // get win32 handle of client
@@ -63,8 +64,10 @@ textwindows static int sys_accept_nt_impl(struct Fd *f,
     // perform non-blocking accept
     int32_t addrsize = sizeof(*addr);
     struct sockaddr *paddr = (struct sockaddr *)addr;
-    if ((handle = WSAAccept(f->handle, paddr, &addrsize, 0, 0)) != -1)
+    if ((handle = WSAAccept(f->handle, paddr, &addrsize, 0, 0)) != -1) {
+      addr->ss_family = __af2linux(addr->ss_family);
       break;
+    }
 
     // return on genuine errors
     uint32_t err = WSAGetLastError();
@@ -85,7 +88,7 @@ textwindows static int sys_accept_nt_impl(struct Fd *f,
       return -1;
 
     // time to block
-    struct sys_pollfd_nt fds[1] = {{f->handle, POLLIN}};
+    struct sys_pollfd_nt fds[1] = {{f->handle, 0x0300 /* POLLRDNORM | POLLRDBAND */}};
     if (WSAPoll(fds, 1, POLL_INTERVAL_MS) == -1)
       return __winsockerr();
   }

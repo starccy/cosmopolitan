@@ -27,6 +27,7 @@
 #include "libc/intrin/weaken.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -67,7 +68,7 @@ int mkdirat(int dirfd, const char *path, unsigned mode) {
              (rc = __zipos_notat(dirfd, path)) == -1) {
     rc = erofs();
   } else if (!IsWindows()) {
-    rc = sys_mkdirat(dirfd, path, mode);
+    rc = sys_mkdirat(__dirfd2host(dirfd), path, mode);
   } else {
     rc = sys_mkdirat_nt(dirfd, path, mode);
   }

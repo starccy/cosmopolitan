@@ -22,7 +22,10 @@
 #include "libc/sock/struct/sockaddr6-bsd.internal.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
+
+__HOSTCONST(int, AF_INET6);
 
 // TODO(jart): DELETE
 
@@ -50,7 +53,7 @@ int sockaddr2bsd(const void *addr, uint32_t addrsize,
     } else if (((struct sockaddr *)addr)->sa_family == AF_INET6) {
       if (addrsize >= sizeof(struct sockaddr_in6)) {
         out_addr->sin6.sin6_len = 0;
-        out_addr->sin6.sin6_family = AF_INET6;
+        out_addr->sin6.sin6_family = __host_AF_INET6;
         out_addr->sin6.sin6_port = ((struct sockaddr_in6 *)addr)->sin6_port;
         out_addr->sin6.sin6_flowinfo =
             ((struct sockaddr_in6 *)addr)->sin6_flowinfo;

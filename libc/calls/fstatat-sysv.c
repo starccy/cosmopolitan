@@ -19,6 +19,8 @@
 #include "libc/calls/struct/metastat.internal.h"
 #include "libc/calls/struct/stat.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/errfuns.h"
 
 /**
  * Performs fstatat() on System Five.
@@ -27,13 +29,16 @@
 int32_t sys_fstatat(int32_t dirfd, const char *path, struct stat *st,
                     int32_t flags) {
   void *p;
+  int hflags;
   union metastat ms;
+  if ((hflags = __at2host(flags)) == -1)
+    return einval();
   if (st) {
     p = &ms;
   } else {
     p = 0;
   }
-  if (__sys_fstatat(dirfd, path, p, flags) != -1) {
+  if (__sys_fstatat(__dirfd2host(dirfd), path, p, hflags) != -1) {
     __stat2cosmo(st, &ms);
     return 0;
   } else {

@@ -26,6 +26,7 @@
 #include "libc/intrin/weaken.h"
 #include "libc/log/backtrace.internal.h"
 #include "libc/runtime/zipos.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
@@ -77,14 +78,17 @@
  */
 int64_t lseek(int fd, int64_t offset, int whence) {
   int64_t rc;
-  if (__isfdkind(fd, kFdZip)) {
+  int hwhence = __whence2host(whence);
+  if (hwhence == -1) {
+    rc = einval();
+  } else if (__isfdkind(fd, kFdZip)) {
     rc = _weaken(__zipos_seek)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, offset,
         whence);
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd()) {
-    rc = sys_lseek(fd, offset, whence, 0);
+    rc = sys_lseek(fd, offset, hwhence, 0);
   } else if (IsNetbsd()) {
-    rc = sys_lseek(fd, offset, offset, whence);
+    rc = sys_lseek(fd, offset, offset, hwhence);
   } else if (IsWindows()) {
     rc = sys_lseek_nt(fd, offset, whence);
   } else {

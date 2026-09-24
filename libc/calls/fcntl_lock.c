@@ -25,8 +25,22 @@
 #include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/fds.h"
+#include "libc/intrin/kprintf.h"
 #include "libc/intrin/strace.h"
 #include "libc/sysv/consts/f.h"
+#include "libc/sysv/consts/host.internal.h"
+
+__HOSTCONST(int, F_GETLK);
+__HOSTCONST(int, F_SETLK);
+__HOSTCONST(int, F_SETLKW);
+
+static int lockcmd2host(int cmd) {
+  if (cmd == F_GETLK)
+    return __host_F_GETLK;
+  if (cmd == F_SETLK)
+    return __host_F_SETLK;
+  return __host_F_SETLKW;
+}
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
@@ -40,15 +54,25 @@ int __fcntl_lock(int fd, int cmd, ...) {
   if (__isfdkind(fd, kFdZip)) {
     rc = einval();
   } else if (!IsWindows()) {
-    cosmo2flock(arg);
-    if (cmd == F_SETLKW) {
-      BEGIN_CANCELATION_POINT;
-      rc = __sys_fcntl_cp(fd, cmd, arg);
-      END_CANCELATION_POINT;
+    // the caller's struct is only written to by F_GETLK
+    struct flock fl;
+    if (kisdangerous((void *)arg)) {
+      rc = efault();
     } else {
-      rc = __sys_fcntl(fd, cmd, arg);
+      fl = *(struct flock *)arg;
+      cosmo2flock((uintptr_t)&fl);
+      if (cmd == F_SETLKW) {
+        BEGIN_CANCELATION_POINT;
+        rc = __sys_fcntl_cp(fd, lockcmd2host(cmd), (uintptr_t)&fl);
+        END_CANCELATION_POINT;
+      } else {
+        rc = __sys_fcntl(fd, lockcmd2host(cmd), (uintptr_t)&fl);
+      }
+      if (rc != -1 && cmd == F_GETLK) {
+        flock2cosmo((uintptr_t)&fl);
+        *(struct flock *)arg = fl;
+      }
     }
-    flock2cosmo(arg);
   } else if (__isfdopen(fd)) {
     BLOCK_SIGNALS;
     struct Fd *f = __get_pib()->fds.p + fd;

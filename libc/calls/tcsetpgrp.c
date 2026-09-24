@@ -24,6 +24,7 @@
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
 #include "libc/nt/console.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
@@ -50,7 +51,7 @@ int tcsetpgrp(int fd, int pgrp) {
       rc = -1;  // ebadf, enotty
     }
   } else {
-    rc = sys_ioctl(fd, TIOCSPGRP, &pgrp);
+    rc = sys_ioctl(fd, __ioctl2host(TIOCSPGRP), &pgrp);
   }
   STRACE("tcsetpgrp(%d, %d) → %d% m", fd, pgrp, rc);
   return rc;

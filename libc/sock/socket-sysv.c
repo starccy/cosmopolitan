@@ -19,12 +19,13 @@
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/sock/internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/sock.h"
 
 int sys_socket(int family, int type, int protocol) {
   int sock, tf, e = errno;
   tf = SOCK_CLOEXEC | SOCK_NONBLOCK;
-  sock = __sys_socket(family, type, protocol);
+  sock = __sys_socket(family, __socktype2host(type), protocol);
   if (sock == -1 && (type & tf) &&
       (errno == EINVAL || errno == EPROTOTYPE || errno == EPROTONOSUPPORT)) {
     errno = e;  // XNU/RHEL5/etc. don't support flags; see if removing helps

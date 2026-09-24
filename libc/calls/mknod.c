@@ -24,6 +24,7 @@
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/strace.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/s.h"
 #include "libc/sysv/errfuns.h"
 
@@ -59,7 +60,7 @@ int mknod(const char *path, uint32_t mode, uint64_t dev) {
     rc = sys_mknod(path, mode, dev);
     if (rc == -1 && rc == ENOSYS) {
       errno = e;
-      rc = sys_mknodat(AT_FDCWD, path, mode, dev);
+      rc = sys_mknodat(__dirfd2host(AT_FDCWD), path, mode, dev);
     }
   } else {
     rc = enosys();

@@ -21,6 +21,7 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
@@ -45,7 +46,7 @@ int tcsetsid(int fd, int pid) {
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotty();
   } else {
-    rc = sys_ioctl(fd, TIOCSCTTY, 0);
+    rc = sys_ioctl(fd, __ioctl2host(TIOCSCTTY), 0);
   }
   STRACE("tcsetsid(%d, %d) → %d% m", fd, pid, rc);
   return rc;

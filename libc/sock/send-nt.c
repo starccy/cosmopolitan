@@ -28,17 +28,14 @@
 #include "libc/nt/struct/overlapped.h"
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/msg.h"
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #include "libc/vga/vga.internal.h"
 #if SupportsWindows()
-
-#define _MSG_OOB       1
-#define _MSG_DONTROUTE 4
-#define _MSG_DONTWAIT  64
-#define _MSG_NOSIGNAL  0x10000000
 
 struct SendArgs {
   const struct iovec *iov;
@@ -58,7 +55,7 @@ textwindows static int sys_send_nt_start(int64_t handle,
 textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
                                 uint32_t flags) {
 
-  if (flags & ~(_MSG_DONTWAIT | _MSG_OOB | _MSG_DONTROUTE | _MSG_NOSIGNAL))
+  if (flags & ~(MSG_DONTWAIT | MSG_OOB | MSG_DONTROUTE | MSG_NOSIGNAL))
     return einval();
 
   if (iovlen) {
@@ -73,7 +70,7 @@ textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
   struct Fd *f = __get_pib()->fds.p + fd;
   sigset_t waitmask = __sig_block();
 
-  rc = __winsock_block(f->handle, flags & ~(_MSG_DONTWAIT | _MSG_NOSIGNAL),
+  rc = __winsock_block(f->handle, __msg2host(flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL)),
                        false, f->sndtimeo, waitmask, sys_send_nt_start,
                        &(struct SendArgs){iov, iovlen});
 
@@ -82,7 +79,7 @@ textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
   if (rc == -1 && (errno == ESHUTDOWN ||      // WSAESHUTDOWN
                    errno == ECONNABORTED)) {  // WSAECONNABORTED
     errno = EPIPE;
-    if (!(flags & _MSG_NOSIGNAL))
+    if (!(flags & MSG_NOSIGNAL))
       __sig_raise(SIGPIPE, SI_KERNEL);
   }
 

@@ -23,6 +23,7 @@
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
@@ -37,7 +38,7 @@ int tcsetwinsize(int fd, const struct winsize *ws) {
     if (__isfdkind(fd, kFdZip)) {
       rc = enotty();
     } else if (!IsWindows()) {
-      rc = sys_ioctl(fd, TIOCSWINSZ, ws);
+      rc = sys_ioctl(fd, __ioctl2host(TIOCSWINSZ), ws);
     } else {
       rc = tcsetwinsize_nt(fd, ws);
     }

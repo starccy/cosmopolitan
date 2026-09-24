@@ -21,6 +21,7 @@
 #include "libc/dce.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/consts/host.internal.h"
 
 /**
  * Gets scheduler policy for `pid`.
@@ -44,6 +45,7 @@ int sched_getscheduler(int pid) {
   } else {
     rc = sys_sched_getscheduler(pid);
   }
+  rc = __sched2linux(rc);
   STRACE("sched_getscheduler(%d) → %s% m", pid, DescribeSchedPolicy(rc));
   return rc;
 }

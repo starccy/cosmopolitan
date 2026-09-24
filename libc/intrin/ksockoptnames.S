@@ -18,13 +18,18 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/fmt/magnumstrs.internal.h"
 #include "libc/macros.h"
+#include "libc/sysv/consts/so.h"
 
 	.macro	.e e s
-	.long	\e - kSockOptnames
+	.long	.Lv\@ - kSockOptnames
 	.long	.L\@ - kSockOptnames
 	.rodata.str1.1
 .L\@:	.string	"\s"
 	.previous
+	.pushsection .rodata.kSockOptValues,"a",@progbits
+	.balign	4
+.Lv\@:	.long	\e
+	.popsection
 	.endm
 
 	.section .rodata

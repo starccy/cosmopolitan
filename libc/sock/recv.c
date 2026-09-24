@@ -26,6 +26,7 @@
 #include "libc/sock/sock.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/msg.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -71,7 +72,12 @@ ssize_t recv(int fd, void *buf, size_t size, int flags) {
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {
-    rc = sys_recvfrom(fd, buf, size, flags, 0, 0);
+    int hflags = __msg2host(flags);
+    if (hflags != -1) {
+      rc = sys_recvfrom(fd, buf, size, hflags, 0, 0);
+    } else {
+      rc = einval();
+    }
   } else if (__isfdopen(fd)) {
     if (__isfdkind(fd, kFdSocket)) {
       rc = sys_recv_nt(fd, (struct iovec[]){{buf, size}}, 1, flags);

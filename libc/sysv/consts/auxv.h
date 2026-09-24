@@ -2,67 +2,53 @@
 #define COSMOPOLITAN_LIBC_CALLS_AUXV_H_
 
 /*
- * integral getauxval() keys
+ * getauxval() keys, numbered the way linux does; __auxv2host() maps
+ * them onto the vector a bsd kernel hands out
  */
-#define AT_PHDR                     3
-#define AT_PHENT                    4
-#define AT_PHNUM                    5
-#define AT_PAGESZ                   6
-#define AT_BASE                     7
-#define AT_FLAGS                    8
+#define AT_NULL          0
+#define AT_IGNORE        1
+#define AT_EXECFD        2
+#define AT_PHDR          3
+#define AT_PHENT         4
+#define AT_PHNUM         5
+#define AT_PAGESZ        6
+#define AT_BASE          7
+#define AT_FLAGS         8
+#define AT_ENTRY         9
+#define AT_NOTELF        10
+#define AT_UID           11
+#define AT_EUID          12
+#define AT_GID           13
+#define AT_EGID          14
+#define AT_PLATFORM      15
+#define AT_HWCAP         16
+#define AT_CLKTCK        17
+#define AT_DCACHEBSIZE   19
+#define AT_ICACHEBSIZE   20
+#define AT_UCACHEBSIZE   21
+#define AT_SECURE        23
+#define AT_BASE_PLATFORM 24
+#define AT_RANDOM        25
+#define AT_HWCAP2        26
+#define AT_EXECFN        31
+#define AT_SYSINFO_EHDR  33
+#define AT_MINSIGSTKSZ   51
+
+#define AT_EXECPATH AT_EXECFN /* freebsd's name for it */
+
+/* keys only a bsd has, on numbers linux leaves alone */
+#define AT_OSRELDATE    0x1000
+#define AT_CANARY       0x1001
+#define AT_CANARYLEN    0x1002
+#define AT_NCPUS        0x1003
+#define AT_PAGESIZES    0x1004
+#define AT_PAGESIZESLEN 0x1005
+#define AT_TIMEKEEP     0x1006
+#define AT_STACKPROT    0x1007
+#define AT_EHDRFLAGS    0x1008
+#define AT_STACKBASE    0x1009
+
 #define AT_FLAGS_PRESERVE_ARGV0_BIT 0
 #define AT_FLAGS_PRESERVE_ARGV0     (1 << AT_FLAGS_PRESERVE_ARGV0_BIT)
-#define AT_ENTRY                    9
 
-COSMOPOLITAN_C_START_
-
-/*
- * portable getauxval() keys
- */
-extern const unsigned long AT_EXECFN;
-extern const unsigned long AT_SECURE;
-extern const unsigned long AT_RANDOM;
-extern const unsigned long AT_HWCAP;
-extern const unsigned long AT_HWCAP2;
-extern const unsigned long AT_UID;
-extern const unsigned long AT_EUID;
-extern const unsigned long AT_GID;
-extern const unsigned long AT_EGID;
-#define AT_EXECFN AT_EXECFN
-#define AT_SECURE AT_SECURE
-#define AT_RANDOM AT_RANDOM
-#define AT_HWCAP  AT_HWCAP
-#define AT_HWCAP2 AT_HWCAP2
-#define AT_UID    AT_UID
-#define AT_EUID   AT_EUID
-#define AT_GID    AT_GID
-#define AT_EGID   AT_EGID
-
-/*
- * platform-specific getauxval() keys
- */
-extern const unsigned long AT_BASE_PLATFORM;
-extern const unsigned long AT_CANARY;
-extern const unsigned long AT_CANARYLEN;
-extern const unsigned long AT_CLKTCK;
-extern const unsigned long AT_DCACHEBSIZE;
-extern const unsigned long AT_EHDRFLAGS;
-extern const unsigned long AT_EXECFD;
-extern const unsigned long AT_EXECPATH;
-extern const unsigned long AT_ICACHEBSIZE;
-extern const unsigned long AT_MINSIGSTKSZ;
-extern const unsigned long AT_NCPUS;
-extern const unsigned long AT_NOTELF;
-extern const unsigned long AT_NO_AUTOMOUNT;
-extern const unsigned long AT_OSRELDATE;
-extern const unsigned long AT_PAGESIZES;
-extern const unsigned long AT_PAGESIZESLEN;
-extern const unsigned long AT_PLATFORM;
-extern const unsigned long AT_STACKBASE;
-extern const unsigned long AT_STACKPROT;
-extern const unsigned long AT_SYSINFO_EHDR;
-extern const unsigned long AT_TIMEKEEP;
-extern const unsigned long AT_UCACHEBSIZE;
-
-COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_CALLS_AUXV_H_ */

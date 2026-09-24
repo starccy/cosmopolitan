@@ -18,13 +18,18 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/fmt/magnumstrs.internal.h"
 #include "libc/macros.h"
+#include "libc/sysv/consts/tcp.h"
 
 	.macro	.e e s
-	.long	\e - kTcpOptnames
+	.long	.Lv\@ - kTcpOptnames
 	.long	.L\@ - kTcpOptnames
 	.rodata.str1.1
 .L\@:	.string	"\s"
 	.previous
+	.pushsection .rodata.kTcpOptValues,"a",@progbits
+	.balign	4
+.Lv\@:	.long	\e
+	.popsection
 	.endm
 
 	.section .rodata

@@ -18,9 +18,11 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/struct/termios.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/calls/termios.h"
+#include "libc/calls/termios.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/cmpxchg.h"
@@ -50,7 +52,9 @@
 #include "libc/sock/struct/sockaddr.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/fio.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/iff.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/sio.h"
@@ -77,12 +81,15 @@ static struct HostAdapterInfoNode {
 static int ioctl_default(int fd, unsigned long request, void *arg) {
   int rc;
   int64_t handle;
+  unsigned long host = __ioctl2host(request);
+  if (!host)
+    return enotty();
   if (!IsWindows()) {
-    return sys_ioctl(fd, request, arg);
+    return sys_ioctl(fd, host, arg);
   } else if (__isfdopen(fd)) {
     if (__get_pib()->fds.p[fd].kind == kFdSocket) {
       handle = __get_pib()->fds.p[fd].handle;
-      if ((rc = __imp_ioctlsocket(handle, request, arg)) != -1) {
+      if ((rc = __imp_ioctlsocket(handle, host, arg)) != -1) {
         return rc;
       } else {
         return _weaken(__winsockerr)();
@@ -99,11 +106,11 @@ static int ioctl_fionread(int fd, uint32_t *arg) {
   int rc;
   int64_t handle;
   if (!IsWindows()) {
-    return sys_ioctl(fd, FIONREAD, arg);
+    return sys_ioctl(fd, __ioctl2host(FIONREAD), arg);
   } else if (__isfdopen(fd)) {
     handle = __get_pib()->fds.p[fd].handle;
     if (__get_pib()->fds.p[fd].kind == kFdSocket) {
-      if ((rc = __imp_ioctlsocket(handle, FIONREAD, arg)) != -1) {
+      if ((rc = __imp_ioctlsocket(handle, __ioctl2host(FIONREAD), arg)) != -1) {
         return rc;
       } else {
         return _weaken(__winsockerr)();
@@ -510,7 +517,7 @@ static int ioctl_siocgifconf_sysv(int fd, struct ifconf *ifc) {
   struct ifreq *req;
   uint32_t bufLen, ip;
   if (IsLinux()) {
-    return sys_ioctl(fd, SIOCGIFCONF, ifc);
+    return sys_ioctl(fd, __ioctl2host(SIOCGIFCONF), ifc);
   }
 #pragma GCC push_options
 #pragma GCC diagnostic ignored "-Walloca-larger-than="
@@ -521,7 +528,7 @@ static int ioctl_siocgifconf_sysv(int fd, struct ifconf *ifc) {
 #pragma GCC pop_options
   memcpy(ifcBsd, &bufMax, 8);                /* ifc_len */
   memcpy(ifcBsd + (IsXnu() ? 4 : 8), &b, 8); /* ifc_buf */
-  if ((rc = sys_ioctl(fd, SIOCGIFCONF, &ifcBsd)) != -1) {
+  if ((rc = sys_ioctl(fd, __ioctl2host(SIOCGIFCONF), &ifcBsd)) != -1) {
     /*
      * On XNU the size of the struct ifreq is different than Linux.
      * On Linux is fixed (40 bytes), but on XNU the struct sockaddr
@@ -562,7 +569,7 @@ static inline void ioctl_sockaddr2linux(void *saddr) {
  * requires adjustment between Linux and XNU
  */
 static int ioctl_siocgifaddr_sysv(int fd, uint64_t op, struct ifreq *ifr) {
-  if (sys_ioctl(fd, op, ifr) == -1)
+  if (sys_ioctl(fd, __ioctl2host(op), ifr) == -1)
     return -1;
   if (IsBsd())
     ioctl_sockaddr2linux(&ifr->ifr_addr);
@@ -618,10 +625,73 @@ static int ioctl_siocgifdstaddr(int fd, void *arg) {
 static int ioctl_siocgifflags(int fd, void *arg) {
   if (!IsWindows()) {
     /* Both XNU and Linux are for once compatible here... */
-    return ioctl_default(fd, SIOCGIFFLAGS, arg);
+    int rc = ioctl_default(fd, SIOCGIFFLAGS, arg);
+    if (rc != -1)
+      ((struct ifreq *)arg)->ifr_flags =
+          __iff2linux(((struct ifreq *)arg)->ifr_flags);
+    return rc;
   } else {
     return ioctl_siocgifflags_nt(fd, arg);
   }
+}
+
+// The kernel's TCGETS structs share termios' first 36 bytes: the four
+// flag words, c_line and c_cc[19]. termios2 adds the two speeds.
+#define KERNEL_TERMIOS_SIZE 36
+
+static int ioctl_tcgets(int fd, void *arg, bool two) {
+  struct termios t;
+  if (tcgetattr(fd, &t) == -1)
+    return -1;
+  memcpy(arg, &t, KERNEL_TERMIOS_SIZE);
+  if (two) {
+    uint32_t code = t.c_cflag & CBAUD;
+    uint32_t speeds[2];
+    speeds[0] = speeds[1] = code == BOTHER ? t._c_ospeed : __baud2rate(code);
+    memcpy((char *)arg + KERNEL_TERMIOS_SIZE, speeds, sizeof(speeds));
+  }
+  return 0;
+}
+
+static int ioctl_tcsets(int fd, const void *arg, bool two, int opt) {
+  struct termios t;
+  bzero(&t, sizeof(t));
+  memcpy(&t, arg, KERNEL_TERMIOS_SIZE);
+  if (two)
+    memcpy(&t._c_ispeed, (const char *)arg + KERNEL_TERMIOS_SIZE, 8);
+  return tcsetattr(fd, opt, &t);
+}
+
+static int ioctl_tiocgpgrp(int fd, void *arg) {
+  int pgrp;
+  if ((pgrp = tcgetpgrp(fd)) == -1)
+    return -1;
+  *(int32_t *)arg = pgrp;
+  return 0;
+}
+
+static int ioctl_tiocgsid(int fd, void *arg) {
+  int sid;
+  if ((sid = tcgetsid(fd)) == -1)
+    return -1;
+  *(int32_t *)arg = sid;
+  return 0;
+}
+
+static int ioctl_fionbio_nt(int fd, const void *arg) {
+  int flags;
+  if ((flags = fcntl(fd, F_GETFL)) == -1)
+    return -1;
+  int want = *(const int *)arg ? flags | O_NONBLOCK : flags & ~O_NONBLOCK;
+  return want == flags ? 0 : fcntl(fd, F_SETFL, want);
+}
+
+static int ioctl_fioclex_nt(int fd, bool set) {
+  int flags;
+  if ((flags = fcntl(fd, F_GETFD)) == -1)
+    return -1;
+  int want = set ? flags | FD_CLOEXEC : flags & ~FD_CLOEXEC;
+  return want == flags ? 0 : fcntl(fd, F_SETFD, want);
 }
 
 /**
@@ -703,6 +773,23 @@ int ioctl(int fd, unsigned long request, ...) {
   va_end(va);
   if (request == FIONREAD) {
     rc = ioctl_fionread(fd, arg);
+  } else if (request == TCGETS || request == TCGETS2) {
+    rc = ioctl_tcgets(fd, arg, request == TCGETS2);
+  } else if (request == TCSETS || request == TCSETSW || request == TCSETSF) {
+    rc = ioctl_tcsets(fd, arg, false, request - TCSETS);
+  } else if (request == TCSETS2 || request == TCSETSW2 ||
+             request == TCSETSF2) {
+    rc = ioctl_tcsets(fd, arg, true, request - TCSETS2);
+  } else if (request == TIOCGPGRP) {
+    rc = ioctl_tiocgpgrp(fd, arg);
+  } else if (request == TIOCSPGRP) {
+    rc = tcsetpgrp(fd, *(const int32_t *)arg);
+  } else if (request == TIOCGSID) {
+    rc = ioctl_tiocgsid(fd, arg);
+  } else if (IsWindows() && request == FIONBIO) {
+    rc = ioctl_fionbio_nt(fd, arg);
+  } else if (IsWindows() && (request == FIOCLEX || request == FIONCLEX)) {
+    rc = ioctl_fioclex_nt(fd, request == FIOCLEX);
   } else if (request == TIOCGWINSZ) {
     return tcgetwinsize(fd, arg);
   } else if (request == TIOCSWINSZ) {

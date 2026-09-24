@@ -21,6 +21,7 @@
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/atomic.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/thread/posixthread.internal.h"
 
@@ -30,7 +31,7 @@ errno_t _pthread_reschedule(struct PosixThread *pt) {
   struct sched_param param = {pt->pt_attr.__schedparam};
   e = errno;
   if (IsNetbsd()) {
-    rc = sys_sched_setparam_netbsd(0, tid, policy, &param);
+    rc = sys_sched_setparam_netbsd(0, tid, __sched2host(policy), &param);
   } else if (IsLinux()) {
     rc = sys_sched_setscheduler(tid, policy, &param);
   } else if (IsFreebsd()) {

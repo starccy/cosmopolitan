@@ -18,13 +18,18 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/fmt/magnumstrs.internal.h"
 #include "libc/macros.h"
+#include "libc/sysv/consts/ip.h"
 
 	.macro	.e e s
-	.long	\e - kIpOptnames
+	.long	.Lv\@ - kIpOptnames
 	.long	.L\@ - kIpOptnames
 	.rodata.str1.1
 .L\@:	.string	"\s"
 	.previous
+	.pushsection .rodata.kIpOptValues,"a",@progbits
+	.balign	4
+.Lv\@:	.long	\e
+	.popsection
 	.endm
 
 	.section .rodata

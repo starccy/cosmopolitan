@@ -53,6 +53,7 @@
 #include "libc/serialize.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/auxv.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/map.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/prot.h"
@@ -201,7 +202,8 @@ static char *elf_map(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr, long pagesz,
   }
   uint8_t *base =
       __sys_mmap(0, maxva - minva, PROT_NONE,
-                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0, 0);
+                 __mmap2host(MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE), -1, 0,
+                 0);
   if (base == MAP_FAILED)
     return MAP_FAILED;
   for (Elf64_Phdr *p = phdr; p < phdr + ehdr->e_phnum; p++) {
@@ -224,13 +226,14 @@ static char *elf_map(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr, long pagesz,
       prot1 &= ~PROT_EXEC;
     }
     if (__sys_mmap(base + p->p_vaddr - skew, skew + p->p_filesz, prot1,
-                   MAP_FIXED | MAP_PRIVATE, fd, off, off) == MAP_FAILED)
+                   __mmap2host(MAP_FIXED | MAP_PRIVATE), fd, off,
+                   off) == MAP_FAILED)
       return MAP_FAILED;
     if (b > a)
       bzero(base + a, b - a);
     if (c > b && __sys_mmap(base + b, c - b, prot2,
-                            MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0,
-                            0) == MAP_FAILED)
+                            __mmap2host(MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS),
+                            -1, 0, 0) == MAP_FAILED)
       return MAP_FAILED;
     if (prot1 != prot2 &&
         sys_mprotect(base + p->p_vaddr - skew, skew + p->p_filesz, prot2))
@@ -328,7 +331,7 @@ dontinline static void elf_exec(const char *file, char **envp) {
   if (IsFreebsd())
     skew += 8;  // FreeBSD calls _start() like a C function
   map = __sys_mmap(0, mapsize, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0, 0);
+                   __mmap2host(MAP_PRIVATE | MAP_ANONYMOUS), -1, 0, 0);
   if (map == MAP_FAILED)
     return;
   long *sp = (long *)(map + mapsize - skew);
@@ -418,7 +421,7 @@ dontinline static char *foreign_alloc_block(void) {
   size_t sz = 65536;
   if (!IsWindows()) {
     p = __sys_mmap(0, sz, PROT_READ | PROT_WRITE | PROT_EXEC,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT, -1, 0, 0);
+                   __mmap2host(MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT), -1, 0, 0);
     if (p == MAP_FAILED)
       p = 0;
   } else {
