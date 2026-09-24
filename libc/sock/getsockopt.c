@@ -25,11 +25,35 @@
 #include "libc/sock/sock.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/ipproto.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/sol.h"
+#include "libc/sysv/consts/tcp.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/errno.h"
 #include "libc/sysv/pib.h"
+
+// the options linux answers with 0 or 1
+static bool sockopt_is_boolean(int level, int optname) {
+  if (level == SOL_SOCKET)
+    switch (optname) {
+      case SO_REUSEADDR:
+      case SO_DONTROUTE:
+      case SO_BROADCAST:
+      case SO_KEEPALIVE:
+      case SO_OOBINLINE:
+      case SO_REUSEPORT:
+      case SO_ACCEPTCONN:
+        return true;
+    }
+  if (level == IPPROTO_TCP)
+    switch (optname) {
+      case TCP_NODELAY:
+      case TCP_CORK:
+        return true;
+    }
+  return false;
+}
 
 /**
  * Retrieves socket setting.
@@ -65,6 +89,11 @@ int getsockopt(int fd, int level, int optname, void *out_opt_optval,
         out_opt_optval && out_optlen && *out_optlen >= sizeof(int) &&
         *(int *)out_opt_optval)
       *(int *)out_opt_optval = __errno_host2linux(*(int *)out_opt_optval);
+    // the bsds answer a boolean option with their own flag bit (xnu
+    // reads TCP_NODELAY back as 4 and SO_KEEPALIVE as 8)
+    if (!rc && IsBsd() && out_opt_optval && out_optlen &&
+        *out_optlen == sizeof(int) && sockopt_is_boolean(level, optname))
+      *(int *)out_opt_optval = !!*(int *)out_opt_optval;
   } else if (!__isfdopen(fd)) {
     rc = ebadf();
   } else if (__isfdkind(fd, kFdSocket)) {

@@ -81,6 +81,11 @@ textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
     optlen = sizeof(u.linger);
   }
 
+  // winsock has no SO_REUSEPORT and its SO_REUSEADDR already lets a
+  // port be bound again
+  if (level == SOL_SOCKET && optname == SO_REUSEPORT)
+    return 0;
+
   int hopt = __sockopt2host(level, optname);
   if (!hopt)
     return enoprotoopt();

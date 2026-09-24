@@ -10,5 +10,6 @@
 #define MSG_WAITALL   0x100
 #define MSG_NOSIGNAL  0x4000
 #define MSG_FASTOPEN  0x20000000 /* linux only */
+#define MSG_CMSG_CLOEXEC 0x40000000 /* linux only */
 
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_MSG_H_ */

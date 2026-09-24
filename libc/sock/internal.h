@@ -9,7 +9,15 @@
 #include "libc/sock/select.h"
 #include "libc/sock/sock.h"
 #include "libc/sock/struct/sockaddr.h"
+#include "libc/sysv/consts/msg.h"
 COSMOPOLITAN_C_START_
+
+// the MSG_* bits with a name here; on the hosts other than linux any
+// other bit (MSG_MORE, MSG_ZEROCOPY, MSG_CMSG_CLOEXEC, ...) is dropped
+// by the send/recv wrappers the way linux drops bits it doesn't know
+#define __MSG_NAMED                                                    \
+  (MSG_OOB | MSG_PEEK | MSG_DONTROUTE | MSG_CTRUNC | MSG_TRUNC |        \
+   MSG_DONTWAIT | MSG_WAITALL | MSG_NOSIGNAL | MSG_FASTOPEN)
 
 #define kNtFdRead                   1
 #define kNtFdWrite                  2

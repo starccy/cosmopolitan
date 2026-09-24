@@ -60,6 +60,8 @@ ssize_t recvfrom(int fd, void *buf, size_t size, int flags,
   ssize_t rc;
   struct sockaddr_storage addr = {0};
   uint32_t addrsize = sizeof(addr);
+  if (!IsLinux())
+    flags &= __MSG_NAMED;
   BEGIN_CANCELATION_POINT;
 
   if ((size && kisdangerous(buf)) ||

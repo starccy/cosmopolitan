@@ -27,7 +27,9 @@
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/strace.h"
 #include "libc/runtime/runtime.h"
+#include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
+#include "libc/sock/struct/cmsghdr.h"
 #include "libc/sock/struct/msghdr.h"
 #include "libc/sock/struct/msghdr.internal.h"
 #include "libc/sock/struct/sockaddr.internal.h"
@@ -36,6 +38,10 @@
 #include "libc/str/str.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/sysv/consts/f.h"
+#include "libc/sysv/consts/scm.h"
+#include "libc/sysv/consts/sol.h"
+#include "libc/calls/calls.h"
 
 /**
  * Sends a message from a socket.
@@ -53,10 +59,26 @@
  * @asyncsignalsafe
  * @restartable (unless SO_RCVTIMEO)
  */
+// what MSG_CMSG_CLOEXEC asks the linux kernel to do with the
+// descriptors it hands over
+static void recvmsg_cloexec(struct msghdr *msg) {
+  for (struct cmsghdr *c = CMSG_FIRSTHDR(msg); c; c = CMSG_NXTHDR(msg, c)) {
+    if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS)
+      continue;
+    int *fds = (int *)CMSG_DATA(c);
+    int n = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+    for (int i = 0; i < n; ++i)
+      fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+  }
+}
+
 ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
   ssize_t rc, got;
   struct msghdr msg2;
   union sockaddr_storage_bsd bsd;
+  bool cloexec = !IsLinux() && (flags & MSG_CMSG_CLOEXEC);
+  if (!IsLinux())
+    flags &= __MSG_NAMED;
 
   BEGIN_CANCELATION_POINT;
   if (__isfdkind(fd, kFdZip)) {
@@ -86,6 +108,8 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
           memcpy(control, msg->msg_control, bytes);
           msg->msg_controllen = __cmsg2linux(control, bytes, msg->msg_control,
                                              msg->msg_controllen);
+          if (cloexec)
+            recvmsg_cloexec(msg);
         }
         msg->msg_flags = __msg2linux(msg2.msg_flags);
       }
