@@ -55,6 +55,8 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
   int64_t rc;
   struct msghdr msg2;
   union sockaddr_storage_bsd bsd;
+  if (!IsLinux())
+    flags &= __MSG_NAMED;
 
   BEGIN_CANCELATION_POINT;
   if (__isfdkind(fd, kFdZip)) {

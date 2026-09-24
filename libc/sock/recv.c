@@ -63,6 +63,8 @@
  */
 ssize_t recv(int fd, void *buf, size_t size, int flags) {
   ssize_t rc;
+  if (!IsLinux())
+    flags &= __MSG_NAMED;
   BEGIN_CANCELATION_POINT;
 
   if ((flags & (MSG_WAITALL | MSG_PEEK)) == (MSG_WAITALL | MSG_PEEK)) {

@@ -57,6 +57,8 @@
  */
 ssize_t send(int fd, const void *buf, size_t size, int flags) {
   ssize_t rc;
+  if (!IsLinux())
+    flags &= __MSG_NAMED;
   BEGIN_CANCELATION_POINT;
 
   if (__isfdkind(fd, kFdZip)) {

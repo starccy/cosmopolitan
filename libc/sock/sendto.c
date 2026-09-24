@@ -61,6 +61,8 @@ ssize_t sendto(int fd, const void *buf, size_t size, int flags,
   ssize_t rc;
   uint32_t bsdaddrsize;
   union sockaddr_storage_bsd bsd;
+  if (!IsLinux())
+    flags &= __MSG_NAMED;
   BEGIN_CANCELATION_POINT;
 
   if (addrsize && addrsize < sizeof(struct sockaddr)) {
