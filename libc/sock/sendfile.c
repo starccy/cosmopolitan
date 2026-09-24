@@ -135,7 +135,7 @@ static ssize_t sys_sendfile_bsd(int outfd, int infd,
     rc = sys_sendfile_xnu(infd, outfd, offset, &sbytes, 0, 0);
   }
   if (rc == -1 && errno == ENOTSOCK)
-    errno = EBADF;
+    return __copy_fd_range(infd, opt_in_out_inoffset, outfd, 0, uptobytes);
   if (rc != -1) {
     if (opt_in_out_inoffset) {
       *opt_in_out_inoffset += sbytes;
@@ -152,7 +152,13 @@ static ssize_t sys_sendfile_bsd(int outfd, int infd,
 /**
  * Transfers data from file to network.
  *
- * @param outfd needs to be a socket
+ * Linux sends to any descriptor. The other kernels only know how to
+ * feed a socket (TransmitFile on Windows, sendfile on FreeBSD and
+ * MacOS), so a file, pipe or other non-socket `outfd` there, and every
+ * transfer on NetBSD and OpenBSD, goes through a read()/write() loop
+ * with the same offset semantics.
+ *
+ * @param outfd is usually a socket, but may be any writable descriptor
  * @param infd needs to be a file
  * @param opt_in_out_inoffset may be specified for pread()-like behavior
  *     in which case the file position won't be changed; otherwise, this
@@ -176,7 +182,6 @@ static ssize_t sys_sendfile_bsd(int outfd, int infd,
  * @raise EIO if `infd` had a low-level i/o error
  * @raise ENOMEM if we require more vespene gas
  * @raise ENOTCONN if `outfd` isn't connected
- * @raise ENOSYS on NetBSD and OpenBSD
  * @see copy_file_range() for file ↔ file
  * @see splice() for fd ↔ pipe
  */
@@ -193,12 +198,12 @@ ssize_t sendfile(int outfd, int infd, int64_t *opt_in_out_inoffset,
     rc = sys_sendfile(outfd, infd, opt_in_out_inoffset, uptobytes);
   } else if (IsFreebsd() || IsXnu()) {
     rc = sys_sendfile_bsd(outfd, infd, opt_in_out_inoffset, uptobytes);
-  } else if (IsWindows()) {
+  } else if (IsWindows() && __isfdkind(outfd, kFdSocket)) {
     BLOCK_SIGNALS;
     rc = sys_sendfile_nt(outfd, infd, opt_in_out_inoffset, uptobytes);
     ALLOW_SIGNALS;
   } else {
-    rc = enosys();
+    rc = __copy_fd_range(infd, opt_in_out_inoffset, outfd, 0, uptobytes);
   }
 
   STRACE("sendfile(%d, %d, %p, %'zu) → %ld% m", outfd, infd,

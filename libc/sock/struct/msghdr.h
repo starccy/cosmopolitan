@@ -13,8 +13,17 @@ struct msghdr {            /* Linux+NT ABI */
   uint32_t msg_flags;      /* MSG_XXX */
 };
 
+struct mmsghdr {
+  struct msghdr msg_hdr;
+  unsigned int msg_len; /* bytes transferred for this entry */
+};
+
+struct timespec;
+
 ssize_t recvmsg(int, struct msghdr *, int);
 ssize_t sendmsg(int, const struct msghdr *, int);
+int sendmmsg(int, struct mmsghdr *, unsigned int, int);
+int recvmmsg(int, struct mmsghdr *, unsigned int, int, struct timespec *);
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_SOCK_STRUCT_MSGHDR_H_ */

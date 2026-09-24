@@ -17,13 +17,15 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/intrin/fds.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/sysv/errfuns.h"
 
 bool32 sys_isatty(int fd) {
   if (__isfdopen(fd)) {
-    if (__isfdkind(fd, kFdConsole) || __isfdkind(fd, kFdSerial)) {
+    if (__isfdkind(fd, kFdConsole) || __isfdkind(fd, kFdSerial) ||
+        __get_pib()->fds.p[fd].pty) {
       return true;
     } else {
       enotty();

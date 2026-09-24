@@ -17,6 +17,7 @@ struct NtSpawnArgs {
   uint32_t dwExplicitHandleCount;
   const struct NtStartupInfo *lpStartupInfo;
   struct NtProcessInformation *opt_out_lpProcessInformation;
+  int64_t opt_hPseudoConsole;
 };
 
 int mkntenvblock(char16_t[32767], char *const[], char *const[], char[32767]);

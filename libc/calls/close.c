@@ -19,6 +19,7 @@
 #include "libc/calls/calls.h"
 #include "libc/calls/flocks.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
@@ -110,6 +111,11 @@ static int close_impl(int fd) {
       if (!__vforked)
         if (_weaken(__flocks_close))
           _weaken(__flocks_close)(f);
+      if (f->pty && _weaken(__pty_close_nt)) {
+        if (!__vforked || f->was_created_during_vfork)
+          rc = _weaken(__pty_close_nt)(f);
+        break;
+      }
       if (!__vforked || f->was_created_during_vfork) {
         if (f->cursor)
           __cursor_unref(f->cursor);
@@ -124,6 +130,8 @@ static int close_impl(int fd) {
           rc = __winerr();
       break;
     case kFdSocket:
+      if (f->scm && _weaken(__scm_forget_nt))
+        _weaken(__scm_forget_nt)(f);
       if (!__vforked || f->was_created_during_vfork)
         if (_weaken(sys_closesocket_nt))
           rc = _weaken(sys_closesocket_nt)(f);

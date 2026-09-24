@@ -91,8 +91,13 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
       rc = sys_sendmsg(fd, msg, hflags);
     }
   } else if (__isfdopen(fd)) {
-    if (msg->msg_control) {
-      rc = einval(); /* control msg not supported */
+    if (msg->msg_control && msg->msg_controllen) {
+      if (__isfdkind(fd, kFdSocket) &&
+          __scm_stream_nt(__get_pib()->fds.p + fd)) {
+        rc = __scm_send_nt(fd, msg, flags);
+      } else {
+        rc = einval(); /* control msg only on unix streams */
+      }
     } else if (__isfdkind(fd, kFdSocket)) {
       rc = sys_sendto_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
                          msg->msg_name, msg->msg_namelen);

@@ -88,17 +88,17 @@ textwindows static ssize_t sys_recv_nt_impl(int fd, const struct iovec *iov,
     __imp_ioctlsocket(f->handle, __ioctl2host(FIONBIO), (uint32_t[]){0});
 
   bool nonblock = (f->flags & O_NONBLOCK) || (flags & MSG_DONTWAIT);
-  if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
-    __sig_unblock(waitmask);
-    return eagain();
+  if (__scm_stream_nt(f)) {
+    rc = __scm_recv_nt(f, iov, iovlen, flags, nonblock, waitmask);
+  } else if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
+    rc = eagain();
+  } else {
+    rc = __winsock_block(f->handle, __msg2host(flags & ~MSG_DONTWAIT),
+                         nonblock, f->rcvtimeo, waitmask, sys_recv_nt_start,
+                         &(struct RecvArgs){iov, iovlen});
+    if (rc == -1 && errno == kNtErrorHandleEof)
+      rc = 0;
   }
-
-  rc = __winsock_block(f->handle, __msg2host(flags & ~MSG_DONTWAIT), nonblock,
-                       f->rcvtimeo, waitmask, sys_recv_nt_start,
-                       &(struct RecvArgs){iov, iovlen});
-
-  if (rc == -1 && errno == kNtErrorHandleEof)
-    rc = 0;
 
   __sig_unblock(waitmask);
 

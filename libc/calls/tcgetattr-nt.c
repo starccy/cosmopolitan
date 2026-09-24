@@ -18,6 +18,8 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/struct/termios.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/dce.h"
@@ -38,6 +40,10 @@ textwindows int tcgetattr_nt(int fd, struct termios *tio) {
   // validate file descriptor
   if (!__isfdopen(fd))
     return ebadf();
+  if (__get_pib()->fds.p[fd].pty && _weaken(__pty_termios)) {
+    _weaken(__pty_termios)(tio);
+    return 0;
+  }
   if (!__isfdkind(fd, kFdConsole))
     return enotty();
 

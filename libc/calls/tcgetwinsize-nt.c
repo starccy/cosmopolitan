@@ -17,6 +17,8 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/struct/winsize.h"
 #include "libc/calls/struct/winsize.internal.h"
 #include "libc/calls/syscall-nt.internal.h"
@@ -27,6 +29,9 @@
 #if SupportsWindows()
 
 textwindows int tcgetwinsize_nt(int fd, struct winsize *ws) {
+
+  if (__isfdopen(fd) && __get_pib()->fds.p[fd].pty && _weaken(__pty_getwinsize))
+    return _weaken(__pty_getwinsize)(__get_pib()->fds.p + fd, ws);
 
   // The Linux man page doesn't list EBADF as an errno for this.
   if (!sys_isatty(fd))

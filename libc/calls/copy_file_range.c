@@ -29,8 +29,13 @@
 #include "libc/errno.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
+#include "libc/macros.h"
+#include "libc/runtime/runtime.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/errfuns.h"
+
+#define COPY_STACK_BUF 2048
+#define COPY_MAP_BUF   (1024 * 1024)
 
 static struct CopyFileRange {
   atomic_uint once;
@@ -62,6 +67,78 @@ static void copy_file_range_init(void) {
 }
 
 /**
+ * Moves bytes from one descriptor to another with read() and write().
+ *
+ * A null offset pointer means the descriptor's own position is used and
+ * advanced; a non-null one means pread()/pwrite() at that offset, which
+ * is then advanced by what moved. Whatever got copied before an error
+ * is returned as a short count, so the caller sees -1 only when nothing
+ * moved at all. When a write fails partway through a chunk that was
+ * read from the descriptor's own position, the read position is moved
+ * back over the unwritten bytes if the source is seekable.
+ */
+ssize_t __copy_fd_range(int infd, int64_t *inoff, int outfd, int64_t *outoff,
+                        size_t n) {
+  char stack[COPY_STACK_BUF];
+  char *buf = stack;
+  size_t bufsize = sizeof(stack);
+  size_t total = 0;
+  bool failed = false;
+  if (n > sizeof(stack)) {
+    bufsize = MIN(n, COPY_MAP_BUF);
+    if (!(buf = _mapanon(bufsize)))
+      return -1;
+  }
+  while (total < n && !failed) {
+    ssize_t got;
+    size_t want = MIN(n - total, bufsize);
+    if (inoff) {
+      got = pread(infd, buf, want, *inoff);
+    } else {
+      got = read(infd, buf, want);
+    }
+    if (got == -1) {
+      failed = true;
+      break;
+    }
+    if (!got)
+      break;
+    size_t put = 0;
+    while (put < got) {
+      ssize_t w;
+      if (outoff) {
+        w = pwrite(outfd, buf + put, got - put, *outoff);
+      } else {
+        w = write(outfd, buf + put, got - put);
+      }
+      if (w == -1) {
+        failed = true;
+        break;
+      }
+      put += w;
+      if (outoff)
+        *outoff += w;
+    }
+    if (inoff) {
+      *inoff += put;
+    } else if (put < got) {
+      int e = errno;
+      lseek(infd, -(int64_t)(got - put), SEEK_CUR);
+      errno = e;
+    }
+    total += put;
+  }
+  if (buf != stack) {
+    int e = errno;
+    munmap(buf, bufsize);
+    errno = e;
+  }
+  if (failed && !total)
+    return -1;
+  return total;
+}
+
+/**
  * Transfers data between files.
  *
  * If this system call is available (Linux c. 2018 or FreeBSD c. 2021)
@@ -74,6 +151,12 @@ static void copy_file_range_init(void) {
  * due to a faulty backport, that happened in RHEL7. FreeBSD detection
  * on the other hand will work fine.
  *
+ * Where the kernel has no such call (Windows, MacOS, NetBSD, OpenBSD,
+ * older Linux) or answers EXDEV or EOPNOTSUPP before anything moved,
+ * the copy is done with pread()/pwrite() or read()/write() instead,
+ * with the same offset semantics. That also covers a source under
+ * /zip/, which the kernel call can't see.
+ *
  * @param infd is source file, which should be on same file system
  * @param opt_in_out_inoffset may be specified for pread() behavior
  * @param outfd should be a writable file, but not `O_APPEND`
@@ -81,9 +164,7 @@ static void copy_file_range_init(void) {
  * @param uptobytes is maximum number of bytes to transfer
  * @param flags is reserved for future use and must be zero
  * @return number of bytes transferred, or -1 w/ errno
- * @raise EXDEV if source and destination are on different filesystems
  * @raise EBADF if `infd` or `outfd` aren't open files or append-only
- * @raise EOPNOTSUPP if filesystem doesn't support this operation
  * @raise EPERM if `fdout` refers to an immutable file on Linux
  * @raise ECANCELED if thread was cancelled in masked mode
  * @raise EINVAL if ranges overlap or `flags` is non-zero
@@ -95,7 +176,6 @@ static void copy_file_range_init(void) {
  * @raise ETXTBSY if source or dest is a swap file
  * @raise EINTR if a signal was delivered instead
  * @raise EISDIR if source or dest is a directory
- * @raise ENOSYS if not Linux 5.9+ or FreeBSD 13+
  * @raise EIO if a low-level i/o error happens
  * @see sendfile() for seekable → socket
  * @see splice() for fd ↔ pipe
@@ -107,18 +187,22 @@ ssize_t copy_file_range(int infd, int64_t *opt_in_out_inoffset, int outfd,
   ssize_t rc;
   cosmo_once(&g_copy_file_range.once, copy_file_range_init);
   BEGIN_CANCELATION_POINT;
-
-  if (!g_copy_file_range.ok) {
-    rc = enosys();
+  if (flags) {
+    rc = einval();
   } else if (__isfdkind(outfd, kFdZip)) {
     rc = ebadf();
-  } else if (__isfdkind(infd, kFdZip)) {
-    rc = exdev();
+  } else if (!g_copy_file_range.ok || __isfdkind(infd, kFdZip)) {
+    rc = __copy_fd_range(infd, opt_in_out_inoffset, outfd,
+                         opt_in_out_outoffset, uptobytes);
   } else {
     rc = sys_copy_file_range(infd, opt_in_out_inoffset, outfd,
                              opt_in_out_outoffset, uptobytes, flags);
+    if (rc == -1 &&
+        (errno == ENOSYS || errno == EXDEV || errno == EOPNOTSUPP)) {
+      rc = __copy_fd_range(infd, opt_in_out_inoffset, outfd,
+                           opt_in_out_outoffset, uptobytes);
+    }
   }
-
   END_CANCELATION_POINT;
   STRACE("copy_file_range(%d, %s, %d, %s, %'zu, %#x) → %'ld% m", infd,
          DescribeInOutInt64(rc, opt_in_out_inoffset), outfd,

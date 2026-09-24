@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/sig.internal.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/struct/iovec.h"
@@ -1175,6 +1176,13 @@ textwindows static ssize_t ReadBuffer(int fd, void *data, size_t size,
 
   if (f->kind == kFdConsole)
     return ReadFromConsole(f, data, size, waitmask);
+
+  // a pty master ends when the slaves are gone, not when conhost is
+  if (f->pty && f->ptymaster && _weaken(__pty_wait_readable)) {
+    int st = _weaken(__pty_wait_readable)(f, !!(f->flags & O_NONBLOCK));
+    if (st <= 0)
+      return st;
+  }
 
   // perform heavy lifting
   ssize_t rc;

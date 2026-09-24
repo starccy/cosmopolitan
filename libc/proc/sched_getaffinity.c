@@ -19,6 +19,7 @@
 #include "libc/calls/sched-sysv.internal.h"
 #include "libc/calls/struct/cpuset.h"
 #include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/cosmo.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
 #include "libc/nt/errors.h"
@@ -44,6 +45,15 @@ static dontinline textwindows int sys_sched_getaffinity_nt(int pid, size_t size,
   }
 }
 
+// XNU has no cpu masks, so a process may run anywhere
+static int sys_sched_getaffinity_xnu(cpu_set_t *bitset) {
+  int n = cosmo_cpu_count();
+  bzero(bitset, sizeof(*bitset));
+  for (int i = 0; i < n && i < CPU_SETSIZE; ++i)
+    CPU_SET(i, bitset);
+  return sizeof(*bitset);
+}
+
 /**
  * Gets CPU affinity for process.
  *
@@ -52,7 +62,7 @@ static dontinline textwindows int sys_sched_getaffinity_nt(int pid, size_t size,
  * @param bitset receives bitset and should be uint64_t[16] in order to
  *     work on older versions of Linux
  * @return 0 on success, or -1 w/ errno
- * @raise ENOSYS if not Linux, FreeBSD, NetBSD, or Windows
+ * @raise ENOSYS if not Linux, FreeBSD, NetBSD, MacOS, or Windows
  * @see pthread_getaffinity_np() for threads
  */
 int sched_getaffinity(int pid, size_t size, cpu_set_t *bitset) {
@@ -61,6 +71,8 @@ int sched_getaffinity(int pid, size_t size, cpu_set_t *bitset) {
     rc = einval();
   } else if (IsWindows()) {
     rc = sys_sched_getaffinity_nt(pid, size, bitset);
+  } else if (IsXnu()) {
+    rc = sys_sched_getaffinity_xnu(bitset);
   } else if (IsFreebsd()) {
     if (!sys_sched_getaffinity_freebsd(CPU_LEVEL_WHICH, CPU_WHICH_PID, pid, 32,
                                        bitset)) {

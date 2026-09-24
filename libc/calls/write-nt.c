@@ -17,6 +17,7 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/sig.internal.h"
 #include "libc/calls/struct/iovec.h"
 #include "libc/calls/struct/sigset.h"
@@ -74,6 +75,8 @@ textwindows static ssize_t sys_write_nt_impl(int fd, void *data, size_t size,
   int64_t handle = f->handle;
   if (isconsole && _weaken(GetConsoleOutputHandle))
     handle = _weaken(GetConsoleOutputHandle)();
+  if (f->pty && _weaken(__pty_write_handle))
+    handle = _weaken(__pty_write_handle)(f);
 
   // intercept ansi tty configuration sequences
   if (isconsole && _weaken(GetConsoleOutputHandle))

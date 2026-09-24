@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/struct/termios.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
@@ -808,6 +809,11 @@ int ioctl(int fd, unsigned long request, ...) {
   } else if (request == TCSETS2 || request == TCSETSW2 ||
              request == TCSETSF2) {
     rc = ioctl_tcsets(fd, arg, true, request - TCSETS2);
+  } else if (IsWindows() && request == TIOCSCTTY) {
+    rc = __isfdopen(fd) && (__get_pib()->fds.p[fd].pty ||
+                            __isfdkind(fd, kFdConsole))
+             ? 0
+             : enotty();
   } else if (request == TIOCGPGRP) {
     rc = ioctl_tiocgpgrp(fd, arg);
   } else if (request == TIOCSPGRP) {

@@ -17,6 +17,8 @@ COSMOPOLITAN_C_START_
 
 extern const struct Fd kEmptyFd;
 
+struct Fd;
+void __scm_forget_nt(struct Fd *);
 int __reservefd(int);
 int __reservefd_unlocked(int);
 void __releasefd(int);
@@ -72,6 +74,7 @@ forceinline bool __isfdkind(int fd, int kind) {
   return fd < __get_pib()->fds.n && __get_pib()->fds.p[fd].kind == kind;
 }
 
+ssize_t __copy_fd_range(int, int64_t *, int, int64_t *, size_t);
 int _check_signal(bool);
 int _check_cancel(void);
 bool _is_canceled(void);

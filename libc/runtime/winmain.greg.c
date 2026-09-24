@@ -42,6 +42,7 @@
 #include "libc/nt/pedef.internal.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
+#include "libc/nt/synchronization.h"
 #include "libc/nt/signals.h"
 #include "libc/nt/struct/systeminfo.h"
 #include "libc/nt/systeminfo.h"
@@ -77,6 +78,7 @@ __msabi extern typeof(GetCurrentDirectory) *const __imp_GetCurrentDirectoryW;
 __msabi extern typeof(GetCurrentProcessId) *const __imp_GetCurrentProcessId;
 __msabi extern typeof(GetEnvironmentStrings) *const __imp_GetEnvironmentStringsW;
 __msabi extern typeof(GetEnvironmentVariable) *const __imp_GetEnvironmentVariableW;
+__msabi extern typeof(SleepEx) *const __imp_SleepEx;
 __msabi extern typeof(GetFileAttributes) *const __imp_GetFileAttributesW;
 __msabi extern typeof(GetStdHandle) *const __imp_GetStdHandle;
 __msabi extern typeof(GetSystemInfo) *const __imp_GetSystemInfo;
@@ -335,6 +337,11 @@ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
                     const char *lpCmdLine, int64_t nCmdShow) {
   const char16_t *cmdline;
   extern char os asm("__hostos");
+  // a pty holder only exists to keep its console attachable
+  char16_t hold[2];
+  if (__imp_GetEnvironmentVariableW(u"__COSMO_PTYHOLD", hold, 2))
+    for (;;)
+      __imp_SleepEx(-1u, false);
   os = _HOSTWINDOWS;  // madness https://news.ycombinator.com/item?id=21019722
   __tls_enabled = false;
   __sig_wipe();

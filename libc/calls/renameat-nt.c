@@ -28,10 +28,13 @@
 #include "libc/nt/enum/movefileexflags.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/files.h"
+#include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/filerenameinformation.h"
 #include "libc/runtime/stack.h"
+#include "libc/stdio/rand.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/rename.h"
 #include "libc/sysv/errfuns.h"
 
 textwindows static bool IsDirectory(uint32_t dwFileAttrs) {
@@ -69,15 +72,50 @@ textwindows static bool PosixRename(const char16_t *oldpath16,
   return ok;
 }
 
-textwindows int sys_renameat_nt(int olddirfd, const char *oldpath, int newdirfd,
-                                const char *newpath) {
+// Swaps two names through "<newpath>.<random>~". MoveFileEx() has no
+// exchange, so this is three renames, undone as far as possible when
+// one of the later ones fails.
+textwindows static int ExchangeNt(char16_t *oldpath16, char16_t *newpath16,
+                                  char16_t *tmp16) {
+  uint32_t e;
+  size_t n = strlen16(newpath16);
+  if (n + 18 >= PATH_MAX)
+    return enametoolong();
+  memcpy(tmp16, newpath16, n * sizeof(char16_t));
+  tmp16[n++] = '.';
+  uint64_t r = _rand64();
+  for (int i = 0; i < 16; ++i, r >>= 4)
+    tmp16[n++] = "0123456789abcdef"[r & 15];
+  tmp16[n++] = '~';
+  tmp16[n] = 0;
+  if (!MoveFileEx(newpath16, tmp16, 0))
+    return __winerr();
+  if (!MoveFileEx(oldpath16, newpath16, 0)) {
+    e = GetLastError();
+    MoveFileEx(tmp16, newpath16, 0);
+    SetLastError(e);
+    return __winerr();
+  }
+  if (!MoveFileEx(tmp16, oldpath16, 0)) {
+    e = GetLastError();
+    if (MoveFileEx(newpath16, oldpath16, 0))
+      MoveFileEx(tmp16, newpath16, 0);
+    SetLastError(e);
+    return __winerr();
+  }
+  return 0;
+}
 
+textwindows int sys_renameat2_nt(int olddirfd, const char *oldpath,
+                                 int newdirfd, const char *newpath,
+                                 unsigned flags) {
   // allocate memory
 #pragma GCC push_options
 #pragma GCC diagnostic ignored "-Wframe-larger-than="
   struct {
     char16_t oldpath16[PATH_MAX];
     char16_t newpath16[PATH_MAX];
+    char16_t tmp16[PATH_MAX];
   } M;
   CheckLargeStackAllocation(&M, sizeof(M));
 #pragma GCC pop_options
@@ -104,9 +142,24 @@ textwindows int sys_renameat_nt(int olddirfd, const char *oldpath, int newdirfd,
     M.oldpath16[n] = save;
   }
 
-  // simulate unix directory status errors
   uint32_t oldattr = GetFileAttributes(M.oldpath16);
   uint32_t newattr = GetFileAttributes(M.newpath16);
+
+  if (flags & RENAME_EXCHANGE) {
+    if (oldattr == -1u || newattr == -1u)
+      return enoent();
+    return ExchangeNt(M.oldpath16, M.newpath16, M.tmp16);
+  }
+
+  if (flags & RENAME_NOREPLACE) {
+    if (newattr != -1u)
+      return eexist();
+    if (!MoveFileEx(M.oldpath16, M.newpath16, 0))
+      return __fix_enotdir2(-1, M.oldpath16, M.newpath16);
+    return 0;
+  }
+
+  // simulate unix directory status errors
   if (oldattr != -1u && newattr != -1u) {
     if (!IsDirectory(oldattr) && IsDirectory(newattr))
       return eisdir();
@@ -127,4 +180,9 @@ textwindows int sys_renameat_nt(int olddirfd, const char *oldpath, int newdirfd,
 
   // we're done
   return 0;
+}
+
+textwindows int sys_renameat_nt(int olddirfd, const char *oldpath, int newdirfd,
+                                const char *newpath) {
+  return sys_renameat2_nt(olddirfd, oldpath, newdirfd, newpath, 0);
 }

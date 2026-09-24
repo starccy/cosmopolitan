@@ -19,6 +19,7 @@
 #include "libc/assert.h"
 #include "libc/calls/blockcancel.internal.h"
 #include "libc/calls/calls.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/struct/metatermios.internal.h"
 #include "libc/calls/struct/termios.h"
 #include "libc/calls/struct/winsize.h"
@@ -54,7 +55,7 @@ static int openpty_impl(int *mfd, int *sfd, char *name,
     RETURN_ON_ERROR(grantpt(m));
     RETURN_ON_ERROR(unlockpt(m));
     RETURN_ON_ERROR(_ptsname(m, t.sname, sizeof(t.sname)));
-    RETURN_ON_ERROR((s = sys_openat(AT_FDCWD, t.sname, O_RDWR, 0)));
+    RETURN_ON_ERROR((s = sys_openat(AT_FDCWD, t.sname, O_RDWR | O_NOCTTY, 0)));
   } else {
     RETURN_ON_ERROR(sys_ioctl(m, PTMGET, &t));
     close(m);
@@ -90,11 +91,17 @@ int openpty(int *mfd, int *sfd, char *name,  //
             const struct termios *tio,       //
             const struct winsize *wsz) {
   int rc;
-  if (IsWindows() || IsMetal()) {
+  if (IsMetal()) {
     return enosys();
   }
   BLOCK_CANCELATION;
-  rc = openpty_impl(mfd, sfd, name, tio, wsz);
+  if (IsWindows()) {
+    rc = sys_openpty_nt(mfd, sfd, wsz);
+    if (!rc && name)
+      strcpy(name, "/dev/pty");
+  } else {
+    rc = openpty_impl(mfd, sfd, name, tio, wsz);
+  }
   ALLOW_CANCELATION;
   return rc;
 }

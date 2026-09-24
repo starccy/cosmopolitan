@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/sig.internal.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/struct/sigset.h"
@@ -277,6 +278,32 @@ textwindows static int sys_poll_nt_stale(struct pollfd *fds, int *indices,
   return found;
 }
 
+// WSAPoll() fails the whole call if any one socket handle upsets it
+// (ENOTSOCK for a handle winsock doesn't own, EINVAL for some shared
+// duplicates). linux instead marks that pollfd POLLNVAL and lets the
+// rest of the set report. this polls each socket on its own so one bad
+// descriptor can't blind the others. returns how many entries got
+// revents, marking the ones winsock still rejects POLLNVAL.
+textwindows static int sys_poll_nt_probe(struct pollfd *fds, int *indices,
+                                         struct sys_pollfd_nt *sockfds, int n) {
+  int found = 0;
+  for (int i = 0; i < n; ++i) {
+    int fi = indices[i];
+    if (fds[fi].revents)
+      continue;
+    struct sys_pollfd_nt one = {sockfds[i].handle, sockfds[i].events, 0};
+    int r = WSAPoll(&one, 1, 0);
+    if (r > 0 && one.revents) {
+      fds[fi].revents |= one.revents;
+      ++found;
+    } else if (r == -1) {
+      fds[fi].revents = POLLNVAL_;
+      ++found;
+    }
+  }
+  return found;
+}
+
 // Polls on the New Technology.
 //
 // This function is used to implement poll() and select(). You may poll
@@ -399,9 +426,18 @@ textwindows static int sys_poll_nt_actual_impl(
         fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
       } else if (GetFileType(filehands[i]) == kNtFileTypePipe) {
         gotpipe = true;
+        // a pty master takes input through a second pipe, so it is
+        // writable even while this read pipe has nothing to hand back
+        bool ptym = __get_pib()->fds.p[fds[fi].fd].ptymaster;
         if (PeekNamedPipe(filehands[i], 0, 0, 0, &avail, 0)) {
-          if (avail)
+          if (avail) {
             fds[fi].revents = POLLRDNORM_;
+          } else if (ptym && _weaken(__pty_hangup) &&
+                     _weaken(__pty_hangup)(__get_pib()->fds.p + fds[fi].fd)) {
+            fds[fi].revents = POLLHUP_;
+          }
+          if (ptym && !(fds[fi].revents & POLLHUP_))
+            fds[fi].revents |= ev & POLLWRNORM_;
         } else if (GetLastError() == kNtErrorHandleEof ||
                    GetLastError() == kNtErrorBrokenPipe) {
           fds[fi].revents = POLLHUP_;
@@ -456,9 +492,7 @@ textwindows static int sys_poll_nt_actual_impl(
       if (fast && already_slept)
         __nt_fast_tick(false);
       if (gotsocks == -1) {
-        if (WSAGetLastError() == WSAENOTSOCK &&
-            (gotsocks = sys_poll_nt_stale(fds, sockindices, &sockfds[0].handle,
-                                          sizeof(*sockfds), sn))) {
+        if ((gotsocks = sys_poll_nt_probe(fds, sockindices, sockfds, sn))) {
           rc += gotsocks;
           break;
         }
@@ -574,6 +608,10 @@ textwindows static int sys_poll_nt_actual_impl(
               (__get_pib()->fds.p[fds[fi].fd].flags & O_ACCMODE) != O_WRONLY) {
             if (PeekNamedPipe(filehands[wi], 0, 0, 0, &avail, 0)) {
               fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
+              if (!avail && __get_pib()->fds.p[fds[fi].fd].ptymaster &&
+                  _weaken(__pty_hangup) &&
+                  _weaken(__pty_hangup)(__get_pib()->fds.p + fds[fi].fd))
+                fds[fi].revents = POLLHUP_;
             } else if (GetLastError() == kNtErrorHandleEof ||
                        GetLastError() == kNtErrorBrokenPipe) {
               fds[fi].revents = POLLHUP_;

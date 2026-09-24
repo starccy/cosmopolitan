@@ -19,6 +19,7 @@
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/struct/rlimit.h"
 #include "libc/calls/struct/sigset.internal.h"
@@ -97,6 +98,13 @@ textwindows static int sys_dup_nt_impl(int oldfd, int newfd, int flags,
 
   // track fd to file descriptors table
   __get_pib()->fds.p[newfd] = __get_pib()->fds.p[oldfd];
+  __get_pib()->fds.p[newfd].scm = 0;
+  if (__get_pib()->fds.p[newfd].pty) {
+    struct Pty *pty = __get_pib()->fds.p[newfd].pty;
+    ++pty->refs;
+    if (__get_pib()->fds.p[newfd].ptymaster)
+      ++pty->mrefs;
+  }
   __get_pib()->fds.p[newfd].handle = handle;
   __get_pib()->fds.p[newfd].was_created_during_vfork = __vforked;
   __cursor_ref(__get_pib()->fds.p[newfd].cursor);
