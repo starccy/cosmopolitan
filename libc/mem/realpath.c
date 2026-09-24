@@ -40,7 +40,7 @@
 #include "libc/intrin/weaken.h"
 __static_yoink("musl_libc_notice");
 
-int __ape_shim_unc_collapsed(const char *);
+int __unc_collapsed(const char *);
 
 #define SYMLOOP_MAX 40
 
@@ -132,8 +132,8 @@ char *realpath(const char *filename, char *resolved)
 		/* a share path whose leading "//" unix path code collapsed
 		 * to "/" gets its second slash back, so the walk below sees
 		 * the //server/share form it knows */
-		if (_weaken(__ape_shim_unc_collapsed) &&
-		    _weaken(__ape_shim_unc_collapsed)(output)) {
+		if (_weaken(__unc_collapsed) &&
+		    _weaken(__unc_collapsed)(output)) {
 			if (l + 1 >= PATH_MAX)
 				goto toolong;
 			memmove(output + 1, output, l + 1);

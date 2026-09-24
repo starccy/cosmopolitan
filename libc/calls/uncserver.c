@@ -1,3 +1,4 @@
+#include "libc/atomic.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
@@ -42,6 +43,16 @@
  * so a share name reaches the real share rather than its placeholder.
  * The same join serves ".." climbing out of a share root, which NT would
  * otherwise clamp at the root.
+ *
+ * Every "//server/share" this process names or has as its cwd is also
+ * remembered, since POSIX leaves a leading "//" implementation-defined
+ * and unix path code (realpath-style normalizers, Rust's Path) collapses
+ * it to "/server/share/x", which NT reads as a path on the current
+ * drive: on a share cwd that is the share root itself, so a file saved
+ * under the collapsed cwd landed in <share>/server/share/x with the
+ * directories quietly created. A single-slash path whose first two
+ * components match a remembered share gets its second slash back. A
+ * remembered pair is required, so /usr/x is never touched.
  */
 
 #define STALE_SECS 3600
@@ -65,6 +76,16 @@ static size_t __unc_rootlen;
 static char __unc_root_unix[PATH_MAX];  // the same as getcwd() spells it
 static size_t __unc_root_unixlen;
 static bool __unc_seen;  // a unc path or cwd has come through here
+
+// share roots seen, as "server/share" in the spelling first seen;
+// matched ascii case-insensitively like NT does. writers take the
+// spinlock; a reader sees an entry once the count publishing it is
+// stored, so lookups take no lock
+#define UNC_ROOT_MAX 16
+#define UNC_ROOT_LEN 256
+static char __unc_roots[UNC_ROOT_MAX][UNC_ROOT_LEN];
+static int __unc_count;
+static int __unc_spin;
 
 static bool IsSlash(int c) {
   return c == '/' || c == '\\';
@@ -92,6 +113,88 @@ static size_t UncRootLen(const char *p) {
       (i - share == 1 || (i - share == 2 && p[share + 1] == '.')))
     return 0;
   return i;
+}
+
+static bool UncRootEquals(const char *root, const char *p, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    int a = root[i], b = p[i];
+    if (IsSlash(a) && IsSlash(b))
+      continue;
+    if (tolower(a) != tolower(b))
+      return false;
+  }
+  return !root[n];
+}
+
+static bool UncRootKnown(const char *p, size_t n) {
+  int count = atomic_load_explicit(&__unc_count, memory_order_acquire);
+  for (int i = 0; i < count; i++)
+    if (UncRootEquals(__unc_roots[i], p, n))
+      return true;
+  return false;
+}
+
+// remembers the share a "//server/share/..." path names
+static void UncNote(const char *path) {
+  if (!IsSlash(path[0]) || !IsSlash(path[1]))
+    return;
+  const char *p = path + 2;
+  size_t n = UncRootLen(p);
+  if (!n || n >= UNC_ROOT_LEN || UncRootKnown(p, n))
+    return;
+  while (atomic_exchange_explicit(&__unc_spin, 1, memory_order_acquire))
+    ;
+  int count = __unc_count;
+  if (!UncRootKnown(p, n) && count < UNC_ROOT_MAX) {
+    memcpy(__unc_roots[count], p, n);
+    __unc_roots[count][n] = 0;
+    atomic_store_explicit(&__unc_count, count + 1, memory_order_release);
+  }
+  atomic_store_explicit(&__unc_spin, 0, memory_order_release);
+}
+
+// true when some remembered share lives on this server
+static bool UncServerKnown(const char *p, size_t n) {
+  int count = atomic_load_explicit(&__unc_count, memory_order_acquire);
+  for (int i = 0; i < count; i++) {
+    const char *r = __unc_roots[i];
+    size_t k = 0;
+    while (k < n && r[k] && tolower(r[k]) == tolower(p[k]))
+      k++;
+    if (k == n && IsSlash(r[k]))
+      return true;
+  }
+  return false;
+}
+
+// true for "/server/share..." naming a remembered share, i.e. a unc
+// path whose leading "//" was collapsed. a bare "/server" counts when
+// a share on it is remembered, which is what the parent of a collapsed
+// share root looks like
+static bool IsCollapsedUnc(const char *path) {
+  if (!IsSlash(path[0]) || IsSlash(path[1]))
+    return false;
+  if (isalpha(path[1]) && (IsSlash(path[2]) || !path[2]))
+    return false;  // a /c/... drive path
+  if (!atomic_load_explicit(&__unc_count, memory_order_acquire))
+    return false;
+  size_t n = UncRootLen(path + 1);
+  if (n)
+    return UncRootKnown(path + 1, n);
+  size_t k = 1;
+  while (path[k] && !IsSlash(path[k]))
+    k++;
+  if (path[k] && (!IsSlash(path[k]) || path[k + 1]))
+    return false;
+  return UncServerKnown(path + 1, k - 1);
+}
+
+/**
+ * Tells realpath() a "/server/share" path is a collapsed share path,
+ * which must not be resolved against the cwd.
+ */
+textwindows int __unc_collapsed(const char *path) {
+  return path && IsCollapsedUnc(path);
 }
 
 // removes path (a win32 directory) and everything under it. path needs
@@ -488,6 +591,17 @@ textwindows int __unc_fixpath(const char *path, char *out, size_t outsz) {
   if (cur[0] && !IsSlash(cur[0]) && !(isalpha(cur[0]) && cur[1] == ':') &&
       Relative(cur, relbuf, sizeof(relbuf)))
     cur = relbuf;
+  char uncbuf[PATH_MAX];
+  if (IsSlash(cur[0]) && IsSlash(cur[1])) {
+    UncNote(cur);
+  } else if (IsCollapsedUnc(cur)) {
+    size_t len = strlen(cur);
+    if (len + 2 <= sizeof(uncbuf)) {
+      uncbuf[0] = '/';
+      memcpy(uncbuf + 1, cur, len + 1);
+      cur = uncbuf;
+    }
+  }
   if (!IsSlash(cur[0]) || !IsSlash(cur[1]) || !cur[2] || IsSlash(cur[2]) ||
       cur[2] == '?' || cur[2] == '.') {
     if (cur == path)
@@ -522,8 +636,10 @@ Done:
  */
 textwindows int __unc_cwd(char *buf, size_t size) {
   const char *rest;
-  if (buf[0] == '/' && buf[1] == '/')
+  if (buf[0] == '/' && buf[1] == '/') {
     __unc_seen = true;
+    UncNote(buf);
+  }
   if (!__unc_root_unixlen || !UnderRoot(buf, &rest))
     return 0;
   size_t n = strlen(rest);

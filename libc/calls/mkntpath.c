@@ -13,6 +13,7 @@
 // TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 // PERFORMANCE OF THIS SOFTWARE.
 
+#include "libc/atomic.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/ctype.h"
@@ -20,6 +21,7 @@
 #include "libc/limits.h"
 #include "libc/nt/enum/fileflagandattributes.h"
 #include "libc/nt/files.h"
+#include "libc/nt/systeminfo.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
@@ -369,12 +371,66 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
   return filelen;
 }
 
-// the rewrites a unix path goes through before conversion: the shim's,
-// if one is linked in, then the "\\server" directory of uncserver.c.
-// returns the path to convert (path itself, or buf), or null with errno
+// the host's temp directory as a unix path with a trailing slash, from
+// GetTempPath() (%TMP%, %TEMP%, %USERPROFILE%, the windows directory)
+textwindows static const char *__tmpdirpath(size_t *len) {
+  static char dir[PATH_MAX];
+  static size_t dirlen;
+  if (!atomic_load_explicit(&dirlen, memory_order_acquire)) {
+    char16_t dir16[PATH_MAX];
+    char tmp[PATH_MAX];
+    uint32_t n = GetTempPath(PATH_MAX, dir16);
+    if (!n || n >= PATH_MAX)
+      return 0;
+    int m = __mkunixpath(dir16, tmp);
+    if (m <= 0 || m >= PATH_MAX - 1)
+      return 0;
+    if (tmp[m - 1] != '/')
+      tmp[m++] = '/', tmp[m] = 0;
+    memcpy(dir, tmp, m + 1);
+    atomic_store_explicit(&dirlen, m, memory_order_release);
+  }
+  *len = dirlen;
+  return dir;
+}
+
+// "/tmp" and everything under it is the host's temp directory, which
+// is where programs written against unix expect a writable scratch
+// directory to be; the cosmos drive has no /tmp of its own
+textwindows static int __tmpfixpath(const char *path, char *out,
+                                    size_t outsz) {
+  if (path[0] != '/' || path[1] != 't' || path[2] != 'm' || path[3] != 'p' ||
+      (path[4] && path[4] != '/' && path[4] != '\\'))
+    return 0;
+  size_t dirlen;
+  const char *dir = __tmpdirpath(&dirlen);
+  if (!dir)
+    return 0;
+  const char *rest = path + 4;
+  while (*rest == '/' || *rest == '\\')
+    rest++;
+  size_t restlen = strlen(rest);
+  if (dirlen + restlen + 1 > outsz)
+    return enametoolong();
+  memcpy(out, dir, dirlen);
+  memcpy(out + dirlen, rest, restlen + 1);
+  return 1;
+}
+
+// the rewrites a unix path goes through before conversion: "/tmp", the
+// shim's, if one is linked in, then the "\\server" directory and the
+// share roots of uncserver.c. returns the path to convert (path itself,
+// or buf), or null with errno
 dontinline textwindows static const char *__rewritepath(const char *path,
                                                         char *buf) {
   char tmp[PATH_MAX];
+  int rc = __tmpfixpath(path, tmp, sizeof(tmp));
+  if (rc == -1)
+    return 0;
+  if (rc) {
+    memcpy(buf, tmp, strlen(tmp) + 1);
+    path = buf;
+  }
   if (_weaken(__ape_shim_ntpath_rewrite)) {
     int rc = _weaken(__ape_shim_ntpath_rewrite)(path, tmp, sizeof(tmp));
     if (rc == -1)
