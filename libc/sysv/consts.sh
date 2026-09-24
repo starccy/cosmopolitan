@@ -97,9 +97,9 @@ syscon	waitpid	WCONTINUED				8			8			0x10			0x10			4			8			16			8			#
 #	no dice on openbsd >:\
 #
 #	group	name					GNU/Systemd		GNU/Systemd (Aarch64)	XNU's Not UNIX!		MacOS (Arm64)		FreeBSD			OpenBSD			NetBSD			The New Technology	Commentary
-syscon	waitid	WEXITED					4			4			4			4			0x10			0			32			0
-syscon	waitid	WSTOPPED				2			2			8			8			2			0			2			0
-syscon	waitid	WNOWAIT					0x01000000		0x01000000		0x20			0x20			8			0			0x10000			0
+syscon	waitid	WEXITED					4			4			4			4			0x10			4			32			0
+syscon	waitid	WSTOPPED				2			2			8			8			2			2			2			0
+syscon	waitid	WNOWAIT					0x01000000		0x01000000		0x20			0x20			8			0x10			0x10000			0
 
 #	fcntl() POSIX Advisory Locks
 #

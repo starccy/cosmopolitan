@@ -62,6 +62,7 @@ void __proc_wipe_and_reset(void);
 intptr_t __proc_worker_handle(void);
 int __proc_harvest(struct Proc *, bool);
 int sys_wait4_nt(int, int *, int, struct rusage *);
+int sys_waitid_nt(int, int, int *, int);
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_PROC_H_ */

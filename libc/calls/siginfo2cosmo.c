@@ -21,6 +21,7 @@
 #include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/sig.h"
 
 __privileged void __siginfo2cosmo(siginfo_t *si, const union siginfo_meta *m) {
@@ -101,6 +102,9 @@ __privileged void __siginfo2cosmo(siginfo_t *si, const union siginfo_meta *m) {
       si_signo == SIGTRAP) {
     si->si_addr = si_addr;
   } else if (si_signo == SIGCHLD) {
+    // the status is a signal number unless the child exited
+    if (si_code != CLD_EXITED)
+      si_status = __sig2linux(si_status);
     si->si_status = si_status;
     si->si_pid = si_pid;
     si->si_uid = si_uid;
