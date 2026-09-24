@@ -111,6 +111,7 @@ textwindows int tcsetattr_nt(int fd, int opt, const struct termios *tio) {
   // tune the win32 configuration
   unassert(SetConsoleMode(hInput, inmode));
   unassert(SetConsoleMode(hOutput, outmode));
+  sys_console_sync_nt();
   return 0;
 }
 

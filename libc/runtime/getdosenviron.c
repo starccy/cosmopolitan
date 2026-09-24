@@ -138,6 +138,13 @@ abi int GetDosEnviron(const char16_t *env, char *buf, size_t size, char **envp,
   i = 0;
   --size;
   while (*env) {
+    // per-drive working directories are kept under names like =C:,
+    // which have no name before the first equals sign
+    if (*env == '=') {
+      while (*env++) {
+      }
+      continue;
+    }
     if (i + 1 < max)
       envp[i++] = buf;
     r = Recode16to8(buf, size, env);

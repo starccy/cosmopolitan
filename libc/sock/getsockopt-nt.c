@@ -54,6 +54,14 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
     in_optlen = 0;
   }
 
+  int parked;
+  if (in_optlen >= sizeof(int) &&
+      __sockopt_lookup(fd->handle, level, optname, &parked)) {
+    *(int *)out_opt_optval = parked;
+    *inout_optlen = sizeof(int);
+    return 0;
+  }
+
   if (level == SOL_SOCKET && optname == SO_ERROR) {
     if (in_optlen < sizeof(int))
       return einval();

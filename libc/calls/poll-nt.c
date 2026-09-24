@@ -30,6 +30,8 @@
 #include "libc/errno.h"
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/fds.h"
+#include "libc/intrin/getenv.h"
+#include "libc/intrin/nomultics.h"
 #include "libc/intrin/weaken.h"
 #include "libc/macros.h"
 #include "libc/nt/console.h"
@@ -46,6 +48,7 @@
 #include "libc/nt/thunk/msabi.h"
 #include "libc/nt/time.h"
 #include "libc/nt/winsock.h"
+#include "libc/runtime/runtime.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/struct/pollfd.h"
 #include "libc/sysv/consts/o.h"
@@ -70,6 +73,38 @@
 #define POLL_PIPE_MS 10
 // </sync libc/sysv/consts.sh>
 
+// Pipes signal nothing, so the wait between looks at them decides how
+// soon a byte written by another thread shows up. It's 1ms for the first
+// POLL_BUDGET_MS of a call, which covers a round trip between threads,
+// and POLL_PIPE_MS once the call has been quiet for longer than that.
+// COSMOPOLITAN_POLL_MS moves the boundary; 0 turns the fast phase off.
+#define POLL_BUDGET_MS 250
+
+textwindows static int sys_poll_nt_budget(void) {
+  static int budget = -1;
+  if (budget == -1) {
+    int ms = POLL_BUDGET_MS;
+    const char *s = __getenv(environ, "COSMOPOLITAN_POLL_MS").s;
+    if (s) {
+      ms = 0;
+      for (; '0' <= *s && *s <= '9' && ms < 60000; ++s)
+        ms = ms * 10 + (*s - '0');
+    }
+    budget = ms;
+  }
+  return budget;
+}
+
+textwindows static uint32_t sys_poll_nt_pipems(struct timespec started) {
+  int budget = sys_poll_nt_budget();
+  if (budget > 0) {
+    struct timespec now = sys_clock_gettime_monotonic_nt();
+    if (timespec_tomillis(timespec_subz(now, started)) < budget)
+      return 1;
+  }
+  return POLL_PIPE_MS;
+}
+
 __msabi extern typeof(WaitForMultipleObjects)
     *const __imp_WaitForMultipleObjects;
 
@@ -92,6 +127,7 @@ textwindows static uint32_t sys_poll_nt_waitms(struct timespec deadline) {
 // both signals and posix thread cancelation, while the poll is polling
 textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
                                           struct timespec deadline,
+                                          struct timespec started,
                                           sigset_t waitmask,
                                           struct sys_pollfd_nt *sockfds,
                                           int *sockindices) {
@@ -99,7 +135,8 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
   int64_t filehands[64];
   int i, rc, ev, kind, gotsocks;
   bool gotpipe = false;
-  uint32_t cm, fi, sn, pn, avail, waitfor, already_slept;
+  bool gotconsole = false;
+  uint32_t cm, fi, sn, pn, avail, waitfor, pipems, already_slept;
 
   // ensure revents is cleared
   for (i = 0; i < nfds; ++i)
@@ -124,6 +161,7 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
         ++sn;
       } else if (kind == kFdFile || kind == kFdConsole) {
         // we can use WaitForMultipleObjects() for these fds
+        gotconsole |= kind == kFdConsole;
         if (pn == ARRAYLEN(fileindices) - 1) {  // last slot for signal event
           rc = einval();
           break;
@@ -150,6 +188,10 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
   __fds_unlock();
   if (rc == -1)
     return rc;
+
+  // another process on this console may have changed the mouse bit
+  if (gotconsole && (__ttyconf.magic & kTtyUncanon))
+    sys_console_sync_nt();
 
   // perform poll operation
   for (;;) {
@@ -198,8 +240,12 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
 
     // determine how long to wait
     waitfor = sys_poll_nt_waitms(deadline);
-    if (gotpipe && waitfor > POLL_PIPE_MS)
-      waitfor = POLL_PIPE_MS;
+    pipems = 0;
+    if (gotpipe) {
+      pipems = sys_poll_nt_pipems(started);
+      if (waitfor > pipems)
+        waitfor = pipems;
+    }
 
     // check for events and/or readiness on sockets
     // we always do this due to issues with POLLOUT
@@ -244,8 +290,13 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
       int sig = 0;
       uint32_t wi = pn;
       if (!_is_canceled() &&
-          !(_weaken(__sig_get) && (sig = _weaken(__sig_get)(waitmask))))
+          !(_weaken(__sig_get) && (sig = _weaken(__sig_get)(waitmask)))) {
+        if (pipems == 1)
+          __nt_fast_tick(true);
         wi = __imp_WaitForMultipleObjects(pn + 1, filehands, 0, waitfor);
+        if (pipems == 1)
+          __nt_fast_tick(false);
+      }
       //!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!//
       __interruptible_end();
       if (wi == -1u)
@@ -316,6 +367,7 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
 
 textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
                                         struct timespec deadline,
+                                        struct timespec started,
                                         const sigset_t waitmask) {
   int sockindices[64];
   int i, n, rc, files, got = 0;
@@ -331,7 +383,7 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
 
   // fast path
   if (nfds <= 63)
-    return sys_poll_nt_actual(fds, nfds, deadline, waitmask, sockfds,
+    return sys_poll_nt_actual(fds, nfds, deadline, started, waitmask, sockfds,
                               sockindices);
 
   __fds_lock();
@@ -347,7 +399,7 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
     size_t each = sizeof(struct sys_pollfd_nt) + sizeof(int);
     if ((mem = HeapAlloc(GetProcessHeap(), 0, nfds * each))) {
       rc = sys_poll_nt_actual(
-          fds, nfds, deadline, waitmask, mem,
+          fds, nfds, deadline, started, waitmask, mem,
           (int *)((char *)mem + nfds * sizeof(struct sys_pollfd_nt)));
       HeapFree(GetProcessHeap(), 0, mem);
       // a descriptor can turn into a file between the count and the call
@@ -361,8 +413,8 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
     for (i = 0; i < nfds; i += 63) {
       n = nfds - i;
       n = n > 63 ? 63 : n;
-      rc = sys_poll_nt_actual(fds + i, n, timespec_zero, waitmask, sockfds,
-                              sockindices);
+      rc = sys_poll_nt_actual(fds + i, n, timespec_zero, started, waitmask,
+                              sockfds, sockindices);
       if (rc == -1)
         return -1;
       got += rc;
@@ -373,7 +425,8 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
     if (timespec_cmp(now, deadline) >= 0)
       return 0;
     // what's here is mostly pipes, or it would have fit in one call
-    next = timespec_add(now, timespec_frommillis(POLL_PIPE_MS));
+    uint32_t pipems = sys_poll_nt_pipems(started);
+    next = timespec_add(now, timespec_frommillis(pipems));
     if (timespec_cmp(next, deadline) >= 0) {
       target = deadline;
     } else {
@@ -382,7 +435,12 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
     // _park_norestart() wants its deadline on the wall clock
     sys_clock_gettime_nt(0, &wall);
     wall = timespec_add(wall, timespec_sub(target, now));
-    if (_park_norestart(wall, waitmask) == -1)
+    if (pipems == 1)
+      __nt_fast_tick(true);
+    rc = _park_norestart(wall, waitmask);
+    if (pipems == 1)
+      __nt_fast_tick(false);
+    if (rc == -1)
       return -1;
   }
 }
@@ -393,10 +451,11 @@ textwindows int sys_poll_nt(struct pollfd *fds, uint64_t nfds,
   int rc;
   struct timespec now, timeout, deadline;
   BLOCK_SIGNALS;
-  now = relative ? sys_clock_gettime_monotonic_nt() : timespec_zero;
+  now = sys_clock_gettime_monotonic_nt();
   timeout = relative ? *relative : timespec_max;
-  deadline = timespec_add(now, timeout);
-  rc = sys_poll_nt_impl(fds, nfds, deadline, sigmask ? *sigmask : _SigMask);
+  deadline = relative ? timespec_add(now, timeout) : timespec_max;
+  rc = sys_poll_nt_impl(fds, nfds, deadline, now,
+                        sigmask ? *sigmask : _SigMask);
   ALLOW_SIGNALS;
   return rc;
 }

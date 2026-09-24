@@ -17,10 +17,12 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/dce.h"
+#include "libc/errno.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/sock.h"
 
 /**
  * Creates bidirectional pipe, e.g.
@@ -41,7 +43,17 @@ int socketpair(int family, int type, int protocol, int sv[2]) {
   if (family == AF_UNSPEC)
     family = AF_UNIX;
   if (!IsWindows()) {
-    return sys_socketpair(__af2host(family), type, protocol, sv);
+    int rc = sys_socketpair(__af2host(family), type, protocol, sv);
+    // xnu has no SOCK_SEQPACKET for AF_UNIX. a stream pair carries the
+    // same bytes, just without the record boundaries
+    if (rc == -1 && IsXnu() && family == AF_UNIX &&
+        (type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) == SOCK_SEQPACKET &&
+        (errno == EPROTONOSUPPORT || errno == ESOCKTNOSUPPORT ||
+         errno == EPROTOTYPE))
+      rc = sys_socketpair(__af2host(family),
+                          (type & (SOCK_CLOEXEC | SOCK_NONBLOCK)) | SOCK_STREAM,
+                          protocol, sv);
+    return rc;
   } else {
     return sys_socketpair_nt(family, type, protocol, sv);
   }

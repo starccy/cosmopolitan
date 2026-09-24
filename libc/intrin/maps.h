@@ -31,7 +31,8 @@ COSMOPOLITAN_C_START_
 /* if this is used on MAP_PRIVATE memory, then it's assumed to be memory
    that win32 allocated, e.g. a CreateThread() stack. if this is used on
    MAP_FILE memory, then it's assumed to be part of the executable image */
-#define MAP_NOFORK 0x10000000
+#define MAP_NOFORK   0x10000000
+#define MAP_NOCOMMIT 0x20000000  // nt: address space only, see mmap.c
 
 /* if true, mmap(0) will auto-assign sparse addresses which helps mremap */
 #define MMAP_IS_SPARSE (IsXnu() || IsFreebsd() || IsOpenbsd() || IsWindows())

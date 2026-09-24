@@ -19,11 +19,17 @@
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/limits.h"
+#include "libc/nt/createfile.h"
+#include "libc/nt/enum/accessmask.h"
+#include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/fileflagandattributes.h"
+#include "libc/nt/enum/fileinfobyhandleclass.h"
+#include "libc/nt/enum/filesharemode.h"
 #include "libc/nt/enum/movefileexflags.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/files.h"
 #include "libc/nt/runtime.h"
+#include "libc/nt/struct/filerenameinformation.h"
 #include "libc/runtime/stack.h"
 #include "libc/str/str.h"
 #include "libc/sysv/errfuns.h"
@@ -31,6 +37,36 @@
 textwindows static bool IsDirectory(uint32_t dwFileAttrs) {
   return (dwFileAttrs & kNtFileAttributeDirectory) &&
          !(dwFileAttrs & kNtFileAttributeReparsePoint);
+}
+
+// FileRenameInfoEx flags; they overlay the Replace field
+#define kNtFileRenameFlagReplaceIfExists 0x00000001u
+#define kNtFileRenameFlagPosixSemantics  0x00000002u
+
+// Renames with POSIX semantics, which unlinks a destination that other
+// handles still have open, the way MoveFileEx() can't. Windows 10 1607+.
+textwindows static bool PosixRename(const char16_t *oldpath16,
+                                    const char16_t *newpath16) {
+  struct {
+    struct NtFileRenameInformation info;
+    char16_t tail[PATH_MAX];
+  } M;
+  int64_t fh = CreateFile(
+      oldpath16, kNtDelete | kNtSynchronize,
+      kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, 0,
+      kNtOpenExisting, kNtFileFlagBackupSemantics, 0);
+  if (fh == -1)
+    return false;
+  size_t n = strlen16(newpath16);
+  M.info.Replace =
+      kNtFileRenameFlagReplaceIfExists | kNtFileRenameFlagPosixSemantics;
+  M.info.RootDir = 0;
+  M.info.FileNameLength = n * sizeof(char16_t);
+  memcpy(M.info.FileName, newpath16, (n + 1) * sizeof(char16_t));
+  bool ok = SetFileInformationByHandle(fh, kNtFileRenameInfoEx, &M.info,
+                                       sizeof(M.info) + M.info.FileNameLength);
+  CloseHandle(fh);
+  return ok;
 }
 
 textwindows int sys_renameat_nt(int olddirfd, const char *oldpath, int newdirfd,
@@ -83,8 +119,11 @@ textwindows int sys_renameat_nt(int olddirfd, const char *oldpath, int newdirfd,
   }
 
   // rename the file
-  if (!MoveFileEx(M.oldpath16, M.newpath16, kNtMovefileReplaceExisting))
-    return __fix_enotdir2(-1, M.oldpath16, M.newpath16);
+  if (!MoveFileEx(M.oldpath16, M.newpath16, kNtMovefileReplaceExisting)) {
+    if (GetLastError() != kNtErrorAccessDenied ||
+        !PosixRename(M.oldpath16, M.newpath16))
+      return __fix_enotdir2(-1, M.oldpath16, M.newpath16);
+  }
 
   // we're done
   return 0;

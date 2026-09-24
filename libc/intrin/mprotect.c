@@ -25,8 +25,11 @@
 #include "libc/intrin/dll.h"
 #include "libc/intrin/maps.h"
 #include "libc/intrin/strace.h"
+#include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/intrin/tree.h"
+#include "libc/nt/enum/memflags.h"
 #include "libc/nt/memory.h"
+#include "libc/nt/struct/memorybasicinformation.h"
 #include "libc/runtime/internal.h"
 #include "libc/runtime/runtime.h"
 #include "libc/stdio/sysparam.h"
@@ -43,10 +46,27 @@ static int __mprotect_chunk_impl(char *addr, size_t size, int prot,
   if (!IsWindows())
     return sys_mprotect(addr, size, prot);
 
-  uint32_t op;
-  if (!VirtualProtect(addr, size, __prot2nt(prot, iscow), &op))
-    return -1;
-
+  // pages that are only reserved (see sys_mmap_nt) get committed on the
+  // way to a protection that can touch them, and stay reserved on the
+  // way to PROT_NONE. the walk follows nt's own page state, so a span an
+  // allocator committed one piece at a time is handled piece by piece
+  uint32_t op, np = __prot2nt(prot, iscow);
+  struct NtMemoryBasicInformation mbi;
+  char *p = addr, *end = addr + size;
+  while (p < end) {
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi))
+      return __winerr();
+    char *re = (char *)mbi.BaseAddress + mbi.RegionSize;
+    if (re > end)
+      re = end;
+    if (mbi.State == kNtMemReserve) {
+      if (prot != PROT_NONE && !VirtualAlloc(p, re - p, kNtMemCommit, np))
+        return enomem();
+    } else if (!VirtualProtect(p, re - p, np, &op)) {
+      return __winerr();
+    }
+    p = re;
+  }
   return 0;
 }
 

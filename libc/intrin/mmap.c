@@ -421,8 +421,12 @@ textwindows dontinline static struct DirectMap sys_mmap_nt(
   // it's 5x faster
   if (!MAP_ANONYMOUS ||
       ((flags & MAP_ANONYMOUS) && (flags & MAP_TYPE) != MAP_SHARED)) {
-    if (!(dm.addr = VirtualAlloc(addr, size, kNtMemReserve | kNtMemCommit,
-                                 __prot2nt(prot, false))))
+    // allocators reserve huge PROT_NONE spans and grow into them with
+    // mprotect(), which commits the pages it's given (see mprotect.c)
+    uint32_t alloc = kNtMemReserve;
+    if (prot != PROT_NONE || (flags & MAP_FIXED))
+      alloc |= kNtMemCommit;
+    if (!(dm.addr = VirtualAlloc(addr, size, alloc, __prot2nt(prot, false))))
       dm.addr = MAP_FAILED;
     dm.hand = MAPS_VIRTUAL;
     return dm;
@@ -795,6 +799,9 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
   map->flags = flags;
   map->hand = res.hand;
   if (IsWindows()) {
+    if ((flags & MAP_ANONYMOUS) && (flags & MAP_TYPE) != MAP_SHARED &&
+        prot == PROT_NONE && !fixedmode)
+      map->flags |= MAP_NOCOMMIT;
     map->iscow = (flags & MAP_TYPE) != MAP_SHARED && fd != -1;
     map->readonlyfile = (flags & MAP_TYPE) == MAP_SHARED && fd != -1 &&
                         (__get_pib()->fds.p[fd].flags & O_ACCMODE) == O_RDONLY;

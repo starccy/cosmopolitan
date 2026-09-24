@@ -72,10 +72,49 @@ extern struct CosmoTib *__winmain_tib;
 
 __msabi extern typeof(MapViewOfFileEx) *const __imp_MapViewOfFileEx;
 
-int __ape_shim_fork_copy_map(int64_t, struct Map *, size_t);
 __msabi extern typeof(TerminateProcess) *const __imp_TerminateProcess;
 __msabi extern typeof(TlsAlloc) *const __imp_TlsAlloc;
 __msabi extern typeof(VirtualProtectEx) *const __imp_VirtualProtectEx;
+
+// A PROT_NONE mapping (MAP_NOCOMMIT) is address space the parent commits
+// piecewise through mprotect(). It's reserved whole in the child, and each
+// committed run is committed, copied, and given the parent's protection,
+// so the cost follows committed bytes rather than reserved ones.
+static textwindows bool sys_fork_nt_copy_reservation(int64_t proc, char *addr,
+                                                     size_t size) {
+  if (!VirtualAllocEx(proc, addr, size, kNtMemReserve, kNtPageNoaccess))
+    return false;
+  struct NtMemoryBasicInformation mbi;
+  char *p = addr, *end = addr + size;
+  while (p < end) {
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi))
+      return false;
+    char *re = (char *)mbi.BaseAddress + mbi.RegionSize;
+    if (re > end)
+      re = end;
+    if (mbi.State == kNtMemCommit) {
+      size_t n = re - p;
+      uint32_t old, prot = mbi.Protect;
+      bool readable = prot & (kNtPageReadonly | kNtPageReadwrite |
+                              kNtPageExecuteRead | kNtPageExecuteReadwrite |
+                              kNtPageWritecopy | kNtPageExecuteWritecopy);
+      bool reprotect = !readable || (prot & kNtPageGuard);
+      if (!VirtualAllocEx(proc, p, n, kNtMemCommit, kNtPageReadwrite))
+        return false;
+      if (reprotect && !VirtualProtect(p, n, kNtPageReadwrite, &old))
+        return false;
+      bool ok = !!WriteProcessMemory(proc, p, p, n, 0);
+      if (reprotect)
+        ok = !!VirtualProtect(p, n, old, &old) && ok;
+      if (!ok)
+        return false;
+      if (prot != kNtPageReadwrite && !VirtualProtectEx(proc, p, n, prot, &old))
+        return false;
+    }
+    p = re;
+  }
+  return true;
+}
 
 static textwindows void *sys_fork_nt_malloc(size_t size) {
   return HeapAlloc(GetProcessHeap(), 0, size);
@@ -268,7 +307,7 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
   char *skip_until = 0;
   for (struct Map *map = __maps_first(); map; map = __maps_next(map)) {
     if (map->addr < skip_until)
-      continue;  // fragment of an allocation the shim copied whole
+      continue;  // fragment of a reservation copied whole
     if ((map->flags & MAP_TYPE) == MAP_SHARED)
       continue;  // shared memory doesn't need to be copied to subprocess
     if ((map->flags & MAP_NOFORK) && (map->flags & MAP_TYPE) != MAP_FILE)
@@ -284,14 +323,11 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
           break;
         }
       }
-      if (_weaken(__ape_shim_fork_copy_map)) {
-        int rc = _weaken(__ape_shim_fork_copy_map)(procinfo.hProcess, map,
-                                                   allocsize);
-        if (rc) {
-          ok = ok && rc > 0;
-          skip_until = map->addr + allocsize;
-          continue;
-        }
+      if (map->flags & MAP_NOCOMMIT) {
+        ok = ok && sys_fork_nt_copy_reservation(procinfo.hProcess, map->addr,
+                                                allocsize);
+        skip_until = map->addr + allocsize;
+        continue;
       }
       if ((map->flags & MAP_NOFORK) && (map->flags & MAP_TYPE) == MAP_FILE) {
         // portable executable segment

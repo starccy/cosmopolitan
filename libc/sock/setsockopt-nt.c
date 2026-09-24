@@ -20,6 +20,7 @@
 #include "libc/cosmotime.h"
 #include "libc/dce.h"
 #include "libc/intrin/fds.h"
+#include "libc/nt/errors.h"
 #include "libc/nt/struct/linger.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/nt/winsock.h"
@@ -76,11 +77,13 @@ textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
   if (!hopt)
     return enoprotoopt();
   if (__imp_setsockopt(fd->handle, __sol2host(level), hopt, optval, optlen) !=
-      -1) {
+      -1)
     return 0;
-  } else {
-    return __winsockerr();
-  }
+  if (WSAGetLastError() == WSAEINVAL && fd->connecting == 1 && optval &&
+      optlen == sizeof(int) &&
+      __sockopt_park(fd->handle, level, optname, *(const int *)optval))
+    return 0;
+  return __winsockerr();
 }
 
 #endif /* __x86_64__ */

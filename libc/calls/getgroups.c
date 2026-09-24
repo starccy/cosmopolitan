@@ -26,6 +26,9 @@
 /**
  * Gets list of supplementary group IDs
  *
+ * On Windows the process has one identity and no group list to
+ * enumerate, so it is reported as belonging to exactly its own group.
+ *
  * @param size - maximum number of items that can be stored in list
  * @param list - buffer to store output gid_t
  * @return -1 w/ EFAULT
@@ -34,6 +37,17 @@ int getgroups(int size, uint32_t list[]) {
   int rc;
   if (IsLinux() || IsNetbsd() || IsOpenbsd() || IsFreebsd() || IsXnu()) {
     rc = sys_getgroups(size, list);
+  } else if (IsWindows()) {
+    if (size < 0) {
+      rc = einval();
+    } else if (!size) {
+      rc = 1;
+    } else if (!list) {
+      rc = efault();
+    } else {
+      list[0] = getgid();
+      rc = 1;
+    }
   } else {
     rc = enosys();
   }

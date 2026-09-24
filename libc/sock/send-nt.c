@@ -30,6 +30,7 @@
 #include "libc/sock/internal.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/msg.h"
+#include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/errfuns.h"
@@ -67,7 +68,15 @@ textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
   }
 
   ssize_t rc;
+  struct iovec clamped[16];
   struct Fd *f = __get_pib()->fds.p + fd;
+  __sockopt_replay(f);
+  if ((f->flags & O_NONBLOCK) || (flags & MSG_DONTWAIT)) {
+    if (!__winsock_send_ready(f->handle))
+      return eagain();
+    iovlen = __winsock_clamp_send(clamped, iov, iovlen);
+    iov = clamped;
+  }
   sigset_t waitmask = __sig_block();
 
   rc = __winsock_block(f->handle, __msg2host(flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL)),

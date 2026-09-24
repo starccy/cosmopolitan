@@ -196,8 +196,7 @@ abi wontreturn static void WinInit(const char16_t *cmdline) {
       intptr_t h = __imp_GetStdHandle(kNtStdio[i]);
       if (__imp_GetConsoleMode(h, &m)) {
         if (!i) {
-          m |= kNtEnableMouseInput | kNtEnableWindowInput |
-               kNtEnableProcessedInput;
+          m |= kNtEnableWindowInput | kNtEnableProcessedInput;
         } else {
           m &= ~kNtDisableNewlineAutoReturn;
           m |= kNtEnableProcessedOutput | kNtEnableVirtualTerminalProcessing;
@@ -359,6 +358,7 @@ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
 
   // TODO(jart): do something better to save/restore this
   pib->rlimit[RLIMIT_NOFILE].rlim_cur = ~1024L;
+  pib->umask = 022;
 
   if (!(pib->pid = WinGetPid(u"_COSMO_PID")))
     pib->pid = __imp_GetCurrentProcessId();

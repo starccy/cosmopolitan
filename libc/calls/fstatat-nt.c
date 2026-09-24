@@ -50,8 +50,25 @@ static int Atoi(const char *str) {
   return x;
 }
 
+// whether the last component is . or .. or the path ends in a slash;
+// those name the directory itself, never a link to it
+textwindows static bool NamesDirectoryItself(const char *path) {
+  size_t n = strlen(path);
+  if (!n)
+    return false;
+  if (path[n - 1] == '/' || path[n - 1] == '\\')
+    return true;
+  const char *b = path + n;
+  while (b > path && b[-1] != '/' && b[-1] != '\\')
+    --b;
+  return b[0] == '.' && (!b[1] || (b[1] == '.' && !b[2]));
+}
+
 textwindows int sys_fstatat_nt(int dirfd, const char *path, struct stat *st,
                                int flags) {
+
+  if ((flags & AT_SYMLINK_NOFOLLOW) && NamesDirectoryItself(path))
+    flags &= ~AT_SYMLINK_NOFOLLOW;
 
   // handle special files
   if (startswith(path, "/dev/")) {

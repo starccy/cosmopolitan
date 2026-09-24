@@ -133,6 +133,13 @@ struct Keystrokes {
   bool end_of_file;
   bool ohno_decckm;
   bool bypass_mode;
+  bool altscreen;     // DECSET 47, 1047, 1049
+  bool no_altscroll;  // DECSET 1007, on by default like xterm
+  bool bracketed;     // DECSET 2004
+  unsigned char cmd_state;
+  unsigned cmd_x;
+  unsigned cmd_params[8];
+  int cmd_nparams;
   uint16_t utf16hs;
   size_t free_keys;
   int64_t cin, cot;
@@ -733,73 +740,104 @@ textwindows int CountConsoleInputBytes(void) {
   return count;
 }
 
-// Intercept ANSI TTY commands that enable features.
-textwindows void InterceptTerminalCommands(const char *data, size_t size) {
-  int i;
-  unsigned x;
-  bool ismouse;
+// xterm hands the mouse wheel to a program only while it asked for mouse
+// reporting, or while the alternate screen is up with alternate scroll
+// on; otherwise the wheel scrolls the window. win32 turns the wheel into
+// arrow keys whenever mouse input is enabled, so that bit follows the
+// same rule. QuickEdit would eat the mouse, so it's off whenever the
+// program has the mouse or the console is in raw mode.
+textwindows static bool WantMouseInput(void) {
+  return (__ttyconf.magic & kTtyXtMouse) ||
+         (__keystroke.altscreen && !__keystroke.no_altscroll);
+}
+
+textwindows void sys_console_sync_nt(void) {
   uint32_t cm, cm2;
-  enum { ASC, ESC, CSI, CMD } t;
-  GetConsoleMode(GetConsoleInputHandle(), &cm), cm2 = cm;
-  for (ismouse = false, x = i = t = 0; i < size; ++i) {
+  bool want = WantMouseInput();
+  int64_t h = GetConsoleInputHandle();
+  if (!GetConsoleMode(h, &cm))
+    return;
+  cm2 = want ? cm | kNtEnableMouseInput : cm & ~kNtEnableMouseInput;
+  if (want || (__ttyconf.magic & kTtyUncanon))
+    cm2 &= ~kNtEnableQuickEditMode;
+  if (cm2 != cm)
+    SetConsoleMode(h, cm2);
+}
+
+textwindows static void ApplyPrivateMode(unsigned x, bool on) {
+  switch (x) {
+    case 1:  // decckm
+      __keystroke.ohno_decckm = on;
+      kVirtualKey[0].normal_str = on ? -S("OA") : S("A");  // kNtVkUp
+      kVirtualKey[1].normal_str = on ? -S("OB") : S("B");  // kNtVkDown
+      kVirtualKey[2].normal_str = on ? -S("OC") : S("C");  // kNtVkRight
+      kVirtualKey[3].normal_str = on ? -S("OD") : S("D");  // kNtVkLeft
+      kVirtualKey[4].normal_str = on ? -S("OF") : S("F");  // kNtVkEnd
+      kVirtualKey[5].normal_str = on ? -S("OH") : S("H");  // kNtVkHome
+      break;
+    case 47:
+    case 1047:
+    case 1049:
+      __keystroke.altscreen = on;
+      break;
+    case 1007:
+      __keystroke.no_altscroll = !on;
+      break;
+    case 2004:
+      __keystroke.bracketed = on;
+      break;
+    default:
+      if (IsMouseModeCommand(x)) {
+        if (on) {
+          __ttyconf.magic |= kTtyXtMouse;
+        } else {
+          __ttyconf.magic &= ~kTtyXtMouse;
+        }
+      }
+      break;
+  }
+}
+
+// Intercept ANSI TTY commands that enable features. The scanner keeps
+// its state across calls, since a sequence may straddle two writes.
+textwindows void InterceptTerminalCommands(const char *data, size_t size) {
+  enum { ASC, ESC, CSI, CMD };
+  int t = __keystroke.cmd_state;
+  unsigned x = __keystroke.cmd_x;
+  bool want = WantMouseInput();
+  for (size_t i = 0; i < size; ++i) {
+    char c = data[i];
     switch (t) {
       case ASC:
-        if (data[i] == 033) {
+        if (c == 033)
           t = ESC;
-        }
         break;
       case ESC:
-        if (data[i] == '[') {
-          t = CSI;
-        } else {
-          t = ASC;
-        }
+        t = c == '[' ? CSI : ASC;
         break;
       case CSI:
-        if (data[i] == '?') {
+        if (c == '?') {
           t = CMD;
           x = 0;
+          __keystroke.cmd_nparams = 0;
         } else {
           t = ASC;
         }
         break;
       case CMD:
-        if ('0' <= data[i] && data[i] <= '9') {
-          x *= 10;
-          x += data[i] - '0';
-        } else if (data[i] == ';') {
-          ismouse |= IsMouseModeCommand(x);
+        if ('0' <= c && c <= '9') {
+          x = x * 10 + (c - '0');
+        } else if (c == ';') {
+          if (__keystroke.cmd_nparams < ARRAYLEN(__keystroke.cmd_params))
+            __keystroke.cmd_params[__keystroke.cmd_nparams++] = x;
           x = 0;
-        } else if (data[i] == 'h') {
-          if (x == 1) {
-            // \e[?1h decckm on
-            __keystroke.ohno_decckm = true;
-            kVirtualKey[0].normal_str = -S("OA");  // kNtVkUp
-            kVirtualKey[1].normal_str = -S("OB");  // kNtVkDown
-            kVirtualKey[2].normal_str = -S("OC");  // kNtVkRight
-            kVirtualKey[3].normal_str = -S("OD");  // kNtVkLeft
-            kVirtualKey[4].normal_str = -S("OF");  // kNtVkEnd
-            kVirtualKey[5].normal_str = -S("OH");  // kNtVkHome
-          } else if ((ismouse |= IsMouseModeCommand(x))) {
-            __ttyconf.magic |= kTtyXtMouse;
-            cm2 |= kNtEnableMouseInput;
-            cm2 &= ~kNtEnableQuickEditMode;  // take mouse
-          }
+        } else if (c == 'h' || c == 'l') {
+          if (__keystroke.cmd_nparams < ARRAYLEN(__keystroke.cmd_params))
+            __keystroke.cmd_params[__keystroke.cmd_nparams++] = x;
+          for (int j = 0; j < __keystroke.cmd_nparams; ++j)
+            ApplyPrivateMode(__keystroke.cmd_params[j], c == 'h');
           t = ASC;
-        } else if (data[i] == 'l') {
-          if (x == 1) {
-            // \e[?1l decckm off
-            __keystroke.ohno_decckm = false;
-            kVirtualKey[0].normal_str = S("A");  // kNtVkUp
-            kVirtualKey[1].normal_str = S("B");  // kNtVkDown
-            kVirtualKey[2].normal_str = S("C");  // kNtVkRight
-            kVirtualKey[3].normal_str = S("D");  // kNtVkLeft
-            kVirtualKey[4].normal_str = S("F");  // kNtVkEnd
-            kVirtualKey[5].normal_str = S("H");  // kNtVkHome
-          } else if ((ismouse |= IsMouseModeCommand(x))) {
-            __ttyconf.magic &= ~kTtyXtMouse;
-            cm2 |= kNtEnableQuickEditMode;  // release mouse
-          }
+        } else if (0x40 <= c && c <= 0x7e) {
           t = ASC;
         }
         break;
@@ -807,8 +845,39 @@ textwindows void InterceptTerminalCommands(const char *data, size_t size) {
         __builtin_unreachable();
     }
   }
-  if (cm2 != cm)
-    SetConsoleMode(GetConsoleInputHandle(), cm2);
+  __keystroke.cmd_state = t;
+  __keystroke.cmd_x = x;
+  if (WantMouseInput() != want)
+    sys_console_sync_nt();
+}
+
+// whether the bytes end inside an escape sequence: a lone ESC, a CSI
+// without its final byte, an SS3 without its one following byte, or an
+// OSC not yet closed by BEL
+textwindows static bool EndsInsideEscape(const char *b, size_t n) {
+  size_t i = n;
+  while (i && b[i - 1] != 033)
+    i--;
+  if (!i)
+    return false;
+  if (i == n)
+    return true;
+  char c = b[i];
+  if (c == '[') {
+    for (size_t k = i + 1; k < n; k++)
+      if (b[k] >= 0x40 && b[k] <= 0x7e)
+        return false;
+    return true;
+  }
+  if (c == 'O')
+    return n - i < 2;
+  if (c == ']') {
+    for (size_t k = i + 1; k < n; k++)
+      if (b[k] == 007)
+        return false;
+    return true;
+  }
+  return false;
 }
 
 textwindows static bool DigestConsoleInput(char *data, size_t size, int *rc) {
@@ -821,6 +890,7 @@ textwindows static bool DigestConsoleInput(char *data, size_t size, int *rc) {
 
   // copy keystroke(s) into user buffer
   int toto = 0;
+  char *start = data;
   struct Dll *e;
   while (size && (e = dll_first(__keystroke.list))) {
     struct Keystroke *k = KEYSTROKE_CONTAINER(e);
@@ -838,7 +908,10 @@ textwindows static bool DigestConsoleInput(char *data, size_t size, int *rc) {
     } else {
       FreeKeystroke(&__keystroke.list, e);
     }
-    if ((__ttyconf.magic & kTtyUncanon) && toto >= __ttyconf.vmin)
+    // a terminal sending vt input delivers an escape sequence as one
+    // key event per byte, so keep going while the sequence is unfinished
+    if ((__ttyconf.magic & kTtyUncanon) && toto >= __ttyconf.vmin &&
+        !EndsInsideEscape(start, toto))
       break;
   }
 
@@ -980,10 +1053,91 @@ textwindows static int WaitToReadFromConsole(struct Fd *f, sigset_t waitmask) {
   return rc;
 }
 
+// the rest of an escape sequence the terminal is still typing out comes
+// about a millisecond per byte; wait for it rather than hand out a lone
+// ESC that a parser would take for the escape key
+#define ESCAPE_COALESCE_MS  10
+#define ESCAPE_COALESCE_MAX 64
+
+textwindows static ssize_t CoalesceEscape(char *data, size_t size, ssize_t rc,
+                                          sigset_t waitmask) {
+  int olderr = errno;
+  while (rc < size && rc < ESCAPE_COALESCE_MAX &&
+         EndsInsideEscape(data, rc)) {
+    if (CountConsoleInputBytesBlockingImpl(ESCAPE_COALESCE_MS, waitmask,
+                                           true) <= 0)
+      break;
+    int more;
+    LockKeystrokes();
+    IngestConsoleInput();
+    bool done = DigestConsoleInput(data + rc, size - rc, &more);
+    UnlockKeystrokes();
+    if (!done || more <= 0)
+      break;
+    rc += more;
+  }
+  errno = olderr;
+  return rc;
+}
+
+// conhost drops the \e[200~ and \e[201~ markers a terminal wraps a paste
+// in, so when the program asked for them they're put back. In raw mode
+// each read hands out one key, so the rest of a paste is still queued,
+// and a queue holding more plain text right after a plain-text key is
+// something typing doesn't produce. That text is gathered without
+// blocking and, if it holds a line break, returned inside the markers.
+// Gathering stops at a control sequence, which follows the closing one.
+textwindows static bool IsPasteText(const char *b, size_t n, bool *got_break,
+                                    bool *got_text) {
+  for (size_t i = 0; i < n; ++i) {
+    unsigned char c = b[i];
+    if (c == '\r' || c == '\n') {
+      *got_break = true;
+    } else if (c == '\t' || (c >= 0x20 && c != 0x7f)) {
+      *got_text = true;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+textwindows static ssize_t WrapPaste(char *b, size_t cap, ssize_t n) {
+  bool got_break = false, got_text = false;
+  if (!__keystroke.bracketed || cap < (size_t)n + 12 ||
+      !IsPasteText(b, n, &got_break, &got_text))
+    return n;
+  ssize_t text_end = n;
+  while ((size_t)text_end + 12 < cap && CountConsoleInputBytes() > 0) {
+    int more;
+    LockKeystrokes();
+    bool done = DigestConsoleInput(b + text_end, cap - 12 - text_end, &more);
+    UnlockKeystrokes();
+    if (!done || more <= 0)
+      break;
+    if (!IsPasteText(b + text_end, more, &got_break, &got_text)) {
+      text_end += more;
+      break;
+    }
+    text_end += more;
+    n = text_end;
+  }
+  // a lone enter, one line, or key repeat is typing
+  if (n < 3 || !got_break || !got_text)
+    return text_end;
+  memmove(b + 6, b, text_end);
+  memcpy(b, "\033[200~", 6);
+  memmove(b + 6 + n + 6, b + 6 + n, text_end - n);
+  memcpy(b + 6 + n, "\033[201~", 6);
+  return text_end + 12;
+}
+
 textwindows static ssize_t ReadFromConsole(struct Fd *f, void *data,
                                            size_t size, sigset_t waitmask) {
   int rc;
   InitConsole();
+  if (__ttyconf.magic & kTtyUncanon)
+    sys_console_sync_nt();
   uint32_t inmode = DisableProcessedInput();
   do {
     LockKeystrokes();
@@ -993,8 +1147,13 @@ textwindows static ssize_t ReadFromConsole(struct Fd *f, void *data,
     if (done)
       break;
   } while ((rc = WaitToReadFromConsole(f, waitmask)) > 0);
+  ssize_t got = rc;
+  if (got > 0 && (__ttyconf.magic & kTtyUncanon)) {
+    got = CoalesceEscape(data, size, got, waitmask);
+    got = WrapPaste(data, size, got);
+  }
   RestoreProcessedInput(inmode);
-  return rc;
+  return got;
 }
 
 textwindows static ssize_t ReadBuffer(int fd, void *data, size_t size,

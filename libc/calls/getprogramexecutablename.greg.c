@@ -19,6 +19,7 @@
 #include "libc/atomic.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/metalfile.internal.h"
+#include "libc/calls/prctl.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/cosmo.h"
@@ -37,6 +38,7 @@
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/ok.h"
+#include "libc/sysv/consts/pr.h"
 
 #ifdef __x86_64__
 __static_yoink("_init_program_executable_name");
@@ -130,6 +132,12 @@ void __init_program_executable_name(void) {
       CopyWithCwd(__program_executable_name, g_prog.u.buf,
                   g_prog.u.buf + sizeof(g_prog.u.buf)))
     __program_executable_name = g_prog.u.buf;
+  // under the ape loader the kernel names the task after the loader
+  if (IsLinux() && __program_executable_name) {
+    char *b = basename(__program_executable_name);
+    if (*b)
+      sys_prctl(PR_SET_NAME, (long)b, 0, 0, 0);
+  }
 }
 
 static inline void InitProgramExecutableNameImpl(void) {
