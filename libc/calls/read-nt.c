@@ -1240,6 +1240,8 @@ textwindows ssize_t sys_read_nt(int fd, const struct iovec *iov, size_t iovlen,
   sigset_t m = __sig_block();
   rc = ReadIovecs(fd, iov, iovlen, opt_offset, m);
   __sig_unblock(m);
+  if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
+    _weaken(__epoll_rearm_in)(fd);
   return rc;
 }
 

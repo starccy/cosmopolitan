@@ -53,6 +53,10 @@ int sys_pselect(int, fd_set *, fd_set *, fd_set *, struct timespec *,
 int sys_setsockopt(int, int, int, const void *, uint32_t);
 
 int sys_socket_nt(int, int, int);
+int sys_socket_packet_nt(int, int);
+int sys_bind_packet_nt(struct Fd *, const void *, uint32_t);
+ssize_t sys_recv_packet_nt(struct Fd *, const struct iovec *, size_t, uint32_t,
+                           void *, uint32_t *);
 
 /*
 int sys_socketpair_nt_stream(int, int, int, int[2]) ;
@@ -82,7 +86,6 @@ void WinSockInit(void);
 int64_t __winsockerr(void);
 int __fixupnewsockfd(int, int);
 int64_t GetNtBaseSocket(int64_t);
-int sys_close_epoll(int);
 
 int __fixsunpath(struct sockaddr_un *, const void **, uint32_t *);
 void __unfixsunpath(void *, uint32_t *, uint32_t);

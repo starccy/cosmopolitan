@@ -23,12 +23,17 @@
 #include "libc/sock/internal.h"
 #include "libc/sock/struct/sockaddr.h"
 #include "libc/sock/syscall_fd.internal.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/host.internal.h"
 #if SupportsWindows()
 
 __msabi extern typeof(__sys_bind_nt) *const __imp_bind;
 
 textwindows int sys_bind_nt(struct Fd *f, const void *addr, uint32_t addrsize) {
+
+  // a packet socket binds to an interface, not an address
+  if (f->family == AF_PACKET)
+    return sys_bind_packet_nt(f, addr, addrsize);
 
   // normalize unix socket filenames
   struct sockaddr_un sun;

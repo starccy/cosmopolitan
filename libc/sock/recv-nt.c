@@ -19,6 +19,7 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/dce.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/nt/struct/iovec.h"
 #include "libc/nt/struct/overlapped.h"
@@ -34,6 +35,7 @@
 #include "libc/sysv/pib.h"
 #include "libc/vga/vga.internal.h"
 #include "libc/errno.h"
+#include "libc/intrin/weaken.h"
 #include "libc/nt/errors.h"
 #if SupportsWindows()
 
@@ -54,8 +56,12 @@ textwindows static int sys_recv_nt_start(int64_t handle,
                  overlap, 0);
 }
 
-textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
-                                uint32_t flags) {
+textwindows static ssize_t sys_recv_nt_impl(int fd, const struct iovec *iov,
+                                            size_t iovlen, uint32_t flags) {
+
+  if (__get_pib()->fds.p[fd].family == AF_PACKET)
+    return sys_recv_packet_nt(__get_pib()->fds.p + fd, iov, iovlen, flags, 0,
+                              0);
 
   if (flags & ~(MSG_DONTWAIT | MSG_OOB | MSG_PEEK | MSG_WAITALL))
     return einval();
@@ -96,6 +102,14 @@ textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
 
   __sig_unblock(waitmask);
 
+  return rc;
+}
+
+textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
+                                uint32_t flags) {
+  ssize_t rc = sys_recv_nt_impl(fd, iov, iovlen, flags);
+  if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
+    _weaken(__epoll_rearm_in)(fd);
   return rc;
 }
 

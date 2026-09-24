@@ -53,6 +53,7 @@
 #include "libc/nt/enum/status.h"
 #include "libc/nt/enum/threadpriority.h"
 #include "libc/nt/events.h"
+#include "libc/nt/iocp.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
@@ -322,6 +323,9 @@ textwindows static void __sig_wake(struct PosixThread *pt) {
     if (atomic_load(&pt->tib->tib_sigpending) & ~pt->pt_blkmask) {
       if (blocker == PT_BLOCKER_EVENT) {
         SetEvent(pt->pt_event);
+      } else if (blocker == PT_BLOCKER_IOCP) {
+        // key 1 is what epoll_wait() takes as a plain wakeup
+        PostQueuedCompletionStatus(pt->pt_event, 0, 1, 0);
       } else {
         WakeByAddressSingle(blocker);
       }

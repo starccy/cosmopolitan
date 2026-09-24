@@ -11,10 +11,11 @@ COSMOPOLITAN_C_START_
 #define kFdConsole   4
 #define kFdSerial    5  // metal
 #define kFdZip       6  // unix + windows
-#define kFdEpoll     7  // epoll() deleted on 2024-09-01
+#define kFdEpoll     7  // epoll: windows
 #define kFdReserved  8
 #define kFdDevNull   9
 #define kFdDevRandom 10
+#define kFdEvent     11  // eventfd: unix + windows
 
 struct CursorShared {
   pthread_mutex_t lock;
@@ -46,6 +47,14 @@ struct Fd {
   struct Cursor *cursor;
   int64_t dev;  // lazily set by flocks on windows
   int64_t ino;  // lazily set by flocks on windows
+  long pkthandle6;  // packet sockets on windows: the ipv6 capture, or 0
+  int pktifindex;
+  char pktturn;
+  uint64_t evcount;  // eventfd counter
+  int evflags;       // EFD_SEMAPHORE
+  int evpeer;        // eventfd off windows: the hidden socket end
+  void *tftimer;     // timerfd off linux: its posix timer
+  void *epset;       // epoll on windows: the interest list
 };
 
 struct Fds {

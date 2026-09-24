@@ -64,6 +64,13 @@ textwindows int sys_fstat_nt(int fd, struct stat *st) {
     case kFdDevNull:
     case kFdDevRandom:
       return sys_fstat_nt_char(__get_pib()->fds.p[fd].kind, st);
+    case kFdEvent:
+    case kFdEpoll:
+      bzero(st, sizeof(*st));
+      st->st_blksize = 512;
+      st->st_mode = S_IFREG | 0600;
+      st->st_ino = fd;
+      return 0;
     case kFdSocket:
       bzero(st, sizeof(*st));
       st->st_blksize = 512;

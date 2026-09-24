@@ -3,6 +3,7 @@
 
 #define SOL_IP     0
 #define SOL_SOCKET 1
+#define SOL_PACKET 263
 #define SOL_ICMP   1
 #define SOL_TCP    6
 #define SOL_UDP    17

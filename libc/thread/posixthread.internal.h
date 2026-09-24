@@ -10,6 +10,7 @@
 #include "libc/thread/tls.h"
 
 #define PT_BLOCKER_EVENT ((atomic_int *)-1)
+#define PT_BLOCKER_IOCP  ((atomic_int *)-2)  // pt_event is a completion port
 
 COSMOPOLITAN_C_START_
 

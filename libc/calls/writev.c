@@ -84,6 +84,9 @@ static ssize_t writev_impl(int fd, const struct iovec *iov, int iovlen) {
     }
   }
 
+  if (__isfdkind(fd, kFdEvent))
+    return __eventfd_write(fd, iov[0].iov_base, iovlen ? iov[0].iov_len : 0);
+
   if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     if (iovlen == 1) {
       return sys_write(fd, iov[0].iov_base, iov[0].iov_len);

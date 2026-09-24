@@ -16,10 +16,13 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/errno.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/struct/iovec.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/dce.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/nt/struct/iovec.h"
@@ -52,10 +55,14 @@ textwindows static int sys_recvfrom_nt_start(int64_t handle,
       flags, args->opt_out_srcaddr, args->opt_inout_srcaddrsize, overlap, 0);
 }
 
-textwindows ssize_t sys_recvfrom_nt(int fd, const struct iovec *iov,
-                                    size_t iovlen, uint32_t flags,
-                                    void *opt_out_srcaddr,
-                                    uint32_t *opt_inout_srcaddrsize) {
+textwindows static ssize_t sys_recvfrom_nt_impl(int fd, const struct iovec *iov,
+                                                size_t iovlen, uint32_t flags,
+                                                void *opt_out_srcaddr,
+                                                uint32_t *opt_inout_srcaddrsize) {
+
+  if (__get_pib()->fds.p[fd].family == AF_PACKET)
+    return sys_recv_packet_nt(__get_pib()->fds.p + fd, iov, iovlen, flags,
+                              opt_out_srcaddr, opt_inout_srcaddrsize);
 
   if (flags & ~(MSG_DONTWAIT | MSG_OOB | MSG_PEEK))
     return einval();
@@ -81,6 +88,17 @@ textwindows ssize_t sys_recvfrom_nt(int fd, const struct iovec *iov,
           __af2linux(((struct sockaddr *)opt_out_srcaddr)->sa_family);
   }
   __sig_unblock(waitmask);
+  return rc;
+}
+
+textwindows ssize_t sys_recvfrom_nt(int fd, const struct iovec *iov,
+                                    size_t iovlen, uint32_t flags,
+                                    void *opt_out_srcaddr,
+                                    uint32_t *opt_inout_srcaddrsize) {
+  ssize_t rc = sys_recvfrom_nt_impl(fd, iov, iovlen, flags, opt_out_srcaddr,
+                                    opt_inout_srcaddrsize);
+  if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
+    _weaken(__epoll_rearm_in)(fd);
   return rc;
 }
 

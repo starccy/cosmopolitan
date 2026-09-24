@@ -22,6 +22,7 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
+#include "libc/intrin/weaken.h"
 #include "libc/intrin/strace.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/struct/pollfd.h"
@@ -127,6 +128,8 @@ textwindows int sys_accept_nt(struct Fd *f, struct sockaddr_storage *addr,
   BLOCK_SIGNALS;
   rc = sys_accept_nt_impl(f, addr, accept4_flags, _SigMask);
   ALLOW_SIGNALS;
+  if ((rc >= 0 || errno == EAGAIN) && _weaken(__epoll_rearm_in))
+    _weaken(__epoll_rearm_in)(f - __get_pib()->fds.p);
   return rc;
 }
 

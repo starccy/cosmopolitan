@@ -65,6 +65,8 @@ static int close_impl(int fd) {
   // atomically close file descriptor table entry
   int rc = 0;
   struct Fd *f = __get_pib()->fds.p + fd;
+  if (IsWindows() && _weaken(__epoll_forget))
+    _weaken(__epoll_forget)(fd);
   switch (atomic_exchange(&f->kind, kFdReserved)) {
     case kFdEmpty:
       if (IsWindows() || IsMetal()) {
@@ -79,12 +81,30 @@ static int close_impl(int fd) {
       if (_weaken(__zipos_close))
         rc = _weaken(__zipos_close)(fd);
       break;
+    case kFdEvent:
+      if ((f->evflags & __EFD_TIMERFD) && _weaken(__timerfd_close))
+        _weaken(__timerfd_close)(f);
+      if (IsWindows()) {
+        if (!__vforked || f->was_created_during_vfork)
+          if (!CloseHandle(f->handle))
+            rc = __winerr();
+      } else {
+        rc = sys_close(fd);
+        if (f->evpeer >= 0)
+          sys_close(f->evpeer);
+      }
+      break;
 #if SupportsMetal()
     case kFdSerial:
       break;
 #endif
 #if SupportsWindows()
     case kFdDevRandom:
+      break;
+    case kFdEpoll:
+      if (!__vforked || f->was_created_during_vfork)
+        if (_weaken(__epoll_close))
+          rc = _weaken(__epoll_close)(f);
       break;
     case kFdFile:
       if (!__vforked)

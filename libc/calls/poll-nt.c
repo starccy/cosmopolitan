@@ -27,6 +27,7 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/cosmotime.h"
 #include "libc/dce.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/errno.h"
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/fds.h"
@@ -78,6 +79,9 @@
 // POLL_BUDGET_MS of a call, which covers a round trip between threads,
 // and POLL_PIPE_MS once the call has been quiet for longer than that.
 // COSMOPOLITAN_POLL_MS moves the boundary; 0 turns the fast phase off.
+// A set holding sockets sleeps in WSAPoll(), which can't watch an event
+// or epoll handle at the same time, so those are looked at on the same
+// schedule when sockets are present.
 #define POLL_BUDGET_MS 250
 
 textwindows static int sys_poll_nt_budget(void) {
@@ -120,6 +124,30 @@ textwindows static uint32_t sys_poll_nt_waitms(struct timespec deadline) {
   }
 }
 
+// a descriptor another thread closed while the call was in flight:
+// linux reports POLLNVAL for it, and the rest of the array goes on.
+// returns how many entries were marked, 0 if the handles are all
+// still the ones the fd table has.
+textwindows static int sys_poll_nt_stale(struct pollfd *fds, int *indices,
+                                         int64_t *handles, size_t stride,
+                                         int n) {
+  int found = 0;
+  __fds_lock();
+  for (int i = 0; i < n; ++i) {
+    int fi = indices[i];
+    int64_t h = *(int64_t *)((char *)handles + i * stride);
+    if (fds[fi].revents)
+      continue;
+    if (!__isfdopen(fds[fi].fd) ||
+        __get_pib()->fds.p[fds[fi].fd].handle != h) {
+      fds[fi].revents = POLLNVAL_;
+      ++found;
+    }
+  }
+  __fds_unlock();
+  return found;
+}
+
 // Polls on the New Technology.
 //
 // This function is used to implement poll() and select(). You may poll
@@ -130,11 +158,13 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
                                           struct timespec started,
                                           sigset_t waitmask,
                                           struct sys_pollfd_nt *sockfds,
-                                          int *sockindices) {
+                                          int *sockindices,
+                                          size_t sockcap) {
   int fileindices[64];
   int64_t filehands[64];
   int i, rc, ev, kind, gotsocks;
   bool gotpipe = false;
+  bool gotevent = false;
   bool gotconsole = false;
   uint32_t cm, fi, sn, pn, avail, waitfor, pipems, already_slept;
 
@@ -159,9 +189,22 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
             fds[i].events & (POLLRDNORM_ | POLLRDBAND_ | POLLWRNORM_);
         sockfds[sn].revents = 0;
         ++sn;
-      } else if (kind == kFdFile || kind == kFdConsole) {
+        // a packet socket's ipv6 capture is watched along with it, when
+        // the array has room left for the fds still to come
+        struct Fd *f = __get_pib()->fds.p + fds[i].fd;
+        if (f->family == AF_PACKET && f->pkthandle6 &&
+            sn + (nfds - i - 1) < sockcap) {
+          sockindices[sn] = i;
+          sockfds[sn].handle = f->pkthandle6;
+          sockfds[sn].events = sockfds[sn - 1].events;
+          sockfds[sn].revents = 0;
+          ++sn;
+        }
+      } else if (kind == kFdFile || kind == kFdConsole || kind == kFdEvent ||
+                 kind == kFdEpoll) {
         // we can use WaitForMultipleObjects() for these fds
         gotconsole |= kind == kFdConsole;
+        gotevent |= kind == kFdEvent || kind == kFdEpoll;
         if (pn == ARRAYLEN(fileindices) - 1) {  // last slot for signal event
           rc = einval();
           break;
@@ -207,7 +250,17 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
         ev &= ~POLLWRNORM_;
       if ((__get_pib()->fds.p[fds[fi].fd].flags & O_ACCMODE) == O_WRONLY)
         ev &= ~POLLRDNORM_;
-      if ((ev & POLLWRNORM_) && !(ev & POLLRDNORM_)) {
+      kind = __get_pib()->fds.p[fds[fi].fd].kind;
+      if (kind == kFdEvent || kind == kFdEpoll) {
+        // an eventfd is readable while its counter is nonzero and
+        // always writable; an epoll fd is readable while its port
+        // holds a completion, and never writable
+        fds[fi].revents =
+            kind == kFdEvent ? fds[fi].events & POLLWRNORM_ : 0;
+        if ((fds[fi].events & POLLRDNORM_) &&
+            !WaitForSingleObject(filehands[i], 0))
+          fds[fi].revents |= POLLRDNORM_;
+      } else if ((ev & POLLWRNORM_) && !(ev & POLLRDNORM_)) {
         fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
       } else if (GetFileType(filehands[i]) == kNtFileTypePipe) {
         gotpipe = true;
@@ -241,7 +294,7 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
     // determine how long to wait
     waitfor = sys_poll_nt_waitms(deadline);
     pipems = 0;
-    if (gotpipe) {
+    if (gotpipe || (gotevent && sn)) {
       pipems = sys_poll_nt_pipems(started);
       if (waitfor > pipems)
         waitfor = pipems;
@@ -259,13 +312,26 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
       } else {
         already_slept = 0;
       }
-      if ((gotsocks = WSAPoll(sockfds, sn, already_slept)) == -1)
+      if (pipems == 1 && already_slept)
+        __nt_fast_tick(true);
+      gotsocks = WSAPoll(sockfds, sn, already_slept);
+      if (pipems == 1 && already_slept)
+        __nt_fast_tick(false);
+      if (gotsocks == -1) {
+        if (WSAGetLastError() == WSAENOTSOCK &&
+            (gotsocks = sys_poll_nt_stale(fds, sockindices, &sockfds[0].handle,
+                                          sizeof(*sockfds), sn))) {
+          rc += gotsocks;
+          break;
+        }
         return __winsockerr();
+      }
       if (gotsocks) {
         for (i = 0; i < sn; ++i)
           if (sockfds[i].revents) {
-            fds[sockindices[i]].revents = sockfds[i].revents;
-            ++rc;
+            if (!fds[sockindices[i]].revents)
+              ++rc;
+            fds[sockindices[i]].revents |= sockfds[i].revents;
           }
       } else if (already_slept) {
         if (__sigcheck(waitmask, false))
@@ -299,9 +365,15 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
       }
       //!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!//
       __interruptible_end();
-      if (wi == -1u)
+      if (wi == -1u) {
         // win32 wait failure
+        if (GetLastError() == kNtErrorInvalidHandle &&
+            (rc = sys_poll_nt_stale(fds, fileindices, filehands,
+                                    sizeof(*filehands), pn))) {
+          break;
+        }
         return __winerr();
+      }
       if (wi == pn) {
         // our signal event was signalled
         int handler_was_called = 0;
@@ -384,7 +456,7 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
   // fast path
   if (nfds <= 63)
     return sys_poll_nt_actual(fds, nfds, deadline, started, waitmask, sockfds,
-                              sockindices);
+                              sockindices, 64);
 
   __fds_lock();
   for (files = i = 0; i < nfds; ++i) {
@@ -396,11 +468,12 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
   __fds_unlock();
   if (files <= 63) {
     void *mem;
+    size_t cap = nfds + 8;
     size_t each = sizeof(struct sys_pollfd_nt) + sizeof(int);
-    if ((mem = HeapAlloc(GetProcessHeap(), 0, nfds * each))) {
+    if ((mem = HeapAlloc(GetProcessHeap(), 0, cap * each))) {
       rc = sys_poll_nt_actual(
           fds, nfds, deadline, started, waitmask, mem,
-          (int *)((char *)mem + nfds * sizeof(struct sys_pollfd_nt)));
+          (int *)((char *)mem + cap * sizeof(struct sys_pollfd_nt)), cap);
       HeapFree(GetProcessHeap(), 0, mem);
       // a descriptor can turn into a file between the count and the call
       if (rc != -1 || errno != EINVAL)
@@ -414,7 +487,7 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
       n = nfds - i;
       n = n > 63 ? 63 : n;
       rc = sys_poll_nt_actual(fds + i, n, timespec_zero, started, waitmask,
-                              sockfds, sockindices);
+                              sockfds, sockindices, 64);
       if (rc == -1)
         return -1;
       got += rc;
