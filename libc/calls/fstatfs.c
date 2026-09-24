@@ -44,7 +44,7 @@ int fstatfs(int fd, struct statfs *sf) {
   int rc;
   BEGIN_CANCELATION_POINT;
 
-  if (__isfdkind(fd, kFdZip)) {
+  if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc)) {
     rc = enotsup();
   } else if (!IsWindows()) {
     if ((rc = sys_fstatfs(fd, &m)) != -1) {

@@ -33,6 +33,7 @@
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/procfs/procfs.internal.h"
 
 static inline const char *__strace_fstatat_flags(char buf[12], int flags) {
   if (flags == AT_SYMLINK_NOFOLLOW)
@@ -90,6 +91,9 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     } else {
       rc = fstat(dirfd, st);
     }
+  } else if (_weaken(__procfs_stat) &&
+             (rc = _weaken(__procfs_stat)(dirfd, path, st, flags)) != -2) {
+    // the /proc emulation answered
   } else if (__isfdkind(dirfd, kFdZip)) {
     STRACE("zipos dirfd not supported yet");
     rc = einval();

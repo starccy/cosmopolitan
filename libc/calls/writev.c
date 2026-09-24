@@ -48,7 +48,7 @@ static ssize_t writev_impl(int fd, const struct iovec *iov, int iovlen) {
     return ebadf();
   if (iovlen < 0)
     return einval();
-  if (__isfdkind(fd, kFdZip))
+  if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc))
     return ebadf();  // posix specifies this when not open()'d for writing
 
   if (iovlen) {

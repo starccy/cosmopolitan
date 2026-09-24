@@ -33,6 +33,7 @@
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/ok.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/procfs/procfs.internal.h"
 
 #define DescribeAccessMode(amode) _DescribeAccessMode(alloca(13), amode)
 static char *_DescribeAccessMode(char buf[13], int amode) {
@@ -87,6 +88,9 @@ int faccessat(int dirfd, const char *path, int amode, int flags) {
   } else if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS)) ||
              !(amode == F_OK || !(amode & ~(R_OK | W_OK | X_OK)))) {
     rc = einval();
+  } else if (_weaken(__procfs_access) &&
+             (rc = _weaken(__procfs_access)(dirfd, path, amode)) != -2) {
+    // the /proc emulation answered
   } else if (__isfdkind(dirfd, kFdZip)) {
     rc = enotsup();
   } else if (_weaken(__zipos_open) &&

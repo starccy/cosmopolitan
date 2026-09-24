@@ -54,6 +54,8 @@ int fsync(int fd) {
   BEGIN_CANCELATION_POINT;
   if (__isfdkind(fd, kFdZip)) {
     rc = erofs();
+  } else if (__isfdkind(fd, kFdProc)) {
+    rc = einval();
   } else if (IsWindows()) {
     rc = sys_fdatasync_nt(fd, fake);
   } else if (fake) {

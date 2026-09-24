@@ -16,6 +16,7 @@ COSMOPOLITAN_C_START_
 #define kFdDevNull   9
 #define kFdDevRandom 10
 #define kFdEvent     11  // eventfd: unix + windows
+#define kFdProc      12  // /proc emulation: unix + windows
 
 struct CursorShared {
   pthread_mutex_t lock;

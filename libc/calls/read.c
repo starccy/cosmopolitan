@@ -33,9 +33,8 @@
 #include "libc/stdio/sysparam.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/procfs/procfs.internal.h"
 #undef read
-
-int __ape_shim_read_before(int, const struct iovec *, int, ssize_t *);
 
 /**
  * Reads data from file descriptor.
@@ -81,10 +80,8 @@ ssize_t read(int fd, void *buf, size_t size) {
     rc = ebadf();
   } else if (size && kisdangerous(buf)) {
     rc = efault();
-  } else if (_weaken(__ape_shim_read_before) &&
-             _weaken(__ape_shim_read_before)(fd, &(struct iovec){buf, size}, 1,
-                                             &rc)) {
-    // the hook did the read
+  } else if (__isfdkind(fd, kFdProc)) {
+    rc = _weaken(__procfs_read)((struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, &(struct iovec){buf, size}, 1, -1);
   } else if (__isfdkind(fd, kFdZip)) {
     rc = _weaken(__zipos_read)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle,

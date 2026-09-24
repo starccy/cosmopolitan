@@ -35,7 +35,7 @@ int __fcntl_setfl(int fd, ...) {
   va_start(va, fd);
   arg = va_arg(va, int);
   va_end(va);
-  if (__isfdkind(fd, kFdZip)) {
+  if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc)) {
     if (arg & O_APPEND) {
       rc = einval();
     } else {

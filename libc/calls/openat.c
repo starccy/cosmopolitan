@@ -39,6 +39,7 @@
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Opens file.
@@ -207,6 +208,9 @@ int openat(int dirfd, const char *path, int flags, ...) {
     } else {
       rc = enotsup();  // TODO
     }
+  } else if (_weaken(__procfs_open) &&
+             (rc = _weaken(__procfs_open)(dirfd, path, flags, mode)) != -2) {
+    // the /proc emulation answered
   } else if ((flags & O_ACCMODE) == O_RDONLY && (flags & O_TRUNC)) {
     // Every operating system we've tested (with the notable exception
     // of OpenBSD) will gladly truncate files opened in read-only mode

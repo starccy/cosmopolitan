@@ -25,6 +25,7 @@
 #include "libc/intrin/weaken.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Duplicates file descriptor.
@@ -57,6 +58,8 @@ int dup(int fd) {
     rc = sys_dup(fd);
     if (rc != -1 && __isfdkind(fd, kFdZip)) {
       _weaken(__zipos_postdup)(fd, rc);
+    } else if (rc != -1 && __isfdkind(fd, kFdProc)) {
+      _weaken(__procfs_postdup)(fd, rc);
     }
   } else {
     rc = sys_dup_nt(fd, -1, 0, -1);

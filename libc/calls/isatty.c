@@ -40,7 +40,7 @@
 bool32 isatty(int fd) {
   bool32 res;
   struct winsize ws;
-  if (__isfdkind(fd, kFdZip)) {
+  if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc)) {
     enotty();
     res = false;
   } else if (IsWindows() || IsMetal()) {

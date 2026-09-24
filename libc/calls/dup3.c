@@ -29,6 +29,7 @@
 #include "libc/str/str.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Duplicates file descriptor/handle.
@@ -72,13 +73,18 @@ int dup3(int oldfd, int newfd, int flags) {
   } else if (oldfd < 0 || newfd < 0) {
     rc = ebadf();
   } else if (!IsWindows()) {
-    if (__isfdkind(oldfd, kFdZip) || __isfdkind(newfd, kFdZip)) {
+    if (__isfdkind(oldfd, kFdZip) || __isfdkind(newfd, kFdZip) ||
+        __isfdkind(oldfd, kFdProc) || __isfdkind(newfd, kFdProc)) {
       if (__vforked) {
         rc = enotsup();
       } else {
         rc = sys_dup3(oldfd, newfd, flags);
-        if (rc != -1)
-          _weaken(__zipos_postdup)(oldfd, newfd);
+        if (rc != -1) {
+          if (_weaken(__zipos_postdup))
+            _weaken(__zipos_postdup)(oldfd, newfd);
+          if (_weaken(__procfs_postdup))
+            _weaken(__procfs_postdup)(oldfd, newfd);
+        }
       }
     } else {
       rc = sys_dup3(oldfd, newfd, flags);

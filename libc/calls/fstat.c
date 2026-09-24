@@ -26,6 +26,7 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Returns information about file, via open()'d descriptor.
@@ -42,7 +43,9 @@
  */
 int fstat(int fd, struct stat *st) {
   int rc;
-  if (__isfdkind(fd, kFdZip)) {
+  if (__isfdkind(fd, kFdProc)) {
+    rc = _weaken(__procfs_fstat)((struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, st);
+  } else if (__isfdkind(fd, kFdZip)) {
     rc = _weaken(__zipos_fstat)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, st);
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {

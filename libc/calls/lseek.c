@@ -29,6 +29,7 @@
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Changes current position of file descriptor, e.g.
@@ -81,6 +82,8 @@ int64_t lseek(int fd, int64_t offset, int whence) {
   int hwhence = __whence2host(whence);
   if (hwhence == -1) {
     rc = einval();
+  } else if (__isfdkind(fd, kFdProc)) {
+    rc = _weaken(__procfs_seek)((struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, offset, whence);
   } else if (__isfdkind(fd, kFdZip)) {
     rc = _weaken(__zipos_seek)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, offset,
