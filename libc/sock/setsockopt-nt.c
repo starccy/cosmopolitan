@@ -19,6 +19,7 @@
 #include "libc/calls/struct/timeval.h"
 #include "libc/cosmotime.h"
 #include "libc/dce.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/intrin/fds.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/struct/linger.h"
@@ -38,6 +39,13 @@ __msabi extern typeof(__sys_setsockopt_nt) *const __imp_setsockopt;
 
 textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
                                   const void *optval, uint32_t optlen) {
+
+  // every SOL_PACKET option is either already true of an SIO_RCVALL
+  // capture (promiscuous mode) or a tuning knob with no nt counterpart
+  // (fanout, ring buffers); failing them would abort a capture that's
+  // about to work
+  if (fd->family == AF_PACKET && level == SOL_PACKET)
+    return 0;
 
   // socket read/write timeouts
   // timeout of zero means wait forever (default)

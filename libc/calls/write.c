@@ -81,6 +81,8 @@ ssize_t write(int fd, const void *buf, size_t size) {
     rc = efault();
   } else if (__isfdkind(fd, kFdZip)) {
     rc = ebadf();  // posix specifies this when not open()'d for writing
+  } else if (__isfdkind(fd, kFdEvent)) {
+    rc = __eventfd_write(fd, buf, size);
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     rc = sys_write(fd, buf, size);
   } else if (fd >= __get_pib()->fds.n) {

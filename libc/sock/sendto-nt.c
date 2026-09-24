@@ -23,6 +23,7 @@
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
+#include "libc/intrin/weaken.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/nt/errors.h"
@@ -58,10 +59,10 @@ textwindows static int sys_sendto_nt_start(int64_t handle,
                    args->opt_in_addr, args->in_addrsize, overlap, 0);
 }
 
-textwindows ssize_t sys_sendto_nt(int fd, const struct iovec *iov,
-                                  size_t iovlen, uint32_t flags,
-                                  const void *opt_in_addr,
-                                  uint32_t in_addrsize) {
+textwindows static ssize_t sys_sendto_nt_impl(int fd, const struct iovec *iov,
+                                              size_t iovlen, uint32_t flags,
+                                              const void *opt_in_addr,
+                                              uint32_t in_addrsize) {
 
   if (flags & ~(MSG_DONTWAIT | MSG_OOB | MSG_DONTROUTE | MSG_NOSIGNAL))
     return einval();
@@ -106,6 +107,22 @@ textwindows ssize_t sys_sendto_nt(int fd, const struct iovec *iov,
       __sig_raise(SIGPIPE, SI_KERNEL);
   }
 
+  return rc;
+}
+
+textwindows ssize_t sys_sendto_nt(int fd, const struct iovec *iov,
+                                  size_t iovlen, uint32_t flags,
+                                  const void *opt_in_addr,
+                                  uint32_t in_addrsize) {
+  ssize_t rc = sys_sendto_nt_impl(fd, iov, iovlen, flags, opt_in_addr,
+                                  in_addrsize);
+  if (_weaken(__epoll_rearm_out)) {
+    size_t want = 0;
+    for (size_t i = 0; i < iovlen; ++i)
+      want += iov[i].iov_len;
+    if ((rc >= 0 && rc < want) || (rc == -1 && errno == EAGAIN))
+      _weaken(__epoll_rearm_out)(fd);
+  }
   return rc;
 }
 

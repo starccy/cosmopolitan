@@ -44,7 +44,8 @@ int socket(int family, int type, int protocol) {
   int rc;
   if (family == AF_UNSPEC)
     family = AF_INET;
-  int hfam = __af2host(family);
+  // windows has no packet sockets of its own; packet-nt.c builds one
+  int hfam = IsWindows() && family == AF_PACKET ? family : __af2host(family);
   if (hfam == -1) {
     rc = eafnosupport();
   } else if (!IsWindows()) {

@@ -21,6 +21,7 @@
 #include "libc/sock/internal.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/sock.h"
 #if SupportsWindows()
 #include "libc/calls/state.internal.h"
@@ -37,6 +38,8 @@ __static_yoink("tprecode16to8");
 textwindows int sys_socket_nt(int family, int type, int protocol) {
   int64_t h;
   int fd, oflags, truetype;
+  if (family == AF_PACKET)
+    return sys_socket_packet_nt(type, protocol);
   fd = __reservefd(-1);
   if (fd == -1)
     return -1;

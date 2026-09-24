@@ -143,6 +143,13 @@ textwindows ssize_t sys_write_nt(int fd, const struct iovec *iov, size_t iovlen,
   sigset_t m = __sig_block();
   rc = sys_write_nt2(fd, iov, iovlen, opt_offset, m);
   __sig_unblock(m);
+  if (_weaken(__epoll_rearm_out)) {
+    size_t want = 0;
+    for (size_t i = 0; i < iovlen; ++i)
+      want += iov[i].iov_len;
+    if ((rc >= 0 && rc < want) || (rc == -1 && errno == EAGAIN))
+      _weaken(__epoll_rearm_out)(fd);
+  }
   return rc;
 }
 

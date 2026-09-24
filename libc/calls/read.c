@@ -36,7 +36,6 @@
 #undef read
 
 int __ape_shim_read_before(int, const struct iovec *, int, ssize_t *);
-ssize_t __ape_shim_read_after(int, const struct iovec *, int, ssize_t);
 
 /**
  * Reads data from file descriptor.
@@ -90,6 +89,8 @@ ssize_t read(int fd, void *buf, size_t size) {
     rc = _weaken(__zipos_read)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle,
         &(struct iovec){buf, size}, 1, -1);
+  } else if (__isfdkind(fd, kFdEvent)) {
+    rc = __eventfd_read(fd, buf, size);
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     rc = sys_read(fd, buf, size);
   } else if (fd >= __get_pib()->fds.n) {
@@ -101,8 +102,6 @@ ssize_t read(int fd, void *buf, size_t size) {
   } else {
     rc = enosys();
   }
-  if (_weaken(__ape_shim_read_after))
-    rc = _weaken(__ape_shim_read_after)(fd, &(struct iovec){buf, size}, 1, rc);
   END_CANCELATION_POINT;
   DATATRACE("read(%d, [%#.*hhs%s], %'zu) → %'zd% m", fd,
             (int)MAX(0, MIN(40, rc)), buf, rc > 40 ? "..." : "", size, rc);
