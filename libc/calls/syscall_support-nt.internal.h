@@ -7,6 +7,8 @@ COSMOPOLITAN_C_START_
 
 #define POLL_INTERVAL_MS 200
 
+void __nt_fast_tick(bool);
+
 bool isdirectory_nt(const char *) libcesque;
 bool isregularfile_nt(const char *) libcesque;
 bool issymlink_nt(const char *) libcesque;

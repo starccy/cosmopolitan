@@ -36,15 +36,10 @@
  */
 struct NtWsaData kNtWsaData;
 
-static textwindows void WinSockCleanup(void) {
-  int rc;
-  rc = WSACleanup();
-  NTTRACE("WSACleanup() → %d% lm", rc);
-}
-
+// no WSACleanup() at exit: other threads may still be in socket calls,
+// and Windows reclaims the sockets when the process ends anyway
 textwindows void WinSockInit(void) {
   int rc;
-  atexit(WinSockCleanup);
   NTTRACE("WSAStartup()");
   if ((rc = WSAStartup(VERSION, &kNtWsaData)) != 0 ||
       kNtWsaData.wVersion != VERSION) {

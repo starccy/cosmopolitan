@@ -39,7 +39,7 @@
 // on between sleeps measures worse (1.4ms), so it really is per sleep.
 static atomic_int g_sleepers;
 
-static textwindows void sys_clock_nanosleep_nt_fast_tick(bool enter) {
+textwindows void __nt_fast_tick(bool enter) {
   uint32_t coarsest, finest, current;
   if (enter) {
     atomic_fetch_add(&g_sleepers, 1);
@@ -62,9 +62,9 @@ static textwindows int sys_clock_nanosleep_nt_impl(int clock,
     wall = timespec_add(wall, timespec_sub(abs, now));
   // not from sys_clock_nanosleep_nt_init(): ntdll imports are bound
   // lazily and WinMain() calls that before they can be
-  sys_clock_nanosleep_nt_fast_tick(true);
+  __nt_fast_tick(true);
   rc = _park_norestart(wall, waitmask);
-  sys_clock_nanosleep_nt_fast_tick(false);
+  __nt_fast_tick(false);
   return rc;
 }
 

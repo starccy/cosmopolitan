@@ -31,6 +31,7 @@ __msabi extern typeof(__sys_closesocket_nt) *const __imp_closesocket;
  * This function should only be called by close().
  */
 textwindows int sys_closesocket_nt(struct Fd *f) {
+  __sockopt_forget(f->handle);
   if (!__imp_closesocket(f->handle)) {
     return 0;
   } else {

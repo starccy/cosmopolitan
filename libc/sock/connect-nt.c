@@ -184,6 +184,7 @@ textwindows static int sys_connect_nt_impl(struct Fd *f, const void *addr,
     if (!wrfds.fd_count)
       return eio();  // should be impossible
     f->connecting = CONNECTED;
+    __sockopt_replay(f);
     return 0;
   }
 }

@@ -765,6 +765,9 @@ static int ioctl_fioclex_nt(int fd, bool set) {
  * @vforksafe
  */
 int ioctl(int fd, unsigned long request, ...) {
+  // codes are 32 bits on every host, and a caller declaring the
+  // parameter as int (musl does) hands the upper half over sign extended
+  request &= 0xffffffff;
   int rc;
   void *arg;
   va_list va;
