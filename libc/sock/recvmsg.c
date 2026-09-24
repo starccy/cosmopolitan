@@ -32,7 +32,9 @@
 #include "libc/sock/struct/msghdr.internal.h"
 #include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/sock/syscall_fd.internal.h"
+#include "libc/runtime/stack.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -60,24 +62,45 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
   if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {
-    if (IsBsd() && msg->msg_name) {
+    int hflags = __msg2host(flags);
+    if (hflags == -1) {
+      rc = einval();
+    } else if (IsBsd() && (msg->msg_name || msg->msg_control)) {
       memcpy(&msg2, msg, sizeof(msg2));
-      if (!(rc = sockaddr2bsd(msg->msg_name, msg->msg_namelen, &bsd,
-                              &msg2.msg_namelen))) {
+      if (msg->msg_name) {
         msg2.msg_name = &bsd.sa;
-        if ((rc = sys_recvmsg(fd, &msg2, flags)) != -1) {
-          sockaddr2linux(msg2.msg_name, msg2.msg_namelen, msg->msg_name,
+        msg2.msg_namelen = sizeof(bsd);
+      }
+      if ((rc = sys_recvmsg(fd, &msg2, hflags)) != -1) {
+        if (msg->msg_name)
+          sockaddr2linux(&bsd, msg2.msg_namelen, msg->msg_name,
                          &msg->msg_namelen);
+        if (msg->msg_control) {
+          // the linux layout grows, so convert out of a copy
+          size_t bytes = msg2.msg_controllen;
+#pragma GCC push_options
+#pragma GCC diagnostic ignored "-Walloca-larger-than="
+          void *control = alloca(bytes);
+#pragma GCC pop_options
+          CheckLargeStackAllocation(control, bytes);
+          memcpy(control, msg->msg_control, bytes);
+          msg->msg_controllen = __cmsg2linux(control, bytes, msg->msg_control,
+                                             msg->msg_controllen);
         }
+        msg->msg_flags = __msg2linux(msg2.msg_flags);
       }
     } else {
-      rc = sys_recvmsg(fd, msg, flags);
+      rc = sys_recvmsg(fd, msg, hflags);
+      if (rc != -1)
+        msg->msg_flags = __msg2linux(msg->msg_flags);
     }
   } else if (__isfdopen(fd)) {
     if (!msg->msg_control) {
       if (__isfdkind(fd, kFdSocket)) {
         rc = sys_recvfrom_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
                              msg->msg_name, &msg->msg_namelen);
+        if (rc != -1)
+          msg->msg_flags = 0;
       } else if (__isfdkind(fd, kFdFile) && !msg->msg_name) { /* socketpair */
         if (!flags) {
           if ((got = sys_read_nt(fd, msg->msg_iov, msg->msg_iovlen, -1)) !=

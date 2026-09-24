@@ -1,14 +1,13 @@
 #ifndef COSMOPOLITAN_LIBC_SYSV_CONSTS_WAITID_H_
 #define COSMOPOLITAN_LIBC_SYSV_CONSTS_WAITID_H_
-COSMOPOLITAN_C_START_
 
-extern const int WEXITED;
-extern const int WSTOPPED;
-extern const int WNOWAIT;
+#define WSTOPPED 2
+#define WEXITED  4
+#define WNOWAIT  0x01000000
 
-#define WEXITED  WEXITED
-#define WSTOPPED WSTOPPED
-#define WNOWAIT  WNOWAIT
+#define P_ALL   0
+#define P_PID   1
+#define P_PGID  2
+#define P_PIDFD 3
 
-COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_WAITID_H_ */

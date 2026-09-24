@@ -30,6 +30,7 @@
 #include "libc/sock/struct/sockaddr.h"
 #include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/sock/syscall_fd.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -69,7 +70,12 @@ ssize_t recvfrom(int fd, void *buf, size_t size, int flags,
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {
-    rc = sys_recvfrom(fd, buf, size, flags, &addr, &addrsize);
+    int hflags = __msg2host(flags);
+    if (hflags != -1) {
+      rc = sys_recvfrom(fd, buf, size, hflags, &addr, &addrsize);
+    } else {
+      rc = einval();
+    }
   } else if (__isfdopen(fd)) {
     if (__isfdkind(fd, kFdSocket)) {
       rc = sys_recvfrom_nt(fd, (struct iovec[]){{buf, size}}, 1, flags, &addr,

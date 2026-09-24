@@ -21,6 +21,7 @@
 #include "libc/calls/struct/rusage.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/consts/rusage.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -31,7 +32,8 @@
  */
 int getrusage(int who, struct rusage *usage) {
   int rc;
-  if (who == 99) {
+  if ((who == RUSAGE_THREAD && IsXnu()) ||
+      (who == RUSAGE_BOTH && !IsLinux() && !IsWindows())) {
     rc = einval();
   } else if (!IsWindows()) {
     rc = sys_getrusage(who, usage);

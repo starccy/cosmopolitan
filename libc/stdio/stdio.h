@@ -9,7 +9,7 @@
 #define L_tmpnam     20
 #define L_ctermid    20
 #define P_tmpdir     "/tmp"
-#define FILENAME_MAX 1024
+#define FILENAME_MAX 4096
 #define FOPEN_MAX    1000
 #define TMP_MAX      10000
 #define BUFSIZ       4096

@@ -26,6 +26,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/runtime/syslib.internal.h"
 #include "libc/sysv/consts/clock.h"
+#include "libc/sysv/consts/host.internal.h"
 
 #ifdef __aarch64__
 #define CGT_VDSO __vdsosym("LINUX_2.6.39", "__kernel_clock_gettime")
@@ -35,12 +36,20 @@
 
 typedef int clock_gettime_f(int, struct timespec *);
 
+static int sys_clock_gettime_syslib(int clock, struct timespec *ts) {
+  return __syslib->__clock_gettime(__clock2host(clock), ts);
+}
+
+static int sys_clock_gettime_host(int clock, struct timespec *ts) {
+  return sys_clock_gettime(__clock2host(clock), ts);
+}
+
 static clock_gettime_f *__clock_gettime_get(void) {
   clock_gettime_f *cgt;
   if (IsLinux() && (cgt = CGT_VDSO)) {
     return cgt;
   } else if (__syslib) {
-    return (void *)__syslib->__clock_gettime;
+    return sys_clock_gettime_syslib;
   } else if (IsFreebsd()) {
     return sys_clock_gettime_freebsd;
 #ifdef __x86_64__
@@ -49,8 +58,10 @@ static clock_gettime_f *__clock_gettime_get(void) {
   } else if (IsXnu()) {
     return sys_clock_gettime_xnu;
 #endif
-  } else {
+  } else if (IsLinux()) {
     return sys_clock_gettime;
+  } else {
+    return sys_clock_gettime_host;
   }
 }
 

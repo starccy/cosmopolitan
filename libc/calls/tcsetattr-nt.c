@@ -54,7 +54,7 @@ textwindows int tcsetattr_nt(int fd, int opt, const struct termios *tio) {
   inmode &= ~(kNtEnableLineInput | kNtEnableEchoInput |
               kNtEnableProcessedInput | kNtEnableVirtualTerminalInput);
   inmode |= kNtEnableWindowInput;
-  __ttyconf.magic = 0;
+  __ttyconf.magic &= kTtyXtMouse;
   if (tio->c_lflag & ICANON) {
     inmode |= kNtEnableLineInput | kNtEnableQuickEditMode;
   } else {

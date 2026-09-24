@@ -1,14 +1,8 @@
 #ifndef COSMOPOLITAN_LIBC_SYSV_CONSTS_MSYNC_H_
 #define COSMOPOLITAN_LIBC_SYSV_CONSTS_MSYNC_H_
-COSMOPOLITAN_C_START_
 
-extern const int MS_SYNC;
-extern const int MS_ASYNC;
-extern const int MS_INVALIDATE;
+#define MS_ASYNC      1
+#define MS_INVALIDATE 2
+#define MS_SYNC       4
 
-#define MS_SYNC       MS_SYNC
-#define MS_ASYNC      MS_ASYNC
-#define MS_INVALIDATE MS_INVALIDATE
-
-COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_MSYNC_H_ */

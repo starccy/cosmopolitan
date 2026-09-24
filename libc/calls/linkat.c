@@ -25,6 +25,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/runtime/zipos.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -40,15 +41,18 @@
  */
 int linkat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath,
            int flags) {
-  int rc;
+  int rc, hflags;
   if (kisdangerous(oldpath) || kisdangerous(newpath)) {
     rc = efault();
+  } else if ((hflags = __at2host(flags)) == -1) {
+    rc = einval();
   } else if (_weaken(__zipos_notat) &&
              ((rc = __zipos_notat(olddirfd, oldpath)) == -1 ||
               (rc = __zipos_notat(newdirfd, newpath)) == -1)) {
     rc = erofs();
   } else if (!IsWindows()) {
-    rc = sys_linkat(olddirfd, oldpath, newdirfd, newpath, flags);
+    rc = sys_linkat(__dirfd2host(olddirfd), oldpath, __dirfd2host(newdirfd),
+                    newpath, hflags);
   } else {
     rc = sys_linkat_nt(olddirfd, oldpath, newdirfd, newpath);
   }

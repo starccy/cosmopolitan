@@ -30,6 +30,7 @@
 #include "libc/mem/alloca.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/s.h"
 #include "libc/sysv/errfuns.h"
 
@@ -75,15 +76,17 @@ static const char *DescribeUnlinkatFlags(char buf[12], int flags) {
  * @raise EILSEQ if `path` contains illegal UTF-8 sequences (Windows/MacOS)
  */
 int unlinkat(int dirfd, const char *path, int flags) {
-  int rc;
+  int rc, hflags;
 
   if (kisdangerous(path)) {
     rc = efault();
+  } else if ((hflags = __at2host(flags)) == -1) {
+    rc = einval();
   } else if (_weaken(__zipos_notat) &&
              (rc = __zipos_notat(dirfd, path)) == -1) {
     rc = erofs();
   } else if (!IsWindows()) {
-    rc = sys_unlinkat(dirfd, path, flags);
+    rc = sys_unlinkat(__dirfd2host(dirfd), path, hflags);
   } else {
     rc = sys_unlinkat_nt(dirfd, path, flags);
   }

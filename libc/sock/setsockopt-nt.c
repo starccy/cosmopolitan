@@ -27,6 +27,7 @@
 #include "libc/sock/struct/linger.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/stdio/sysparam.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
@@ -71,7 +72,11 @@ textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
     optlen = sizeof(u.linger);
   }
 
-  if (__imp_setsockopt(fd->handle, level, optname, optval, optlen) != -1) {
+  int hopt = __sockopt2host(level, optname);
+  if (!hopt)
+    return enoprotoopt();
+  if (__imp_setsockopt(fd->handle, __sol2host(level), hopt, optval, optlen) !=
+      -1) {
     return 0;
   } else {
     return __winsockerr();

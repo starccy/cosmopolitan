@@ -24,6 +24,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/runtime/zipos.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -42,14 +43,16 @@
  */
 int fchownat(int dirfd, const char *path, uint32_t uid, uint32_t gid,
              int flags) {
-  int rc;
+  int rc, hflags;
   if (kisdangerous(path)) {
     rc = efault();
+  } else if ((hflags = __at2host(flags)) == -1) {
+    rc = einval();
   } else if (_weaken(__zipos_notat) &&
              (rc = __zipos_notat(dirfd, path)) == -1) {
     rc = erofs();
   } else {
-    rc = sys_fchownat(dirfd, path, uid, gid, flags);
+    rc = sys_fchownat(__dirfd2host(dirfd), path, uid, gid, hflags);
   }
   STRACE("fchownat(%s, %#s, %d, %d, %#b) → %d% m", DescribeDirfd(dirfd), path,
          uid, gid, flags, rc);

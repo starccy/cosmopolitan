@@ -26,29 +26,23 @@
 #include "libc/nt/synchronization.h"
 #include "libc/nt/thread.h"
 #include "libc/nt/time.h"
+#include "libc/sysv/consts/clock.h"
 #if SupportsWindows()
-
-#define _CLOCK_REALTIME           0
-#define _CLOCK_MONOTONIC          1
-#define _CLOCK_REALTIME_COARSE    2
-#define _CLOCK_BOOTTIME           3
-#define _CLOCK_PROCESS_CPUTIME_ID 4
-#define _CLOCK_THREAD_CPUTIME_ID  5
-#define _CLOCK_MONOTONIC_COARSE   6
 
 textwindows int sys_clock_gettime_nt(int clock, struct timespec *ts) {
   uint64_t hectons;
   struct NtFileTime ft, ftExit, ftUser, ftKernel, ftCreation;
   switch (clock) {
-    case _CLOCK_REALTIME:
+    case CLOCK_REALTIME:
       GetSystemTimePreciseAsFileTime(&ft);
       *ts = FileTimeToTimeSpec(ft);
       return 0;
-    case _CLOCK_REALTIME_COARSE:
+    case CLOCK_REALTIME_COARSE:
       GetSystemTimeAsFileTime(&ft);
       *ts = FileTimeToTimeSpec(ft);
       return 0;
-    case _CLOCK_MONOTONIC:
+    case CLOCK_MONOTONIC:
+    case CLOCK_MONOTONIC_RAW:
       //
       // "If you need a higher resolution timer, use the
       //  QueryUnbiasedInterruptTime function, a multimedia timer, or a
@@ -61,7 +55,7 @@ textwindows int sys_clock_gettime_nt(int clock, struct timespec *ts) {
       QueryUnbiasedInterruptTimePrecise(&hectons);
       *ts = WindowsDurationToTimeSpec(hectons);
       return 0;
-    case _CLOCK_MONOTONIC_COARSE:
+    case CLOCK_MONOTONIC_COARSE:
       //
       // "QueryUnbiasedInterruptTimePrecise is similar to the
       //  QueryUnbiasedInterruptTime routine, but is more precise. The
@@ -85,7 +79,7 @@ textwindows int sys_clock_gettime_nt(int clock, struct timespec *ts) {
       QueryUnbiasedInterruptTime(&hectons);
       *ts = WindowsDurationToTimeSpec(hectons);
       return 0;
-    case _CLOCK_BOOTTIME:
+    case CLOCK_BOOTTIME:
       //
       // "Unbiased interrupt-time means that only time that the system
       //  is in the working state is counted; therefore, the interrupt
@@ -97,13 +91,13 @@ textwindows int sys_clock_gettime_nt(int clock, struct timespec *ts) {
       QueryInterruptTimePrecise(&hectons);
       *ts = WindowsDurationToTimeSpec(hectons);
       return 0;
-    case _CLOCK_PROCESS_CPUTIME_ID:
+    case CLOCK_PROCESS_CPUTIME_ID:
       GetProcessTimes(GetCurrentProcess(), &ftCreation, &ftExit, &ftKernel,
                       &ftUser);
       *ts = WindowsDurationToTimeSpec(ReadFileTime(ftUser) +
                                       ReadFileTime(ftKernel));
       return 0;
-    case _CLOCK_THREAD_CPUTIME_ID:
+    case CLOCK_THREAD_CPUTIME_ID:
       GetThreadTimes(GetCurrentThread(), &ftCreation, &ftExit, &ftKernel,
                      &ftUser);
       *ts = WindowsDurationToTimeSpec(ReadFileTime(ftUser) +

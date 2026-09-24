@@ -24,6 +24,7 @@
 #include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/errno.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
@@ -44,7 +45,7 @@ bool32 isatty(int fd) {
     res = false;
   } else if (IsWindows() || IsMetal()) {
     res = sys_isatty(fd);
-  } else if (!sys_ioctl(fd, TIOCGWINSZ, &ws)) {
+  } else if (!sys_ioctl(fd, __ioctl2host(TIOCGWINSZ), &ws)) {
     res = true;
   } else {
     res = false;

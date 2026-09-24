@@ -32,7 +32,9 @@
 #include "libc/sock/struct/msghdr.h"
 #include "libc/sock/struct/msghdr.internal.h"
 #include "libc/sock/struct/sockaddr.internal.h"
+#include "libc/runtime/stack.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -58,15 +60,33 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
   if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {
-    if (IsBsd() && msg->msg_name) {
+    int hflags = __msg2host(flags);
+    if (hflags == -1) {
+      rc = einval();
+    } else if (IsBsd() && (msg->msg_name || msg->msg_control)) {
+      rc = 0;
       memcpy(&msg2, msg, sizeof(msg2));
-      if (!(rc = sockaddr2bsd(msg->msg_name, msg->msg_namelen, &bsd,
-                              &msg2.msg_namelen))) {
-        msg2.msg_name = &bsd.sa;
-        rc = sys_sendmsg(fd, &msg2, flags);
+      if (msg->msg_name) {
+        if (!(rc = sockaddr2bsd(msg->msg_name, msg->msg_namelen, &bsd,
+                                &msg2.msg_namelen)))
+          msg2.msg_name = &bsd.sa;
       }
+      if (!rc && msg->msg_control) {
+        // the bsd layout is never bigger than the linux one
+        size_t bytes = msg->msg_controllen;
+#pragma GCC push_options
+#pragma GCC diagnostic ignored "-Walloca-larger-than="
+        void *control = alloca(bytes);
+#pragma GCC pop_options
+        CheckLargeStackAllocation(control, bytes);
+        ssize_t n = __cmsg2bsd(msg->msg_control, bytes, control, bytes);
+        msg2.msg_control = n > 0 ? control : 0;
+        msg2.msg_controllen = n > 0 ? n : 0;
+      }
+      if (!rc)
+        rc = sys_sendmsg(fd, &msg2, hflags);
     } else {
-      rc = sys_sendmsg(fd, msg, flags);
+      rc = sys_sendmsg(fd, msg, hflags);
     }
   } else if (__isfdopen(fd)) {
     if (msg->msg_control) {

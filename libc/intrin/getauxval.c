@@ -19,6 +19,7 @@
 #include "libc/errno.h"
 #include "libc/intrin/getauxval.h"
 #include "libc/runtime/runtime.h"
+#include "libc/sysv/consts/auxv.h"
 
 /**
  * Returns auxiliary value.
@@ -31,6 +32,10 @@
  */
 unsigned long getauxval(unsigned long key) {
   struct AuxiliaryValue x;
+  // what cosmo's own signal delivery needs, trampoline included, on
+  // every host, whether or not the kernel put a number in the vector
+  if (key == AT_MINSIGSTKSZ)
+    return __get_minsigstksz();
   x = __getauxval(key);
   if (x.isfound) {
     return x.value;

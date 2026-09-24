@@ -52,6 +52,7 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/stdckdint.h"
 #include "libc/stdio/sysparam.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/map.h"
 #include "libc/sysv/consts/mremap.h"
 #include "libc/sysv/consts/o.h"
@@ -637,7 +638,7 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
     return MAP_FAILED;
 
   // polyfill nuances of fixed mappings
-  int sysflags = flags;
+  int sysflags = __mmap2host(flags & ~MAP_FIXED_NOREPLACE);
   bool hintmode = false;
   bool noreplace = false;
   bool fixedmode = false;
@@ -646,7 +647,6 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
       __maps_free(map);
       return (void *)einval();
     }
-    sysflags &= ~MAP_FIXED_NOREPLACE;
     if (IsLinux()) {
       sysflags |= MAP_FIXED_NOREPLACE_linux;
     } else if (IsFreebsd()) {

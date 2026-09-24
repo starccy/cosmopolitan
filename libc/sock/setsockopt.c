@@ -26,6 +26,7 @@
 #include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
 #include "libc/sock/syscall_fd.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
@@ -71,7 +72,11 @@ int setsockopt(int fd, int level, int optname, const void *optval,
     rc = -1;
     e = errno;
     do {
-      if (sys_setsockopt(fd, level, optname, optval, optlen) != -1) {
+      int hopt = __sockopt2host(level, optname);
+      if (!hopt) {
+        errno = ENOPROTOOPT;
+      } else if (sys_setsockopt(fd, __sol2host(level), hopt, optval, optlen) !=
+                 -1) {
         errno = e;
         rc = 0;
         break;

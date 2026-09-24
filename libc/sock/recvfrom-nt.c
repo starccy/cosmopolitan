@@ -31,11 +31,9 @@
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/msg.h"
 #if SupportsWindows()
-
-#define _MSG_OOB      1
-#define _MSG_PEEK     2
-#define _MSG_DONTWAIT 64
 
 struct RecvFromArgs {
   const struct iovec *iov;
@@ -59,7 +57,7 @@ textwindows ssize_t sys_recvfrom_nt(int fd, const struct iovec *iov,
                                     void *opt_out_srcaddr,
                                     uint32_t *opt_inout_srcaddrsize) {
 
-  if (flags & ~(_MSG_DONTWAIT | _MSG_OOB | _MSG_PEEK))
+  if (flags & ~(MSG_DONTWAIT | MSG_OOB | MSG_PEEK))
     return einval();
 
   ssize_t rc;
@@ -67,17 +65,21 @@ textwindows ssize_t sys_recvfrom_nt(int fd, const struct iovec *iov,
   sigset_t waitmask = __sig_block();
   uint32_t addrcapacity = opt_inout_srcaddrsize ? *opt_inout_srcaddrsize : 0;
   
-  bool nonblock = (f->flags & O_NONBLOCK) || (flags & _MSG_DONTWAIT);
+  bool nonblock = (f->flags & O_NONBLOCK) || (flags & MSG_DONTWAIT);
   if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
     __sig_unblock(waitmask);
     return eagain();
   }
-  rc = __winsock_block(f->handle, flags & ~_MSG_DONTWAIT, nonblock,
+  rc = __winsock_block(f->handle, __msg2host(flags & ~MSG_DONTWAIT), nonblock,
                        f->rcvtimeo, waitmask, sys_recvfrom_nt_start,
                        &(struct RecvFromArgs){iov, iovlen, opt_out_srcaddr,
                                               opt_inout_srcaddrsize});
-  if (rc != -1)
+  if (rc != -1) {
     __unfixsunpath(opt_out_srcaddr, opt_inout_srcaddrsize, addrcapacity);
+    if (opt_out_srcaddr && opt_inout_srcaddrsize && *opt_inout_srcaddrsize >= 2)
+      ((struct sockaddr *)opt_out_srcaddr)->sa_family =
+          __af2linux(((struct sockaddr *)opt_out_srcaddr)->sa_family);
+  }
   __sig_unblock(waitmask);
   return rc;
 }

@@ -30,6 +30,7 @@
 #include "libc/mem/alloca.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/ok.h"
 #include "libc/sysv/errfuns.h"
 
@@ -99,7 +100,8 @@ int faccessat(int dirfd, const char *path, int amode, int flags) {
       if (errno == ENOSYS) {
         errno = e;
       NoFlags:
-        rc = sys_faccessat(dirfd, path, amode, flags);
+        rc = sys_faccessat(__dirfd2host(dirfd), path, amode,
+                           __faccessat2host(flags));
       }
     }
   } else {

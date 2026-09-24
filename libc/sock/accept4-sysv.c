@@ -24,6 +24,7 @@
 #include "libc/sock/sock.h"
 #include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/sysv/consts/f.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/sock.h"
 #include "libc/sysv/errfuns.h"
@@ -32,7 +33,7 @@ int sys_accept4(int server, struct sockaddr_storage *addr, int flags) {
   uint32_t size = sizeof(*addr);
   int olderr, client, file_mode;
   olderr = errno;
-  client = __sys_accept4(server, addr, &size, flags);
+  client = __sys_accept4(server, addr, &size, __socktype2host(flags));
   if (client == -1 && errno == ENOSYS) {
     // XNU/RHEL5/etc. don't support accept4(), but it's easilly polyfilled
     errno = olderr;

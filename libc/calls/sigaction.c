@@ -43,6 +43,7 @@
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/syslib.internal.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/limits.h"
 #include "libc/sysv/consts/sa.h"
 #include "libc/sysv/consts/sig.h"
@@ -53,6 +54,52 @@
 #include "libc/thread/tls.h"
 
 #define SA_RESTORER 0x04000000
+
+__HOSTCONST(unsigned, SA_NOCLDSTOP);
+__HOSTCONST(unsigned, SA_NOCLDWAIT);
+__HOSTCONST(unsigned, SA_SIGINFO);
+__HOSTCONST(unsigned, SA_ONSTACK);
+__HOSTCONST(unsigned, SA_RESTART);
+__HOSTCONST(unsigned, SA_NODEFER);
+__HOSTCONST(unsigned, SA_RESETHAND);
+
+static uint64_t sa_flags2host(uint64_t flags) {
+  uint64_t res = 0;
+  if (flags & SA_NOCLDSTOP)
+    res |= __host_SA_NOCLDSTOP;
+  if (flags & SA_NOCLDWAIT)
+    res |= __host_SA_NOCLDWAIT;
+  if (flags & SA_SIGINFO)
+    res |= __host_SA_SIGINFO;
+  if (flags & SA_ONSTACK)
+    res |= __host_SA_ONSTACK;
+  if (flags & SA_RESTART)
+    res |= __host_SA_RESTART;
+  if (flags & SA_NODEFER)
+    res |= __host_SA_NODEFER;
+  if (flags & SA_RESETHAND)
+    res |= __host_SA_RESETHAND;
+  return res;
+}
+
+static uint64_t sa_flags2linux(uint64_t flags) {
+  uint64_t res = 0;
+  if (flags & __host_SA_NOCLDSTOP)
+    res |= SA_NOCLDSTOP;
+  if (flags & __host_SA_NOCLDWAIT)
+    res |= SA_NOCLDWAIT;
+  if (flags & __host_SA_SIGINFO)
+    res |= SA_SIGINFO;
+  if (flags & __host_SA_ONSTACK)
+    res |= SA_ONSTACK;
+  if (flags & __host_SA_RESTART)
+    res |= SA_RESTART;
+  if (flags & __host_SA_NODEFER)
+    res |= SA_NODEFER;
+  if (flags & __host_SA_RESETHAND)
+    res |= SA_RESETHAND;
+  return res;
+}
 
 static void sigaction_cosmo2native(union metasigaction *sa) {
   void *handler;
@@ -69,6 +116,8 @@ static void sigaction_cosmo2native(union metasigaction *sa) {
   mask = __linux2mask(sa->cosmo.sa_mask);
   masklo = mask;
   maskhi = mask >> 32;
+  if (!IsLinux())
+    flags = sa_flags2host(flags);
   if (IsLinux()) {
     sa->linux.sa_flags = flags;
     sa->linux.sa_handler = handler;
@@ -144,7 +193,7 @@ static void sigaction_native2cosmo(union metasigaction *sa) {
   } else {
     return;
   }
-  sa->cosmo.sa_flags = flags;
+  sa->cosmo.sa_flags = IsLinux() ? flags : sa_flags2linux(flags);
   sa->cosmo.sa_handler = handler;
   sa->cosmo.sa_restorer = restorer;
   sa->cosmo.sa_mask = __mask2linux(masklo | (uint64_t)maskhi << 32);
@@ -254,8 +303,9 @@ static int __sigaction(int sig, const struct sigaction *act,
       // xnu silicon claims to support sa_resethand but it does nothing
       // this can be tested, since it clears the bit from flags as well
       if (!rc && oldact &&
-          (((struct sigaction_silicon *)oldact)->sa_flags & SA_RESETHAND)) {
-        ((struct sigaction_silicon *)oldact)->sa_flags |= SA_RESETHAND;
+          (((struct sigaction_silicon *)oldact)->sa_flags &
+           __host_SA_RESETHAND)) {
+        ((struct sigaction_silicon *)oldact)->sa_flags |= __host_SA_RESETHAND;
       }
     }
     if (rc != -1) {

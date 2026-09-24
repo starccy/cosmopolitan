@@ -36,6 +36,9 @@ static int setrlimit_impl(int resource, const struct rlimit *rlim) {
     return einval();
   if (kisdangerous(rlim))
     return efault();
+  // the resources past RLIMIT_AS only exist on linux
+  if (IsBsd() && resource > RLIMIT_AS)
+    return einval();
   if (rlim->rlim_cur > rlim->rlim_max)
     return einval();
   if (rlim->rlim_cur > ~__get_pib()->rlimit[resource].rlim_max)

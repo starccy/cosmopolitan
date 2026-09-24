@@ -24,6 +24,7 @@
 #include "libc/sock/struct/sockaddr6.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/host.internal.h"
 
 // computes byte length of socket address
 uint8_t __get_sockaddr_len(const struct sockaddr_storage *addr) {
@@ -46,7 +47,7 @@ void __convert_bsd_to_sockaddr(struct sockaddr_storage *addr) {
     struct sockaddr cosmo;
     struct sockaddr_bsd bsd;
   } *pun = (void *)addr;
-  pun->cosmo.sa_family = pun->bsd.sa_family;
+  pun->cosmo.sa_family = __af2linux(pun->bsd.sa_family);
 }
 
 // converts cosmo sockaddr abi to bsd
@@ -57,7 +58,7 @@ void __convert_sockaddr_to_bsd(struct sockaddr_storage *addr) {
     struct sockaddr_bsd bsd;
   } *pun = (void *)addr;
   len = __get_sockaddr_len(addr);
-  pun->bsd.sa_family = pun->cosmo.sa_family;
+  pun->bsd.sa_family = __af2host(pun->cosmo.sa_family);
   pun->bsd.sa_len = len;
 }
 

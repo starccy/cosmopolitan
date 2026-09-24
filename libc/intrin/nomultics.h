@@ -21,9 +21,8 @@ struct TtyConf {
   unsigned char replmode;
   unsigned char replstderr;
   union {
-    unsigned char c_cc[20];
+    unsigned char c_cc[32];
     struct {
-      unsigned char vline;
       unsigned char vintr;  /* SIGINT keystroke (isigs) */
       unsigned char vquit;  /* SIGQUIT keystroke (isigs) */
       unsigned char verase; /* backspace keystroke (canon) */

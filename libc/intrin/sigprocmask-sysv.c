@@ -20,11 +20,15 @@
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/dce.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/errfuns.h"
 
 int sys_sigprocmask(int how, const sigset_t *opt_set,
                     sigset_t *opt_out_oldset) {
   int rc;
   uint64_t old[2] = {0};
+  if ((how = __sighow2host(how)) == -1)
+    return einval();
   if (!IsOpenbsd()) {
     rc = __sys_sigprocmask(
         how, opt_set ? (uint64_t[2]){__linux2mask(*opt_set)} : 0, old, 8);

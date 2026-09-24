@@ -19,6 +19,36 @@
 #include "libc/calls/struct/statfs-meta.internal.h"
 #include "libc/dce.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/st.h"
+
+__HOSTCONST(int, ST_RDONLY);
+__HOSTCONST(int, ST_NOSUID);
+__HOSTCONST(int, ST_NODEV);
+__HOSTCONST(int, ST_NOEXEC);
+__HOSTCONST(int, ST_SYNCHRONOUS);
+__HOSTCONST(int, ST_NOATIME);
+__HOSTCONST(int, ST_RELATIME);
+
+// turns the host's mount flags (MNT_* on BSDs) into ST_* bits
+static int64_t statfs_flags2linux(int64_t flags) {
+  int64_t res = 0;
+  if (__host_ST_RDONLY && (flags & __host_ST_RDONLY))
+    res |= ST_RDONLY;
+  if (__host_ST_NOSUID && (flags & __host_ST_NOSUID))
+    res |= ST_NOSUID;
+  if (__host_ST_NODEV && (flags & __host_ST_NODEV))
+    res |= ST_NODEV;
+  if (__host_ST_NOEXEC && (flags & __host_ST_NOEXEC))
+    res |= ST_NOEXEC;
+  if (__host_ST_SYNCHRONOUS && (flags & __host_ST_SYNCHRONOUS))
+    res |= ST_SYNCHRONOUS;
+  if (__host_ST_NOATIME && (flags & __host_ST_NOATIME))
+    res |= ST_NOATIME;
+  if (__host_ST_RELATIME && (flags & __host_ST_RELATIME))
+    res |= ST_RELATIME;
+  return res;
+}
 
 static const char *DescribeStatfsTypeLinux(int64_t x) {
   switch (x) {
@@ -298,7 +328,7 @@ void statfs2cosmo(struct statfs *f, const union statfs_meta *m) {
   f->f_fsid = f_fsid;
   f->f_namelen = f_namelen;
   f->f_frsize = f_frsize;
-  f->f_flags = f_flags;
+  f->f_flags = IsLinux() ? f_flags : statfs_flags2linux(f_flags);
   f->f_owner = f_owner;
   memcpy(f->f_fstypename, f_fstypename, 16);
 }

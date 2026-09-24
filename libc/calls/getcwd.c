@@ -27,6 +27,7 @@
 #include "libc/nt/files.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/intrin/weaken.h"
 #include "libc/sysv/errfuns.h"
@@ -41,12 +42,13 @@ static int sys_getcwd_xnu(char *res, size_t size) {
   int fd, len, rc = -1;
   union metastat st[2];
   char buf[XNU_MAXPATHLEN];
-  if ((fd = __sys_openat_nc(AT_FDCWD, ".", O_RDONLY | XNU_O_DIRECTORY, 0)) !=
+  if ((fd = __sys_openat_nc(__dirfd2host(AT_FDCWD), ".",
+                             O_RDONLY | XNU_O_DIRECTORY, 0)) !=
       -1) {
     if (__sys_fstat(fd, &st[0]) != -1) {
       if (st[0].xnu.st_dev && st[0].xnu.st_ino) {
         if (__sys_fcntl(fd, XNU_F_GETPATH, (uintptr_t)buf) != -1) {
-          if (__sys_fstatat(AT_FDCWD, buf, &st[1], 0) != -1) {
+          if (__sys_fstatat(__dirfd2host(AT_FDCWD), buf, &st[1], 0) != -1) {
             if (st[0].xnu.st_dev == st[1].xnu.st_dev &&
                 st[0].xnu.st_ino == st[1].xnu.st_ino) {
               if ((len = strlen(buf)) < size) {

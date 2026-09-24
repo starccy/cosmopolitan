@@ -24,6 +24,7 @@
 #include "libc/runtime/runtime.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -59,10 +60,12 @@ char *GetInterpreterExecutableName(char *p, size_t n) {
       return p;
     }
     errno = ENAMETOOLONG;
-  } else if ((rc = sys_readlinkat(AT_FDCWD, "/proc/self/exe", p, n - 1)) > 0) {
+  } else if ((rc = sys_readlinkat(__dirfd2host(AT_FDCWD), "/proc/self/exe", p,
+                            n - 1)) > 0) {
     p[rc] = 0;
     return p;
-  } else if ((rc = sys_readlinkat(AT_FDCWD, "/proc/curproc/file", p, n - 1)) >
+  } else if ((rc = sys_readlinkat(__dirfd2host(AT_FDCWD), "/proc/curproc/file",
+                            p, n - 1)) >
              0) {
     errno = e;
     p[rc] = 0;

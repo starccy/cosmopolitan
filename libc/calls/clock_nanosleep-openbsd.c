@@ -22,6 +22,7 @@
 #include "libc/cosmotime.h"
 #include "libc/errno.h"
 #include "libc/sysv/consts/clock.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 relegated int sys_clock_nanosleep_openbsd(int clock, int flags,
@@ -32,7 +33,7 @@ relegated int sys_clock_nanosleep_openbsd(int clock, int flags,
   if (!flags) {
     relative = *req;
   } else {
-    if ((res = sys_clock_gettime(clock, &start)))
+    if ((res = sys_clock_gettime(__clock2host(clock), &start)))
       return _sysret(res);
     if (timespec_cmp(start, *req) >= 0)
       return 0;

@@ -1,16 +1,5 @@
 #ifndef COSMOPOLITAN_LIBC_SYSV_CONSTS_PTY_H_
 #define COSMOPOLITAN_LIBC_SYSV_CONSTS_PTY_H_
-COSMOPOLITAN_C_START_
-
-extern const int TIOCPKT;
-extern const int TIOCPKT_DATA;
-extern const int TIOCPKT_DOSTOP;
-extern const int TIOCPKT_FLUSHREAD;
-extern const int TIOCPKT_FLUSHWRITE;
-extern const int TIOCPKT_IOCTL;
-extern const int TIOCPKT_NOSTOP;
-extern const int TIOCPKT_START;
-extern const int TIOCPKT_STOP;
 
 #define TIOCPKT_DATA       0x00
 #define TIOCPKT_DOSTOP     0x01
@@ -21,7 +10,6 @@ extern const int TIOCPKT_STOP;
 #define TIOCPKT_START      0x20
 #define TIOCPKT_STOP       0x40
 
-#define TIOCPKT TIOCPKT
+#define TIOCPKT            0x5420
 
-COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_PTY_H_ */

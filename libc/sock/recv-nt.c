@@ -27,6 +27,8 @@
 #include "libc/sock/internal.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/fio.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/msg.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
@@ -34,11 +36,6 @@
 #include "libc/errno.h"
 #include "libc/nt/errors.h"
 #if SupportsWindows()
-
-#define _MSG_OOB      1
-#define _MSG_PEEK     2
-#define _MSG_WAITALL  8
-#define _MSG_DONTWAIT 64
 
 __msabi extern typeof(__sys_ioctlsocket_nt) *const __imp_ioctlsocket;
 
@@ -60,7 +57,7 @@ textwindows static int sys_recv_nt_start(int64_t handle,
 textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
                                 uint32_t flags) {
 
-  if (flags & ~(_MSG_DONTWAIT | _MSG_OOB | _MSG_PEEK | _MSG_WAITALL))
+  if (flags & ~(MSG_DONTWAIT | MSG_OOB | MSG_PEEK | MSG_WAITALL))
     return einval();
 
   if (iovlen) {
@@ -81,16 +78,16 @@ textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
   //  is specified along with MSG_OOB, MSG_PEEK, or MSG_PARTIAL, then
   //  this call will fail with WSAEOPNOTSUPP."
   //                             —Quoth MSDN § WSARecv
-  if (flags & _MSG_WAITALL)
-    __imp_ioctlsocket(f->handle, FIONBIO, (uint32_t[]){0});
+  if (flags & MSG_WAITALL)
+    __imp_ioctlsocket(f->handle, __ioctl2host(FIONBIO), (uint32_t[]){0});
 
-  bool nonblock = (f->flags & O_NONBLOCK) || (flags & _MSG_DONTWAIT);
+  bool nonblock = (f->flags & O_NONBLOCK) || (flags & MSG_DONTWAIT);
   if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
     __sig_unblock(waitmask);
     return eagain();
   }
 
-  rc = __winsock_block(f->handle, flags & ~_MSG_DONTWAIT, nonblock,
+  rc = __winsock_block(f->handle, __msg2host(flags & ~MSG_DONTWAIT), nonblock,
                        f->rcvtimeo, waitmask, sys_recv_nt_start,
                        &(struct RecvArgs){iov, iovlen});
 

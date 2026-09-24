@@ -27,6 +27,7 @@
 #include "libc/runtime/syslib.internal.h"
 #include "libc/sock/internal.h"
 #include "libc/sysv/consts/clock.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/timer.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/thread/posixthread.internal.h"
@@ -69,7 +70,7 @@ int sys_clock_nanosleep_xnu(int clock, int flags, const struct timespec *req,
     return ecanceled();
   if (flags & TIMER_ABSTIME) {
     abs = *req;
-    if (!(res = __syslib->__clock_gettime(clock, &now))) {
+    if (!(res = __syslib->__clock_gettime(__clock2host(clock), &now))) {
       if (timespec_cmp(abs, now) > 0) {
         rel = timespec_sub(abs, now);
         res = __syslib->__nanosleep(&rel, 0);

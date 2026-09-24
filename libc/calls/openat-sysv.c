@@ -23,6 +23,7 @@
 #include "libc/intrin/kprintf.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/f.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
 
@@ -30,7 +31,7 @@ static int sys_openat_impl(int dirfd, const char *file, int flags,
                            unsigned mode) {
   if ((flags = __xoflags(flags)) == -1)
     return -1;
-  return __sys_openat(dirfd, file, flags, mode);
+  return __sys_openat(__dirfd2host(dirfd), file, flags, mode);
 }
 
 int sys_openat(int dirfd, const char *file, int flags, unsigned mode) {

@@ -34,6 +34,7 @@
 #include "libc/stdckdint.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/f.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/poll.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/errfuns.h"
@@ -50,11 +51,13 @@ static int ppoll_impl(struct pollfd *fds, size_t nfds,
   if (timeout && timeout->tv_nsec >= 1000000000ull)
     return einval();
 
-  // The OpenBSD poll() man pages claims it'll ignore POLLERR, POLLHUP,
-  // and POLLNVAL in pollfd::events except it doesn't actually do this.
+  // Off Linux the host wants its own event bits, so the call runs on a
+  // translated copy. The OpenBSD poll() man pages claims it'll ignore
+  // POLLERR, POLLHUP, and POLLNVAL in pollfd::events except it doesn't
+  // actually do this.
   size_t bytes = 0;
   struct pollfd *fds2 = 0;
-  if (IsOpenbsd()) {
+  if (!IsLinux()) {
     if (ckd_mul(&bytes, nfds, sizeof(struct pollfd)))
       return einval();
 #pragma GCC push_options
@@ -63,9 +66,14 @@ static int ppoll_impl(struct pollfd *fds, size_t nfds,
     fds2 = alloca(bytes);
 #pragma GCC pop_options
     CheckLargeStackAllocation(fds2, bytes);
-    memcpy(fds2, fds, bytes);
-    for (size_t i = 0; i < nfds; ++i)
-      fds2[i].events &= ~(POLLERR | POLLHUP | POLLNVAL);
+    for (size_t i = 0; i < nfds; ++i) {
+      int events = fds[i].events;
+      if (IsOpenbsd())
+        events &= ~(POLLERR | POLLHUP | POLLNVAL);
+      fds2[i].fd = fds[i].fd;
+      fds2[i].events = __poll2host(events);
+      fds2[i].revents = 0;
+    }
     struct pollfd *swap = fds;
     fds = fds2;
     fds2 = swap;
@@ -109,11 +117,14 @@ static int ppoll_impl(struct pollfd *fds, size_t nfds,
     fdcount = sys_poll_nt(fds, nfds, timeout, sigmask);
   }
 
-  if (IsOpenbsd() && fdcount != -1) {
+  if (!IsLinux()) {
     struct pollfd *swap = fds;
     fds = fds2;
     fds2 = swap;
-    memcpy(fds, fds2, bytes);
+    if (fdcount != -1)
+      for (size_t i = 0; i < nfds; ++i)
+        fds[i].revents = __poll2linux(fds2[i].revents) &
+                         (fds[i].events | POLLERR | POLLHUP | POLLNVAL);
   }
 
   // One of the use cases for poll() is checking if a large number of

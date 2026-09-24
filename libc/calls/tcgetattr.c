@@ -27,6 +27,7 @@
 #include "libc/intrin/fds.h"
 #include "libc/intrin/strace.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 int tcgetattr_nt(int, struct termios *);
@@ -43,13 +44,8 @@ static int tcgetattr_metal(int fd, struct termios *tio) {
 static int tcgetattr_bsd(int fd, struct termios *tio) {
   int rc;
   union metatermios mt;
-  if ((rc = sys_ioctl(fd, TCGETS, &mt)) != -1) {
-    if (IsXnu()) {
-      COPY_TERMIOS(tio, &mt.xnu);
-    } else {
-      COPY_TERMIOS(tio, &mt.bsd);
-    }
-  }
+  if ((rc = sys_ioctl(fd, __ioctl2host(TCGETS), &mt)) != -1)
+    __termios2linux(tio, &mt);
   return rc;
 }
 
@@ -96,6 +92,7 @@ int tcgetattr(int fd, struct termios *tio) {
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotty();
   } else if (IsLinux()) {
+    bzero(tio, sizeof(*tio));
     rc = sys_ioctl(fd, TCGETS, tio);
   } else if (IsBsd()) {
     rc = tcgetattr_bsd(fd, tio);

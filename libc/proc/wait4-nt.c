@@ -291,7 +291,8 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
 
 textwindows int sys_wait4_nt(int pid, int *opt_out_wstatus, int options,
                              struct rusage *opt_out_rusage) {
-  // no support for WCONTINUED yet
+  // no support for WCONTINUED yet; the resume event is just not reported
+  options &= ~WCONTINUED;
   if (options & ~(WNOHANG | WUNTRACED))
     return einval();
   // XXX: NT doesn't really have process groups. For instance the
@@ -305,6 +306,16 @@ textwindows int sys_wait4_nt(int pid, int *opt_out_wstatus, int options,
   int rc = __proc_wait(pid, opt_out_wstatus, options, opt_out_rusage,
                        m | 1ull << (SIGCHLD - 1));
   __sig_unblock(m);
+  // the tracker only generates SIGCHLD when no one's waiting, so a
+  // child reaped by this very call never produced one. raise it now
+  // if a handler is installed; it may then see a child twice, which
+  // handlers put up with on linux too
+  if (rc > 0 && opt_out_wstatus &&
+      (WIFEXITED(*opt_out_wstatus) || WIFSIGNALED(*opt_out_wstatus))) {
+    uintptr_t h = __get_pib()->sighandrvas[SIGCHLD - 1];
+    if (h && h != (uintptr_t)SIG_IGN)
+      raise(SIGCHLD);
+  }
   return rc;
 }
 

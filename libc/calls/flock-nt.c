@@ -26,13 +26,9 @@
 #include "libc/nt/events.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/overlapped.h"
+#include "libc/sysv/consts/lock.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
-
-#define _LOCK_SH 0
-#define _LOCK_EX kNtLockfileExclusiveLock
-#define _LOCK_NB kNtLockfileFailImmediately
-#define _LOCK_UN 8
 
 // flock() covers the whole file however long it is or becomes, so lock
 // every byte there could ever be rather than the current size (which
@@ -56,11 +52,19 @@ textwindows int sys_flock_nt(int fd, int op) {
     return ebadf();
   h = __get_pib()->fds.p[fd].handle;
 
-  if (op & _LOCK_UN) {
-    if (op & ~_LOCK_UN)
+  uint32_t flags = 0;
+  if (op & LOCK_UN) {
+    if (op & ~LOCK_UN)
       return einval();
-  } else if (op & ~(_LOCK_SH | _LOCK_EX | _LOCK_NB)) {
-    return einval();
+  } else {
+    if (op & ~(LOCK_SH | LOCK_EX | LOCK_NB))
+      return einval();
+    if (!(op & LOCK_SH) == !(op & LOCK_EX))
+      return einval();
+    if (op & LOCK_EX)
+      flags |= kNtLockfileExclusiveLock;
+    if (op & LOCK_NB)
+      flags |= kNtLockfileFailImmediately;
   }
 
   // a lock request replaces whatever lock this handle holds, which is
@@ -71,10 +75,10 @@ textwindows int sys_flock_nt(int fd, int op) {
       h, UnlockFileEx(h, 0, _LOCK_LEN, _LOCK_LEN, &ov), &ov);
   if (!ok && GetLastError() == kNtErrorNotLocked)
     ok = true;
-  if (ok && !(op & _LOCK_UN)) {
+  if (ok && !(op & LOCK_UN)) {
     ov = (struct NtOverlapped){.hEvent = event};
     ok = sys_flock_nt_wait(
-        h, LockFileEx(h, op, 0, _LOCK_LEN, _LOCK_LEN, &ov), &ov);
+        h, LockFileEx(h, flags, 0, _LOCK_LEN, _LOCK_LEN, &ov), &ov);
   }
   CloseEventTls(event);
   return ok ? 0 : __winerr();

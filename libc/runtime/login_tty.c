@@ -24,6 +24,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/utmp.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
@@ -52,7 +53,7 @@ int login_tty(int fd) {
     sys_setsid();
     errno = e;
     // take control of teletypewriter (requires being leader)
-    if ((rc = sys_ioctl(fd, TIOCSCTTY, 0)) != -1) {
+    if ((rc = sys_ioctl(fd, __ioctl2host(TIOCSCTTY), 0)) != -1) {
       unassert(sys_dup2(fd, 0, 0) == 0);
       unassert(sys_dup2(fd, 1, 0) == 1);
       unassert(sys_dup2(fd, 2, 0) == 2);

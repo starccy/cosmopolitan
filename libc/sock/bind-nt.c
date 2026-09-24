@@ -23,6 +23,7 @@
 #include "libc/sock/internal.h"
 #include "libc/sock/struct/sockaddr.h"
 #include "libc/sock/syscall_fd.internal.h"
+#include "libc/sysv/consts/host.internal.h"
 #if SupportsWindows()
 
 __msabi extern typeof(__sys_bind_nt) *const __imp_bind;
@@ -33,6 +34,9 @@ textwindows int sys_bind_nt(struct Fd *f, const void *addr, uint32_t addrsize) {
   struct sockaddr_un sun;
   if (__fixsunpath(&sun, &addr, &addrsize) == -1)
     return -1;
+
+  struct sockaddr_storage ss;
+  addr = __sockaddr2nt(addr, addrsize, &ss);
 
   // bind socket
   if (__imp_bind(f->handle, addr, addrsize) == -1)

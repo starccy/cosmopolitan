@@ -78,7 +78,7 @@ RecursiveLock:
  */
 int mtx_trylock(mtx_t *mtx) {
   uint64_t word = atomic_load_explicit(&mtx->_word, memory_order_relaxed);
-  if (!(MUTEX_TYPE(word) & PTHREAD_MUTEX_RECURSIVE)) {
+  if (MUTEX_TYPE(word) != PTHREAD_MUTEX_RECURSIVE) {
     if (nsync_mu_trylock((nsync_mu *)mtx))
       return thrd_success;
     return thrd_busy;

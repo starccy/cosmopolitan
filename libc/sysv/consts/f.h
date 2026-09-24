@@ -13,21 +13,16 @@
 
 #define F_DUPFD_CLOEXEC 0x0406
 
-#define F_SETLK  F_SETLK
-#define F_SETLKW F_SETLKW
-#define F_GETLK  F_GETLK
+#define F_GETLK  5
+#define F_SETLK  6
+#define F_SETLKW 7
 
-#define F_RDLCK F_RDLCK
-#define F_WRLCK F_WRLCK
+#define F_RDLCK 0
+#define F_WRLCK 1
 #define F_UNLCK 2
 
 COSMOPOLITAN_C_START_
 
-extern const int F_GETLK;
-extern const int F_RDLCK;
-extern const int F_SETLK;
-extern const int F_SETLKW;
-extern const int F_WRLCK;
 
 int fcntl(int fd, int cmd, ...) libcesque;
 

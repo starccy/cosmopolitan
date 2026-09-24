@@ -33,16 +33,13 @@
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/o.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/msg.h"
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #if SupportsWindows()
-
-#define _MSG_OOB       1
-#define _MSG_DONTROUTE 4
-#define _MSG_DONTWAIT  64
-#define _MSG_NOSIGNAL  0x10000000
 
 struct SendToArgs {
   const struct iovec *iov;
@@ -66,7 +63,7 @@ textwindows ssize_t sys_sendto_nt(int fd, const struct iovec *iov,
                                   const void *opt_in_addr,
                                   uint32_t in_addrsize) {
 
-  if (flags & ~(_MSG_DONTWAIT | _MSG_OOB | _MSG_DONTROUTE | _MSG_NOSIGNAL))
+  if (flags & ~(MSG_DONTWAIT | MSG_OOB | MSG_DONTROUTE | MSG_NOSIGNAL))
     return einval();
 
   // normalize unix socket filenames
@@ -80,11 +77,14 @@ textwindows ssize_t sys_sendto_nt(int fd, const struct iovec *iov,
       ((struct sockaddr *)opt_in_addr)->sa_family == AF_UNIX)
     return eafnosupport();
 
+  struct sockaddr_storage ss;
+  opt_in_addr = __sockaddr2nt(opt_in_addr, in_addrsize, &ss);
+
   ssize_t rc;
   struct Fd *f = __get_pib()->fds.p + fd;
   sigset_t waitmask = __sig_block();
 
-  rc = __winsock_block(f->handle, flags & ~(_MSG_DONTWAIT | _MSG_NOSIGNAL),
+  rc = __winsock_block(f->handle, __msg2host(flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL)),
                        false, f->sndtimeo, waitmask, sys_sendto_nt_start,
                        &(struct SendToArgs){iov, iovlen,  //
                                             opt_in_addr, in_addrsize});
@@ -94,7 +94,7 @@ textwindows ssize_t sys_sendto_nt(int fd, const struct iovec *iov,
   if (rc == -1 && (errno == ESHUTDOWN ||      // WSAESHUTDOWN
                    errno == ECONNABORTED)) {  // WSAECONNABORTED
     errno = EPIPE;
-    if (!(flags & _MSG_NOSIGNAL))
+    if (!(flags & MSG_NOSIGNAL))
       __sig_raise(SIGPIPE, SI_KERNEL);
   }
 

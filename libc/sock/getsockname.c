@@ -30,6 +30,7 @@
 #include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
@@ -85,6 +86,8 @@ static int __getsockpeername(int fd, struct sockaddr *out_addr,
         } else {
           rc = __winsockerr();
         }
+      } else {
+        ss.ss_family = __af2linux(ss.ss_family);
       }
     } else {
       rc = ebadf();

@@ -27,6 +27,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/mem/alloca.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
@@ -69,7 +70,7 @@ static int tcsetattr_impl(int fd, int opt, const struct termios *tio) {
 
   if (IsLinux() || IsBsd()) {
     union metatermios mt;
-    return sys_ioctl(fd, TCSETS + opt, __termios2host(&mt, tio));
+    return sys_ioctl(fd, __ioctl2host(TCSETS + opt), __termios2host(&mt, tio));
   }
 
   return enosys();

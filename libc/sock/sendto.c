@@ -31,6 +31,7 @@
 #include "libc/sock/struct/sockaddr.h"
 #include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -69,10 +70,13 @@ ssize_t sendto(int fd, const void *buf, size_t size, int flags,
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {
-    if (!IsBsd() || !opt_addr) {
-      rc = sys_sendto(fd, buf, size, flags, opt_addr, addrsize);
+    int hflags = __msg2host(flags);
+    if (hflags == -1) {
+      rc = einval();
+    } else if (!IsBsd() || !opt_addr) {
+      rc = sys_sendto(fd, buf, size, hflags, opt_addr, addrsize);
     } else if (!(rc = sockaddr2bsd(opt_addr, addrsize, &bsd, &bsdaddrsize))) {
-      rc = sys_sendto(fd, buf, size, flags, &bsd, bsdaddrsize);
+      rc = sys_sendto(fd, buf, size, hflags, &bsd, bsdaddrsize);
     }
   } else if (__isfdopen(fd)) {
     if (__isfdkind(fd, kFdSocket)) {

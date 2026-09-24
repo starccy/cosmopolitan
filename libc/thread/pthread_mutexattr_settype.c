@@ -33,7 +33,6 @@
  */
 errno_t pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type) {
   switch (type) {
-    case PTHREAD_MUTEX_DEFAULT:
     case PTHREAD_MUTEX_NORMAL:
     case PTHREAD_MUTEX_RECURSIVE:
     case PTHREAD_MUTEX_ERRORCHECK:

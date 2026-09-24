@@ -25,18 +25,21 @@
 #include "libc/fmt/conv.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/time.h"
 
 int sys_utimensat(int dirfd, const char *path, const struct timespec ts[2],
                   int flags) {
   int rc, olderr;
   struct timeval tv[2];
+  struct timespec hts[2];
   unassert(!IsWindows() && !IsXnu());
   if (!path && (IsFreebsd() || IsNetbsd() || IsOpenbsd())) {
-    rc = sys_futimens(dirfd, ts);
+    rc = sys_futimens(dirfd, __utime2host(ts, hts));
   } else {
     olderr = errno;
-    rc = __sys_utimensat(dirfd, path, ts, flags);
+    rc = __sys_utimensat(__dirfd2host(dirfd), path, __utime2host(ts, hts),
+                         __at2host(flags));
     // TODO(jart): How does RHEL5 do futimes()?
     if (rc == -1 && errno == ENOSYS && path) {
       errno = olderr;

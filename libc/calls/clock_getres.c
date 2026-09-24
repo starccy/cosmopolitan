@@ -23,6 +23,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/runtime/clktck.h"
 #include "libc/sysv/consts/clock.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/time.h"
 
@@ -78,14 +79,14 @@ int clock_getres(int clock, struct timespec *ts) {
   int rc;
   if (!ts) {
     rc = efault();
-  } else if (clock == 127) {
-    rc = einval();  // 127 is used by consts.sh to mean unsupported
   } else if (IsWindows()) {
     rc = sys_clock_getres_nt(clock, ts);
   } else if (IsXnu()) {
     rc = sys_clock_getres_xnu(clock, ts);
+  } else if (__clock2host(clock) == 127) {
+    rc = einval();  // 127 is used by consts.sh to mean unsupported
   } else {
-    rc = sys_clock_getres(clock, ts);
+    rc = sys_clock_getres(__clock2host(clock), ts);
   }
   STRACE("clock_getres(%s, [%s]) → %d% m", DescribeClockName(clock),
          DescribeTimespec(rc, ts), rc);

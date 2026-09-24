@@ -18,13 +18,18 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/fmt/magnumstrs.internal.h"
 #include "libc/macros.h"
+#include "libc/sysv/consts/ipv6.h"
 
 	.macro	.e e s
-	.long	\e - kIpv6Optnames
+	.long	.Lv\@ - kIpv6Optnames
 	.long	.L\@ - kIpv6Optnames
 	.rodata.str1.1
 .L\@:	.string	"\s"
 	.previous
+	.pushsection .rodata.kIpv6OptValues,"a",@progbits
+	.balign	4
+.Lv\@:	.long	\e
+	.popsection
 	.endm
 
 	.section .rodata

@@ -25,7 +25,8 @@
 #define _O_TMPFILE  0x00400000
 #define O_UNLINK    0x10000000
 
-#define O_NDELAY O_NONBLOCK
+#define O_NDELAY  O_NONBLOCK
+#define O_TMPFILE (_O_TMPFILE | O_DIRECTORY)
 
 #ifdef __aarch64__
 #undef O_DIRECTORY

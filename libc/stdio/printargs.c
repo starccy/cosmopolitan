@@ -527,13 +527,8 @@ textstartup void __printargs(const char *prologue) {
         kprintf(" OFDEL");
       if (termios.c_oflag & OLCUC)
         kprintf(" OLCUC");
-      if ((termios.c_oflag & NLDLY) == NL1) {
+      if ((termios.c_oflag & NLDLY) == NL1)
         kprintf(" NL1");
-      } else if ((termios.c_oflag & NLDLY) == NL2) {
-        kprintf(" NL2");
-      } else if ((termios.c_oflag & NLDLY) == NL3) {
-        kprintf(" NL3");
-      }
       if ((termios.c_oflag & CRDLY) == CR1) {
         kprintf(" CR1");
       } else if ((termios.c_oflag & CRDLY) == CR2) {

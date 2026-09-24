@@ -59,6 +59,7 @@
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/fileno.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/nr.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/prot.h"
@@ -230,8 +231,10 @@ ABI static long klogfcntl(long fd, long cmd, long arg) {
 #endif
 }
 
+__HOSTCONST(int, AT_FDCWD);
+
 ABI static long klogopen(const char *path) {
-  long dirfd = AT_FDCWD;
+  long dirfd = __host_AT_FDCWD;
   long flags = O_WRONLY | O_CREAT | O_APPEND;
   long mode = 0600;
 #ifdef __x86_64__

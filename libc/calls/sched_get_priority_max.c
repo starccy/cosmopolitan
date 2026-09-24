@@ -21,6 +21,7 @@
 #include "libc/dce.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/sched.h"
 #include "libc/sysv/errfuns.h"
 
@@ -45,8 +46,10 @@ int sched_get_priority_max(int policy) {
   int rc;
   if (IsNetbsd()) {
     rc = sys_sched_get_priority_max_netbsd(policy);
+  } else if (__sched2host(policy) == 127) {
+    rc = einval();
   } else {
-    rc = sys_sched_get_priority_max(policy);
+    rc = sys_sched_get_priority_max(__sched2host(policy));
   }
   STRACE("sched_get_priority_max(%s) → %d% m", DescribeSchedPolicy(policy), rc);
   return rc;
