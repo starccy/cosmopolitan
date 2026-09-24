@@ -7,7 +7,8 @@
  *   interrupt-based i/o.
  *
  * - No macros are defined for SIGRTMIN and SIGRTMAX because the project
- *   hasn't fleshed them out yet.
+ *   hasn't fleshed them out yet. The glibc/musl function pair below
+ *   still answers 35 and 64, so code built against those headers links.
  *
  * - SIGSTKFLT is Linux-only, intended for the x87 coprocessor stack,
  *   and Linux doesn't actually use it for that so no macro is defined.
@@ -47,5 +48,10 @@
 #define SIG_BLOCK   0
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
+
+#if !(__ASSEMBLER__ + __LINKER__ + 0)
+int __libc_current_sigrtmin(void);
+int __libc_current_sigrtmax(void);
+#endif
 
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_SIG_H_ */

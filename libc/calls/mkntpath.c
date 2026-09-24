@@ -17,7 +17,6 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/ctype.h"
-#include "libc/intrin/weaken.h"
 #include "libc/limits.h"
 #include "libc/nt/enum/fileflagandattributes.h"
 #include "libc/nt/files.h"
@@ -26,8 +25,6 @@
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
-
-int __ape_shim_ntpath_rewrite(const char *, char *, size_t);
 
 textwindows static size_t __normunixpath(char16_t *p, size_t n) {
   size_t i, j;
@@ -417,9 +414,38 @@ textwindows static int __tmpfixpath(const char *path, char *out,
   return 1;
 }
 
-// the rewrites a unix path goes through before conversion: "/tmp", the
-// shim's, if one is linked in, then the "\\server" directory and the
-// share roots of uncserver.c. returns the path to convert (path itself,
+textwindows static int __rerootpath(const char *path, char *out,
+                                    size_t outsz) {
+  const char *cur = path;
+  for (const char *s = cur; *s; s++) {
+    if (s > cur && s[-1] != '/' && s[-1] != '\\')
+      continue;
+    if (isalpha(s[0]) && s[1] == ':' &&
+        (s[2] == '/' || s[2] == '\\' || !s[2])) {
+      cur = s;
+    } else if (s > cur && s[-1] == '/' && s[0] == '\\' && s[1] == '\\' &&
+               s[2] != '/' && s[2] != '\\') {
+      cur = s;
+    }
+  }
+  if (cur == path)
+    return 0;
+  size_t len = strlen(cur);
+  // a bare "X:" names the drive's root here, not its current directory,
+  // which is what NT reads a slashless "X:" as
+  bool bare = len == 2;
+  if (len + bare + 1 > outsz)
+    return enametoolong();
+  memcpy(out, cur, len);
+  if (bare)
+    out[len++] = '/';
+  out[len] = 0;
+  return 1;
+}
+
+// the rewrites a unix path goes through before conversion: "/tmp", a
+// win32-absolute segment embedded mid-path, then the "\\server"
+// directory and the share roots of uncserver.c. returns the path to convert (path itself,
 // or buf), or null with errno
 dontinline textwindows static const char *__rewritepath(const char *path,
                                                         char *buf) {
@@ -431,14 +457,12 @@ dontinline textwindows static const char *__rewritepath(const char *path,
     memcpy(buf, tmp, strlen(tmp) + 1);
     path = buf;
   }
-  if (_weaken(__ape_shim_ntpath_rewrite)) {
-    int rc = _weaken(__ape_shim_ntpath_rewrite)(path, tmp, sizeof(tmp));
-    if (rc == -1)
-      return 0;
-    if (rc) {
-      memcpy(buf, tmp, strlen(tmp) + 1);
-      path = buf;
-    }
+  rc = __rerootpath(path, tmp, sizeof(tmp));
+  if (rc == -1)
+    return 0;
+  if (rc) {
+    memcpy(buf, tmp, strlen(tmp) + 1);
+    path = buf;
   }
   if (__unc_fixpath(path, tmp, sizeof(tmp))) {
     memcpy(buf, tmp, strlen(tmp) + 1);
