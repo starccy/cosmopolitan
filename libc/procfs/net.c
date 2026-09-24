@@ -244,26 +244,39 @@ bool pfs_gen_net_file(struct pfs_buf *b, const char *name) {
   else
     return false;
 
+  // the text of each of the four files is kept from one table refresh to
+  // the next: a thousand rows format in most of a millisecond
+  static struct pfs_buf text[4];
+  static int64_t text_ms[4];
+  int slot = proto * 2 + (family == 6);
   pthread_mutex_lock(&g_net_lock);
   net_refresh_locked();
-  pfs_printf(b, "  sl  local_address rem_address   st tx_queue rx_queue "
-                "tr tm->when retrnsmt   uid  timeout inode\n");
-  int sl = 0;
-  for (int i = 0; i < g_nrows; i++) {
-    struct row *r = &g_rows[i];
-    if (r->proto != proto || r->family != family)
-      continue;
-    pfs_printf(b, "%4d: ", sl++);
-    emit_addr(b, r->laddr, family);
-    pfs_printf(b, ":%04X ", r->lport);
-    emit_addr(b, r->raddr, family);
-    pfs_printf(b,
-               ":%04X %02X 00000000:00000000 00:00000000 00000000     0"
-               "        0 %llu 1 0000000000000000 0 0 0 0 0\n",
-               r->rport, r->state, (unsigned long long)r->inode);
+  struct pfs_buf *t = &text[slot];
+  if (text_ms[slot] != g_net_ms || t->oom) {
+    pfs_buf_free(t);
+    pfs_printf(t, "  sl  local_address rem_address   st tx_queue rx_queue "
+                  "tr tm->when retrnsmt   uid  timeout inode\n");
+    int sl = 0;
+    for (int i = 0; i < g_nrows; i++) {
+      struct row *r = &g_rows[i];
+      if (r->proto != proto || r->family != family)
+        continue;
+      pfs_printf(t, "%4d: ", sl++);
+      emit_addr(t, r->laddr, family);
+      pfs_printf(t, ":%04X ", r->lport);
+      emit_addr(t, r->raddr, family);
+      pfs_printf(t,
+                 ":%04X %02X 00000000:00000000 00:00000000 00000000     0"
+                 "        0 %llu 1 0000000000000000 0 0 0 0 0\n",
+                 r->rport, r->state, (unsigned long long)r->inode);
+    }
+    text_ms[slot] = g_net_ms;
   }
+  bool ok = !t->oom;
+  if (ok)
+    pfs_put(b, t->p, t->n);
   pthread_mutex_unlock(&g_net_lock);
-  return true;
+  return ok;
 }
 
 int pfs_net_fds_of(uint32_t pid, uint64_t *inodes, int cap) {
@@ -322,9 +335,7 @@ static void if_name(char *out, const uint16_t *friendly) {
   out[i] = 0;
 }
 
-int pfs_net_ifstats(struct pfs_ifstat *out, int cap) {
-  if (IsXnuSilicon())
-    return pfs_xnu_ifstats(out, cap);
+static int ifstats_fetch(struct pfs_ifstat *out, int cap) {
   static GetIfTable2F table2;
   static FreeMibTableF freetab;
   if (!table2) {
@@ -378,6 +389,28 @@ int pfs_net_ifstats(struct pfs_ifstat *out, int cap) {
   }
   freetab(tab);
   free(aa);
+  return n;
+}
+
+// the counters as of the last NET_REFRESH_MS window; GetIfTable2 plus
+// GetAdaptersAddresses is most of a millisecond, and /proc/net/dev and
+// the /sys/class/net statistics files are read per interface per refresh
+int pfs_net_ifstats(struct pfs_ifstat *out, int cap) {
+  if (IsXnuSilicon())
+    return pfs_xnu_ifstats(out, cap);
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+  static struct pfs_ifstat ifs[32];
+  static int nifs;
+  static int64_t ms;
+  pthread_mutex_lock(&lock);
+  int64_t t = pfs_now_ms();
+  if (!ms || t - ms >= NET_REFRESH_MS) {
+    nifs = ifstats_fetch(ifs, 32);
+    ms = t;
+  }
+  int n = nifs < cap ? nifs : cap;
+  memcpy(out, ifs, n * sizeof(*out));
+  pthread_mutex_unlock(&lock);
   return n;
 }
 
