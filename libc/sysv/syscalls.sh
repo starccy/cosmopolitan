@@ -651,18 +651,18 @@ scall	sys_bsdthread_register	0xfffffffff216efff	0xfff	globl hidden
 #scall	cpuset_setdomain	0xffffff232fffffff	0xfff	globl
 #scall	cpuset_setid		0xffffff1e5fffffff	0xfff	globl
 #scall	eaccess			0xffffff178fffffff	0xfff	globl
-#scall	extattr_delete_fd	0x16efff175fffffff	0xfff	globl
-#scall	extattr_delete_file	0x16bfff166fffffff	0xfff	globl
-#scall	extattr_delete_link	0x171fff19efffffff	0xfff	globl
-#scall	extattr_get_fd		0x16dfff174fffffff	0xfff	globl
-#scall	extattr_get_file	0x16afff165fffffff	0xfff	globl
-#scall	extattr_get_link	0x170fff19dfffffff	0xfff	globl
-#scall	extattr_list_fd		0x172fff1b5fffffff	0xfff	globl
-#scall	extattr_list_file	0x173fff1b6fffffff	0xfff	globl
-#scall	extattr_list_link	0x174fff1b7fffffff	0xfff	globl
-#scall	extattr_set_fd		0x16cfff173fffffff	0xfff	globl
-#scall	extattr_set_file	0x169fff164fffffff	0xfff	globl
-#scall	extattr_set_link	0x16ffff19cfffffff	0xfff	globl
+scall	sys_extattr_delete_fd	0x16efff175fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_delete_file	0x16bfff166fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_delete_link	0x171fff19efffffff	0xfff	globl # no wrapper
+scall	sys_extattr_get_fd	0x16dfff174fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_get_file	0x16afff165fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_get_link	0x170fff19dfffffff	0xfff	globl # no wrapper
+scall	sys_extattr_list_fd	0x172fff1b5fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_list_file	0x173fff1b6fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_list_link	0x174fff1b7fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_set_fd	0x16cfff173fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_set_file	0x169fff164fffffff	0xfff	globl # no wrapper
+scall	sys_extattr_set_link	0x16ffff19cfffffff	0xfff	globl # no wrapper
 #scall	extattrctl		0x168fff163fffffff	0xfff	globl
 scall	sys_fexecve		0xffffff1ecfffffff	0xfff	globl hidden
 #scall	ffclock_getcounter	0xffffff0f1fffffff	0xfff	globl

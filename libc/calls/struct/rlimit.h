@@ -30,6 +30,7 @@ struct rlimit {
 };
 
 int getrlimit(int, struct rlimit *) libcesque;
+int prlimit(int, int, const struct rlimit *, struct rlimit *) libcesque;
 int setrlimit(int, const struct rlimit *) libcesque;
 
 COSMOPOLITAN_C_END_

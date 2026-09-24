@@ -72,6 +72,7 @@ __msabi extern typeof(__sys_ioctlsocket_nt) *const __imp_ioctlsocket;
 static struct HostAdapterInfoNode {
   struct HostAdapterInfoNode *next;
   char name[IFNAMSIZ]; /* Obtained from FriendlyName */
+  unsigned ifindex;    /* IfIndex, what an IPv6 scope id names */
   struct sockaddr unicast;
   struct sockaddr netmask;
   struct sockaddr broadcast;
@@ -202,6 +203,7 @@ static textwindows struct HostAdapterInfoNode *appendHostInfo(
   }
 
   memcpy(node->name, baseName, IFNAMSIZ);
+  node->ifindex = aa->IfIndex;
 
   /* Are there more than a single unicast address ? */
   if (count > 0 || ((*ptrUA)->Next != NULL)) {
@@ -458,6 +460,29 @@ static textwindows int ioctl_siocgifconf_nt(int fd, struct ifconf *ifc) {
   }
   ifc->ifc_len = (char *)ptr - ifc->ifc_buf;
   return 0;
+}
+
+static textwindows int ioctl_siocgifindex_nt(int fd, struct ifreq *ifr) {
+  struct HostAdapterInfoNode *node;
+  if (!__hostInfo && readAdapterAddresses() == -1)
+    return -1;
+  if (!(node = findAdapterByName(ifr->ifr_name)))
+    return enodev();
+  ifr->ifr_ifindex = node->ifindex;
+  return 0;
+}
+
+static textwindows int ioctl_siocgifname_nt(int fd, struct ifreq *ifr) {
+  struct HostAdapterInfoNode *node;
+  if (!__hostInfo && readAdapterAddresses() == -1)
+    return -1;
+  for (node = __hostInfo; node; node = node->next) {
+    if (node->ifindex == ifr->ifr_ifindex) {
+      memcpy(ifr->ifr_name, node->name, IFNAMSIZ);
+      return 0;
+    }
+  }
+  return enodev();
 }
 
 /**
@@ -809,6 +834,10 @@ int ioctl(int fd, unsigned long request, ...) {
     rc = ioctl_siocgifdstaddr(fd, arg);
   } else if (request == SIOCGIFFLAGS) {
     rc = ioctl_siocgifflags(fd, arg);
+  } else if (IsWindows() && request == SIOCGIFINDEX) {
+    rc = ioctl_siocgifindex_nt(fd, arg);
+  } else if (IsWindows() && request == SIOCGIFNAME) {
+    rc = ioctl_siocgifname_nt(fd, arg);
   } else {
     rc = ioctl_default(fd, request, arg);
   }

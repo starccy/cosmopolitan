@@ -48,8 +48,6 @@ int mknod(const char *path, uint32_t mode, uint64_t dev) {
     return creat(path, mode & ~S_IFREG);
   if (mode & S_IFDIR)
     return mkdir(path, mode & ~S_IFDIR);
-  if (mode & S_IFIFO)
-    return enosys();  // no named pipes!
   if (kisdangerous(path)) {
     rc = efault();
   } else if (__is_evil_path(path)) {
@@ -58,7 +56,7 @@ int mknod(const char *path, uint32_t mode, uint64_t dev) {
     // TODO(jart): Whys there code out there w/ S_xxx passed via dev?
     e = errno;
     rc = sys_mknod(path, mode, dev);
-    if (rc == -1 && rc == ENOSYS) {
+    if (rc == -1 && errno == ENOSYS) {
       errno = e;
       rc = sys_mknodat(__dirfd2host(AT_FDCWD), path, mode, dev);
     }

@@ -1,0 +1,11 @@
+#ifndef COSMOPOLITAN_LIBC_ISYSTEM_SYS_EVENTFD_H_
+#define COSMOPOLITAN_LIBC_ISYSTEM_SYS_EVENTFD_H_
+#include "libc/calls/calls.h"
+
+#define EFD_SEMAPHORE 1
+#define EFD_CLOEXEC   0x80000
+#define EFD_NONBLOCK  0x800
+
+typedef uint64_t eventfd_t;
+
+#endif /* COSMOPOLITAN_LIBC_ISYSTEM_SYS_EVENTFD_H_ */

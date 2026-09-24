@@ -114,6 +114,15 @@ int mincore(void *, size_t, unsigned char *) libcesque __read_only(1) __write_on
 int mkdir(const char *, unsigned) libcesque __read_only(1);
 int mkdirat(int, const char *, unsigned) libcesque __read_only(2);
 int mknod(const char *, unsigned, uint64_t) libcesque __read_only(1);
+int mknodat(int, const char *, unsigned, uint64_t) libcesque __read_only(2);
+int mkfifo(const char *, unsigned) libcesque __read_only(1);
+int mkfifoat(int, const char *, unsigned) libcesque __read_only(2);
+long gethostid(void) libcesque;
+ssize_t tee(int, int, size_t, unsigned) libcesque;
+int eventfd(unsigned, int) libcesque;
+int eventfd_read(int, uint64_t *) libcesque __write_only(2);
+int eventfd_write(int, uint64_t) libcesque;
+int timerfd_create(int, int) libcesque;
 int nice(int) libcesque;
 int open(const char *, int, ...) libcesque __read_only(1);
 int openat(int, const char *, int, ...) libcesque __read_only(2);
