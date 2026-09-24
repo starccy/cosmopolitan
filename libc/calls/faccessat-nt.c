@@ -26,6 +26,7 @@
 #include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/fileflagandattributes.h"
 #include "libc/nt/enum/filesharemode.h"
+#include "libc/nt/errors.h"
 #include "libc/nt/files.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/byhandlefileinformation.h"
@@ -82,6 +83,7 @@ textwindows static int sys_faccessat_nt_impl(const char16_t *path16, int amode,
 
   // open file
   intptr_t hFile;
+TryAgain:
   if ((hFile = CreateFile(
            path16, dwDesiredAccess,
            kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, 0,
@@ -89,8 +91,18 @@ textwindows static int sys_faccessat_nt_impl(const char16_t *path16, int amode,
            kNtFileAttributeNormal | kNtFileFlagBackupSemantics |
                ((flags & AT_SYMLINK_NOFOLLOW) ? kNtFileFlagOpenReparsePoint
                                               : 0),
-           0)) == -1)
+           0)) == -1) {
+    // ERROR_CANT_ACCESS_FILE (1920): a reparse point the i/o system
+    // cannot traverse, like an app execution alias (the launcher of a
+    // store app) or a wsl symlink; the link itself is what there is
+    // to check
+    if (!(flags & AT_SYMLINK_NOFOLLOW) &&
+        GetLastError() == kNtErrorCantAccessFile) {
+      flags |= AT_SYMLINK_NOFOLLOW;
+      goto TryAgain;
+    }
     return __winerr();
+  }
 
   // check for write and execute access
   int rc = 0;

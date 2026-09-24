@@ -85,19 +85,27 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
       sb->path, kNtFileGenericRead,
       kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, 0,
       kNtOpenExisting, kNtFileAttributeNormal | kNtFileFlagBackupSemantics, 0);
+  // an app execution alias (the launcher of a store app) is a reparse
+  // point CreateFile refuses with ERROR_CANT_ACCESS_FILE and
+  // CreateProcess runs; there is nothing to read, it's a native program
+  bool alias = false;
+  bool32 ok = false;
+  uint32_t got = 0;
   if (fh == -1) {
     uint32_t err = GetLastError();
-    if (err == kNtErrorSymlinkClassDisabled || err == kNtErrorCantAccessFile)
+    if (err == kNtErrorSymlinkClassDisabled)
       return eacces();
-    return __fix_enotdir(__winerr(), sb->path);
+    if (err != kNtErrorCantAccessFile)
+      return __fix_enotdir(__winerr(), sb->path);
+    alias = true;
+  } else {
+    ok = ReadFile(fh, p, pe - p, &got, 0);
+    CloseHandle(fh);
+    if (!ok)
+      return enoexec();
+    if (got < 3)
+      return enoexec();
   }
-  uint32_t got;
-  bool32 ok = ReadFile(fh, p, pe - p, &got, 0);
-  CloseHandle(fh);
-  if (!ok)
-    return enoexec();
-  if (got < 3)
-    return enoexec();
   pe = p + got;
 
   // handle shebang
@@ -106,7 +114,9 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
   // given; only a native program gets the "/x/" rewrite. a script's
   // interpreter is not looked at, and is taken for native
   bool native = true;
-  if (p[0] == 'M' && p[1] == 'Z') {
+  if (alias) {
+    // nothing to look at, it runs as is
+  } else if (p[0] == 'M' && p[1] == 'Z') {
     // it's a windows executable
     native = !(got >= 8 && (!memcmp(p, "MZqFpD='", 8) ||
                             !memcmp(p, "jartsr='", 8)));
