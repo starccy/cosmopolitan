@@ -359,9 +359,22 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
     if (!(map->prot & PROT_READ))
       ok = ok && !!VirtualProtect(map->addr, map->size, kNtPageReadwrite,
                                   &parent_old_protect);
-    ok = ok &&
-         !!WriteProcessMemory(procinfo.hProcess, map->addr, map->addr,
-                              (map->size + __pagesize - 1) & -__pagesize, 0);
+    // the stack this call runs on is copied from the stack pointer up,
+    // with a page of slack below it: the frames below are dead once
+    // fork() returns, and the main stack is 8 MB of mostly untouched
+    // pages that the child would otherwise get byte for byte
+    char *copyaddr = map->addr;
+    size_t copysize = (map->size + __pagesize - 1) & -__pagesize;
+    char *sp = __builtin_frame_address(0);
+    if (sp > map->addr && sp < map->addr + map->size) {
+      char *from = (char *)(((uintptr_t)sp - 65536) & -__pagesize);
+      if (from > map->addr) {
+        copysize -= from - copyaddr;
+        copyaddr = from;
+      }
+    }
+    ok = ok && !!WriteProcessMemory(procinfo.hProcess, copyaddr, copyaddr,
+                                    copysize, 0);
     if (map->prot != alloc_prot) {
       uint32_t child_old_protect;
       ok = ok &&

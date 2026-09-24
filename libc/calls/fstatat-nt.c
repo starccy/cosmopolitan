@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/internal.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/struct/stat.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
@@ -32,6 +33,7 @@
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/consts/fileno.h"
+#include "libc/sysv/consts/s.h"
 #include "libc/sysv/errfuns.h"
 
 static int Atoi(const char *str) {
@@ -95,34 +97,38 @@ textwindows int sys_fstatat_nt(int dirfd, const char *path, struct stat *st,
   if (__mkntpathat(dirfd, path, path16) == -1)
     return -1;
 
-  // open the file. we optimistically request read access because (a) we
-  // want to know if the file is readable, and (b) we'll need to read
-  // the first two bytes later to determine if it's an executable.
+  // open the file for its attributes only. a data open is what makes a
+  // network share acquire a lease, tens of milliseconds per file the
+  // first time; the attributes come without one. the first two bytes
+  // decide the executable bit only for a regular file whose name does
+  // not, and that one gets a second, data, open below
   int rc;
   int64_t fh;
-  int mode = 0444;
-  uint32_t dwDesiredAccess = kNtFileGenericRead;
+  uint32_t dwShareMode =
+      kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete;
   BLOCK_SIGNALS;
 TryAgain:
   if ((fh = CreateFile(
-           path16, dwDesiredAccess,
-           kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, 0,
-           kNtOpenExisting,
+           path16, kNtFileReadAttributes, dwShareMode, 0, kNtOpenExisting,
            kNtFileAttributeNormal | kNtFileFlagBackupSemantics |
                ((flags & AT_SYMLINK_NOFOLLOW) ? kNtFileFlagOpenReparsePoint
                                               : 0),
            0)) != -1) {
-    rc = sys_fstat_nt_handle(fh, path16, st, mode);
+    rc = sys_fstat_nt_handle(fh, path16, st, 0444);
     CloseHandle(fh);
+    if (!rc && S_ISREG(st->st_mode) && !(st->st_mode & 0111) &&
+        IsWindowsExecutableName(path16) == -1 &&
+        (fh = CreateFile(path16, kNtFileGenericRead, dwShareMode, 0,
+                         kNtOpenExisting,
+                         kNtFileAttributeNormal | kNtFileFlagBackupSemantics,
+                         0)) != -1) {
+      if (IsWindowsExecutable(fh, path16))
+        st->st_mode |= 0111;
+      CloseHandle(fh);
+    }
   } else {
     uint32_t dwErrorCode = GetLastError();
-    if (dwDesiredAccess == kNtFileGenericRead &&
-        (dwErrorCode == kNtErrorAccessDenied ||
-         dwErrorCode == kNtErrorSharingViolation)) {
-      mode = 0;
-      dwDesiredAccess = kNtFileReadAttributes;
-      goto TryAgain;
-    } else if (!(flags & AT_SYMLINK_NOFOLLOW) &&
+    if (!(flags & AT_SYMLINK_NOFOLLOW) &&
                dwErrorCode == kNtErrorCantAccessFile) {
       // ERROR_CANT_ACCESS_FILE (1920) usually means that the I/O system
       // a WSL symlink is accessed from WIN32 API. Falling back with the

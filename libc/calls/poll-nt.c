@@ -35,16 +35,29 @@
 #include "libc/intrin/nomultics.h"
 #include "libc/intrin/weaken.h"
 #include "libc/macros.h"
+#include "libc/intrin/strace.h"
+#include "libc/limits.h"
 #include "libc/nt/console.h"
+#include "libc/nt/enum/accessmask.h"
+#include "libc/nt/enum/afd.h"
+#include "libc/nt/enum/filesharemode.h"
 #include "libc/nt/enum/filetype.h"
+#include "libc/nt/enum/ioctl.h"
+#include "libc/nt/enum/sio.h"
+#include "libc/nt/enum/status.h"
 #include "libc/nt/enum/wait.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/events.h"
 #include "libc/nt/files.h"
 #include "libc/nt/ipc.h"
 #include "libc/nt/memory.h"
+#include "libc/nt/nt/file.h"
 #include "libc/nt/runtime.h"
+#include "libc/nt/struct/afd.h"
+#include "libc/nt/struct/iostatusblock.h"
+#include "libc/nt/struct/objectattributes.h"
 #include "libc/nt/struct/pollfd.h"
+#include "libc/nt/struct/unicodestring.h"
 #include "libc/nt/synchronization.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/nt/time.h"
@@ -74,14 +87,20 @@
 #define POLL_PIPE_MS 10
 // </sync libc/sysv/consts.sh>
 
+#define kNtObjInherit 0x00000002u
+#define kNtFileOpen   1
+
 // Pipes signal nothing, so the wait between looks at them decides how
 // soon a byte written by another thread shows up. It's 1ms for the first
 // POLL_BUDGET_MS of a call, which covers a round trip between threads,
 // and POLL_PIPE_MS once the call has been quiet for longer than that.
 // COSMOPOLITAN_POLL_MS moves the boundary; 0 turns the fast phase off.
-// A set holding sockets sleeps in WSAPoll(), which can't watch an event
-// or epoll handle at the same time, so those are looked at on the same
-// schedule when sockets are present.
+// A set with sockets in it gets an afd poll request per socket, whose
+// event then waits next to the signal event and the console and eventfd
+// handles in one call; see sys_poll_nt_arm(). A set too big for that
+// (64 handles) sleeps in WSAPoll(), which no signal can wake, so that
+// sleep is cut into POLL_INTERVAL_MS pieces and any handles next to
+// the sockets are looked at on the pipe schedule.
 #define POLL_BUDGET_MS 250
 
 textwindows static int sys_poll_nt_budget(void) {
@@ -112,16 +131,126 @@ textwindows static uint32_t sys_poll_nt_pipems(struct timespec started) {
 __msabi extern typeof(WaitForMultipleObjects)
     *const __imp_WaitForMultipleObjects;
 
-textwindows static uint32_t sys_poll_nt_waitms(struct timespec deadline) {
+// a wait in WSAPoll() can't be woken by a signal, so it's cut into
+// POLL_INTERVAL_MS pieces. one that has the signal event in its set
+// doesn't need that.
+textwindows static uint32_t sys_poll_nt_waitms(struct timespec deadline,
+                                               bool sliced) {
   struct timespec now = sys_clock_gettime_monotonic_nt();
   if (timespec_cmp(now, deadline) < 0) {
     struct timespec remain = timespec_sub(deadline, now);
     int64_t millis = timespec_tomillis(remain);
-    uint32_t waitfor = MIN(millis, 0xffffffffu);
-    return MIN(waitfor, POLL_INTERVAL_MS);
+    uint32_t waitfor = MIN(millis, 0xfffffffeu);
+    return sliced ? MIN(waitfor, POLL_INTERVAL_MS) : waitfor;
   } else {
     return 0;  // we timed out
   }
+}
+
+// a socket's readiness as a handle: an afd poll request completes
+// when the socket is in a state it asked about, and the event it's
+// issued with then waits in WaitForMultipleObjects() next to consoles
+// and eventfds. the request is cancelled once the wait returns, and
+// WSAPoll() does the reporting as before.
+struct PollArm {
+  int64_t event;
+  struct NtIoStatusBlock iosb;
+  struct NtAfdPollInfo info;
+};
+
+textwindows static int64_t sys_poll_nt_afd(void) {
+  static _Atomic(int64_t) afd;
+  int64_t h = atomic_load_explicit(&afd, memory_order_acquire);
+  if (h)
+    return h;
+  static const char16_t name[] = u"\\Device\\Afd\\Cosmo";
+  struct NtUnicodeString us = {sizeof(name) - sizeof(name[0]), sizeof(name),
+                               (char16_t *)name};
+  struct NtObjectAttributes oa = {sizeof(oa), 0, &us, kNtObjInherit, 0, 0};
+  struct NtIoStatusBlock iosb;
+  NtStatus st = NtCreateFile(&h, kNtSynchronize, &oa, &iosb, 0, 0,
+                             kNtFileShareRead | kNtFileShareWrite, kNtFileOpen,
+                             0, 0, 0);
+  if (!NtSuccess(st)) {
+    STRACE("open \\Device\\Afd failed %#x", st);
+    h = -1;
+  }
+  int64_t old = 0;
+  if (!atomic_compare_exchange_strong_explicit(
+          &afd, &old, h, memory_order_release, memory_order_acquire)) {
+    if (h != -1)
+      CloseHandle(h);
+    h = old;
+  }
+  return h;
+}
+
+textwindows static uint32_t sys_poll_nt_afdmask(short ev) {
+  uint32_t a = kNtAfdPollLocalClose | kNtAfdPollAbort | kNtAfdPollConnectFail |
+               kNtAfdPollDisconnect;
+  if (ev & POLLRDNORM_)
+    a |= kNtAfdPollReceive | kNtAfdPollAccept;
+  if (ev & POLLRDBAND_)
+    a |= kNtAfdPollReceiveExpedited;
+  if (ev & POLLWRNORM_)
+    a |= kNtAfdPollSend;
+  return a;
+}
+
+textwindows static void sys_poll_nt_disarm(struct PollArm *arms, int n) {
+  int64_t afd = sys_poll_nt_afd();
+  for (int i = 0; i < n; ++i) {
+    struct NtIoStatusBlock iosb;
+    NtCancelIoFileEx(afd, &arms[i].iosb, &iosb);
+    // the request writes into arms[] when it completes, so it has to
+    // be over before this frame goes away. the event is manual reset
+    // so a completion the wait already consumed is still visible here
+    WaitForSingleObject(arms[i].event, -1u);
+    CloseHandle(arms[i].event);
+  }
+}
+
+// returns false with nothing left in flight if a socket can't be armed
+textwindows static bool sys_poll_nt_arm(struct sys_pollfd_nt *sockfds, int sn,
+                                        struct PollArm *arms, int64_t *hands) {
+  int i;
+  int64_t afd = sys_poll_nt_afd();
+  if (afd == -1)
+    return false;
+  for (i = 0; i < sn; ++i) {
+    struct PollArm *a = arms + i;
+    int64_t base;
+    uint32_t bytes;
+    if (WSAIoctl(sockfds[i].handle, kNtSioBaseHandle, 0, 0, &base,
+                 sizeof(base), &bytes, 0, 0) == -1)
+      base = sockfds[i].handle;
+    if (!(a->event = CreateEvent(0, true, false, 0)))
+      break;
+    a->info.Timeout = INT64_MAX;
+    a->info.NumberOfHandles = 1;
+    a->info.Exclusive = 0;
+    a->info.Handles[0].Handle = base;
+    a->info.Handles[0].Events = sys_poll_nt_afdmask(sockfds[i].events);
+    a->info.Handles[0].Status = 0;
+    a->iosb.Status = kNtStatusPending;
+    NtStatus st = NtDeviceIoControlFile(afd, a->event, 0, 0, &a->iosb,
+                                        kNtIoctlAfdPoll, &a->info,
+                                        sizeof(a->info), &a->info,
+                                        sizeof(a->info));
+    if (st == kNtStatusSuccess) {
+      SetEvent(a->event);
+    } else if (st != kNtStatusPending) {
+      STRACE("afd poll on socket %ld failed %#x", sockfds[i].handle, st);
+      CloseHandle(a->event);
+      break;
+    }
+    hands[i] = a->event;
+  }
+  if (i < sn) {
+    sys_poll_nt_disarm(arms, i);
+    return false;
+  }
+  return true;
 }
 
 // a descriptor another thread closed while the call was in flight:
@@ -153,20 +282,22 @@ textwindows static int sys_poll_nt_stale(struct pollfd *fds, int *indices,
 // This function is used to implement poll() and select(). You may poll
 // on sockets, files and the console at the same time. We also poll for
 // both signals and posix thread cancelation, while the poll is polling
-textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
-                                          struct timespec deadline,
-                                          struct timespec started,
-                                          sigset_t waitmask,
-                                          struct sys_pollfd_nt *sockfds,
-                                          int *sockindices,
-                                          size_t sockcap) {
+textwindows static int sys_poll_nt_actual_impl(
+    struct pollfd *fds, uint64_t nfds, struct timespec deadline,
+    struct timespec started, sigset_t waitmask, struct sys_pollfd_nt *sockfds,
+    int *sockindices, size_t sockcap, struct PollArm *arms, int armcap) {
   int fileindices[64];
   int64_t filehands[64];
-  int i, rc, ev, kind, gotsocks;
+  int i, rc, ev, kind, gotsocks, armed;
   bool gotpipe = false;
   bool gotevent = false;
   bool gotconsole = false;
-  uint32_t cm, fi, sn, pn, avail, waitfor, pipems, already_slept;
+  bool canarm;
+  bool sockwoke = false;
+  bool fast;
+  // a wait with a deadline gets the 1ms scheduler tick, like nanosleep()
+  bool timed = timespec_cmp(deadline, timespec_max) < 0;
+  uint32_t cm, fi, sn, pn, nh, avail, waitfor, pipems, already_slept;
 
   // ensure revents is cleared
   for (i = 0; i < nfds; ++i)
@@ -237,6 +368,9 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
   if (gotconsole && (__ttyconf.magic & kTtyUncanon))
     sys_console_sync_nt();
 
+  // the socket events go after the signal event in filehands[]
+  canarm = sn && sn <= armcap && pn + 1 + sn <= ARRAYLEN(filehands);
+
   // perform poll operation
   for (;;) {
 
@@ -292,31 +426,34 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
       rc += !!fds[fi].revents;
     }
 
-    // determine how long to wait
-    waitfor = sys_poll_nt_waitms(deadline);
+    // determine how long to wait. a set that can't be armed sleeps in
+    // WSAPoll(), which sees nothing else, so a console next to the
+    // sockets is then looked at in slices too, the way a pipe is
+    waitfor = sys_poll_nt_waitms(deadline, !canarm);
     pipems = 0;
-    if (gotpipe || (gotevent && sn)) {
+    if (gotpipe || ((gotevent || gotconsole) && sn && !canarm)) {
       pipems = sys_poll_nt_pipems(started);
       if (waitfor > pipems)
         waitfor = pipems;
     }
+    fast = timed || pipems == 1;
 
     // check for events and/or readiness on sockets
     // we always do this due to issues with POLLOUT
     if (sn) {
       // if we need to wait, then we prefer to wait inside WSAPoll()
       // this ensures network events are received in ~10µs not ~10ms
-      if (!rc && waitfor) {
+      if (!rc && waitfor && !canarm) {
         if (__sigcheck(waitmask, false))
           return -1;
         already_slept = waitfor;
       } else {
         already_slept = 0;
       }
-      if (pipems == 1 && already_slept)
+      if (fast && already_slept)
         __nt_fast_tick(true);
       gotsocks = WSAPoll(sockfds, sn, already_slept);
-      if (pipems == 1 && already_slept)
+      if (fast && already_slept)
         __nt_fast_tick(false);
       if (gotsocks == -1) {
         if (WSAGetLastError() == WSAENOTSOCK &&
@@ -326,6 +463,13 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
           break;
         }
         return __winsockerr();
+      }
+      // a wakeup the driver gave that winsock won't report would come
+      // straight back, so the call sleeps in slices from here on
+      if (sockwoke) {
+        sockwoke = false;
+        if (!gotsocks)
+          canarm = false;
       }
       if (gotsocks) {
         for (i = 0; i < sn; ++i)
@@ -351,21 +495,40 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
     // this ensures low latency for apps like emacs which with no sock
     // here we shall actually report that something can be written too
     if (!already_slept) {
-      if (!(filehands[pn] = __interruptible_start(waitmask)))
+      nh = pn + 1;
+      armed = 0;
+      if (canarm) {
+        if (sys_poll_nt_arm(sockfds, sn, arms, filehands + nh)) {
+          armed = sn;
+          nh += sn;
+        } else {
+          canarm = false;
+          continue;
+        }
+      }
+      if (!(filehands[pn] = __interruptible_start(waitmask))) {
+        sys_poll_nt_disarm(arms, armed);
         return __winerr();
+      }
       //!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!//
       int sig = 0;
       uint32_t wi = pn;
       if (!_is_canceled() &&
           !(_weaken(__sig_get) && (sig = _weaken(__sig_get)(waitmask)))) {
-        if (pipems == 1)
+        if (fast)
           __nt_fast_tick(true);
-        wi = __imp_WaitForMultipleObjects(pn + 1, filehands, 0, waitfor);
-        if (pipems == 1)
+        wi = __imp_WaitForMultipleObjects(nh, filehands, 0, waitfor);
+        if (fast)
           __nt_fast_tick(false);
       }
       //!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!//
       __interruptible_end();
+      sys_poll_nt_disarm(arms, armed);
+      if (wi > pn && wi < nh) {
+        // a socket woke us; the next pass reports it through WSAPoll()
+        sockwoke = true;
+        continue;
+      }
       if (wi == -1u) {
         // win32 wait failure
         if (GetLastError() == kNtErrorInvalidHandle &&
@@ -435,6 +598,31 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
       break;
   }
 
+  return rc;
+}
+
+// the arms for sets that don't fit the small array come from the heap;
+// without them the sockets sleep in WSAPoll()
+textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
+                                          struct timespec deadline,
+                                          struct timespec started,
+                                          sigset_t waitmask,
+                                          struct sys_pollfd_nt *sockfds,
+                                          int *sockindices, size_t sockcap) {
+  int rc;
+  struct PollArm small[8];
+  struct PollArm *arms = small;
+  int armcap = MIN(nfds, 63);
+  if (armcap > ARRAYLEN(small)) {
+    if (!(arms = HeapAlloc(GetProcessHeap(), 0, armcap * sizeof(*arms)))) {
+      arms = small;
+      armcap = ARRAYLEN(small);
+    }
+  }
+  rc = sys_poll_nt_actual_impl(fds, nfds, deadline, started, waitmask, sockfds,
+                               sockindices, sockcap, arms, armcap);
+  if (arms != small)
+    HeapFree(GetProcessHeap(), 0, arms);
   return rc;
 }
 
@@ -509,10 +697,11 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
     // _park_norestart() wants its deadline on the wall clock
     sys_clock_gettime_nt(0, &wall);
     wall = timespec_add(wall, timespec_sub(target, now));
-    if (pipems == 1)
+    bool fast = pipems == 1 || timespec_cmp(deadline, timespec_max) < 0;
+    if (fast)
       __nt_fast_tick(true);
     rc = _park_norestart(wall, waitmask);
-    if (pipems == 1)
+    if (fast)
       __nt_fast_tick(false);
     if (rc == -1)
       return -1;

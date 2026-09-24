@@ -52,10 +52,9 @@ static uint32_t GetFileExtension(const char16_t *s) {
   return w;
 }
 
-// checks if file should be considered an executable on windows
-textwindows int IsWindowsExecutable(int64_t handle, const char16_t *path) {
-
-  // fast path known file extensions
+// whether the file name alone says if it's an executable: 1 or 0 when
+// it does, -1 when the first two bytes have to be looked at
+textwindows int IsWindowsExecutableName(const char16_t *path) {
   // shaves away 100ms of gnu make latency in cosmo monorepo
   uint32_t ext;
   if (!IsTiny() && (ext = GetFileExtension(path))) {
@@ -64,14 +63,22 @@ textwindows int IsWindowsExecutable(int64_t handle, const char16_t *path) {
         ext == EXT("h") ||   // c/c++ header
         ext == EXT("s") ||   // assembly code
         ext == EXT("o")) {   // object file
-      return false;
+      return 0;
     }
     if (ext == EXT("com") ||  // mz executable
         ext == EXT("exe") ||  // mz executable
         ext == EXT("sh")) {   // bourne shells
-      return true;
+      return 1;
     }
   }
+  return -1;
+}
+
+// checks if file should be considered an executable on windows
+textwindows int IsWindowsExecutable(int64_t handle, const char16_t *path) {
+  int byname = IsWindowsExecutableName(path);
+  if (byname != -1)
+    return byname;
 
   // read first two bytes of file
   // access() and stat() aren't cancelation points

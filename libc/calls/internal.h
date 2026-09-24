@@ -53,6 +53,7 @@ int64_t GetConsoleInputHandle(void);
 int64_t GetConsoleOutputHandle(void);
 void EchoConsoleNt(const char *, size_t, bool);
 int IsWindowsExecutable(int64_t, const char16_t *);
+int IsWindowsExecutableName(const char16_t *);
 void InterceptTerminalCommands(const char *, size_t);
 void sys_console_sync_nt(void);
 void sys_read_nt_wipe_keystrokes(void);
