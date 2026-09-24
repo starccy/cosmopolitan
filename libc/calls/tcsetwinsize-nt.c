@@ -19,11 +19,17 @@
 #include "libc/calls/struct/winsize.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/nt/console.h"
+#include "libc/sysv/pib.h"
 #include "libc/nt/struct/coord.h"
 
 textwindows int tcsetwinsize_nt(int fd, const struct winsize *ws) {
   struct NtCoord coord;
+  if (__isfdopen(fd) && __get_pib()->fds.p[fd].pty && _weaken(__pty_setwinsize))
+    return _weaken(__pty_setwinsize)(__get_pib()->fds.p + fd, ws);
   if (!sys_isatty(fd))
     return -1;  // ebadf, enotty
   coord.X = ws->ws_col;

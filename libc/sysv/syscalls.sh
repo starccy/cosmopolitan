@@ -331,7 +331,8 @@ scall	sys_finit_module	0xfffffffffffff139	0x111	globl # no wrapper
 #──────────────────────RHEL 7.0 LIMIT──────────────────────────────── # ←┬─ anything that links or uses c++11 code needs rhel7+ c. 2014
 scall	sys_sched_setattr	0xfffffffffffff13a	0x112	globl #  ├─ desktop replaced with tablet-first gui inspired by mac os x
 scall	sys_sched_getattr	0xfffffffffffff13b	0x113	globl #  ├─ karen sandler requires systemd init and boot for tablet gui
-scall	sys_renameat2		0xfffffffffffff13c	0x114	globl #  └─ debian founder ian murdock found strangled with vacuum cord
+scall	sys_renameat2		0xfffffffffffff13c	0x114	globl hidden #  └─ debian founder ian murdock found strangled with vacuum cord
+scall	sys_renameatx_np	0xfffffffff21e8fff	0xfff	globl hidden # xnu: RENAME_SWAP, RENAME_EXCL
 #scall	seccomp			0xfffffffffffff13d	0x115	globl # wrapped manually
 scall	sys_getrandom		0xfff007a3321f493e	0x116	globl hidden  # Linux 3.17+; FreeBSD 12+; NetBSD wut; getentropy() on XNU/OpenBSD
 scall	sys_memfd_create	0xfffffffffffff13f	0x117	globl hidden

@@ -7,6 +7,7 @@ COSMOPOLITAN_C_START_
 
 #define kNtProcThreadAttributeParentProcess 0x00020000
 #define kNtProcThreadAttributeHandleList    0x00020002
+#define kNtProcThreadAttributePseudoconsole 0x00020016
 
 void GetStartupInfo(struct NtStartupInfo *lpStartupInfo);
 

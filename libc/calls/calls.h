@@ -140,6 +140,7 @@ int reboot(int) libcesque;
 int remove(const char *) libcesque __read_only(1);
 int rename(const char *, const char *) libcesque __read_only(1) __read_only(2);
 int renameat(int, const char *, int, const char *) libcesque __read_only(2) __read_only(4);
+int renameat2(int, const char *, int, const char *, unsigned) libcesque __read_only(2) __read_only(4);
 int rmdir(const char *) libcesque __read_only(1);
 int sched_yield(void) libcesque;
 int setegid(unsigned) libcesque;
@@ -211,6 +212,9 @@ int euidaccess(const char *, int) libcesque __read_only(1);
 int eaccess(const char *, int) libcesque __read_only(1);
 int getcpu(unsigned *, unsigned *) libcesque __write_only(1) __write_only(2);
 int close_range(unsigned, unsigned, unsigned) libcesque;
+int fallocate(int, int, int64_t, int64_t) libcesque;
+int posix_fallocate(int, int64_t, int64_t) libcesque;
+int memfd_create(const char *, unsigned) libcesque;
 #endif
 
 #if defined(_COSMO_SOURCE) || defined(_BSD_SOURCE)

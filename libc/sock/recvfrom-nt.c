@@ -73,14 +73,19 @@ textwindows static ssize_t sys_recvfrom_nt_impl(int fd, const struct iovec *iov,
   uint32_t addrcapacity = opt_inout_srcaddrsize ? *opt_inout_srcaddrsize : 0;
   
   bool nonblock = (f->flags & O_NONBLOCK) || (flags & MSG_DONTWAIT);
-  if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
-    __sig_unblock(waitmask);
-    return eagain();
+  if (__scm_stream_nt(f)) {
+    rc = __scm_recv_nt(f, iov, iovlen, flags, nonblock, waitmask);
+    if (opt_inout_srcaddrsize)
+      *opt_inout_srcaddrsize = 0;
+  } else if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
+    rc = eagain();
+  } else {
+    rc = __winsock_block(f->handle, __msg2host(flags & ~MSG_DONTWAIT),
+                         nonblock, f->rcvtimeo, waitmask,
+                         sys_recvfrom_nt_start,
+                         &(struct RecvFromArgs){iov, iovlen, opt_out_srcaddr,
+                                                opt_inout_srcaddrsize});
   }
-  rc = __winsock_block(f->handle, __msg2host(flags & ~MSG_DONTWAIT), nonblock,
-                       f->rcvtimeo, waitmask, sys_recvfrom_nt_start,
-                       &(struct RecvFromArgs){iov, iovlen, opt_out_srcaddr,
-                                              opt_inout_srcaddrsize});
   if (rc != -1) {
     __unfixsunpath(opt_out_srcaddr, opt_inout_srcaddrsize, addrcapacity);
     if (opt_out_srcaddr && opt_inout_srcaddrsize && *opt_inout_srcaddrsize >= 2)

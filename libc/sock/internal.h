@@ -90,6 +90,14 @@ ssize_t __winsock_block(int64_t, uint32_t, bool, uint32_t, uint64_t,
                                 void *),
                         void *);
 
+struct msghdr;
+bool __scm_stream_nt(struct Fd *);
+ssize_t __scm_send_nt(int, const struct msghdr *, int);
+ssize_t __scm_recv_nt(struct Fd *, const struct iovec *, size_t, uint32_t,
+                      bool, uint64_t);
+void __scm_take_nt(struct Fd *, struct msghdr *, bool);
+void __scm_forget_nt(struct Fd *);
+
 void WinSockInit(void);
 int64_t __winsockerr(void);
 int __fixupnewsockfd(int, int);

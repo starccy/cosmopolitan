@@ -5,6 +5,7 @@
 #include "libc/runtime/pathconf.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/sysconf.h"
+#include "libc/sysv/consts/close.h"
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/fileno.h"
 #include "libc/sysv/consts/l.h"

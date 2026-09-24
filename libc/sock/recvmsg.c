@@ -119,29 +119,36 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
         msg->msg_flags = __msg2linux(msg->msg_flags);
     }
   } else if (__isfdopen(fd)) {
-    if (!msg->msg_control) {
-      if (__isfdkind(fd, kFdSocket)) {
-        rc = sys_recvfrom_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
-                             msg->msg_name, &msg->msg_namelen);
-        if (rc != -1)
-          msg->msg_flags = 0;
-      } else if (__isfdkind(fd, kFdFile) && !msg->msg_name) { /* socketpair */
-        if (!flags) {
-          if ((got = sys_read_nt(fd, msg->msg_iov, msg->msg_iovlen, -1)) !=
-              -1) {
-            msg->msg_flags = 0;
-            rc = got;
+    struct Fd *f = __get_pib()->fds.p + fd;
+    if (__isfdkind(fd, kFdSocket)) {
+      rc = sys_recvfrom_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
+                           msg->msg_name,
+                           msg->msg_name ? &msg->msg_namelen : 0);
+      if (rc != -1) {
+        msg->msg_flags = 0;
+        if (msg->msg_control) {
+          if (__scm_stream_nt(f)) {
+            __scm_take_nt(f, msg, cloexec);
           } else {
-            rc = -1;
+            msg->msg_controllen = 0;
           }
+        }
+      }
+    } else if (__isfdkind(fd, kFdFile) && !msg->msg_name) { /* socketpair */
+      if (!flags) {
+        if ((got = sys_read_nt(fd, msg->msg_iov, msg->msg_iovlen, -1)) !=
+            -1) {
+          msg->msg_flags = 0;
+          msg->msg_controllen = 0;
+          rc = got;
         } else {
-          rc = einval();  // flags not supported on nt
+          rc = -1;
         }
       } else {
-        rc = enotsock();
+        rc = einval();  // flags not supported on nt
       }
     } else {
-      rc = einval();  // control msg not supported on nt
+      rc = enotsock();
     }
   } else {
     rc = ebadf();

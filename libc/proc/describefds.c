@@ -24,6 +24,7 @@
 #include "libc/fmt/itoa.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/maps.h"
+#include "libc/intrin/strace.h"
 #include "libc/nt/enum/heap.h"
 #include "libc/nt/files.h"
 #include "libc/nt/memory.h"
@@ -132,8 +133,10 @@ textwindows static int AppendHandle(struct Longs *hl, long hObject,
                                     long *opt_out_hDuplicateObject) {
   long hDuplicateObject;
   if (!DuplicateHandle(GetCurrentProcess(), hObject, hProcess,
-                       &hDuplicateObject, 0, true, kNtDuplicateSameAccess))
-    return __winerr();
+                       &hDuplicateObject, 0, true, kNtDuplicateSameAccess)) {
+    __winerr();
+    return -2;  // handle is dead and can't be inherited
+  }
   if (AppendLong(hl, hDuplicateObject) == -1) {
     CloseHandle(hDuplicateObject);
     return -1;
@@ -213,12 +216,23 @@ textwindows char *__describe_fds(const struct Fd *fds, size_t fdslen,
     const struct Fd *f = fds + fd;
     if (__is_cloexec(f))
       continue;
+    if (f->pty && !f->ptymaster)
+      continue;
     if (f->cursor)
       // taint cursor so it can't be cached when freed
       f->cursor->is_multiprocess = true;
 
-    // make inheritable version of handle exist in creator process
-    if (AppendHandle(&handles, f->handle, hCreatorProcess, &handle))
+    // make inheritable version of handle exist in creator process. a
+    // descriptor whose os handle was already closed can't be duplicated;
+    // drop it rather than failing the spawn, the way linux never fails
+    // execve() over a stale entry
+    int r = AppendHandle(&handles, f->handle, hCreatorProcess, &handle);
+    if (r == -2) {
+      STRACE("execve() dropping fd %d with dead handle %ld", fd,
+             (long)f->handle);
+      continue;
+    }
+    if (r)
       goto OnError;
     for (uint32_t i = 0; i < 3; ++i)
       if (lpStartupInfo->stdiofds[i] == f->handle)

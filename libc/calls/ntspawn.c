@@ -177,7 +177,8 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
   alignas(16) char memory[128];
   size_t size = sizeof(memory);
   struct NtProcThreadAttributeList *alist = (void *)memory;
-  uint32_t items = !!a->opt_hParentProcess + !!a->dwExplicitHandleCount;
+  uint32_t items = !!a->opt_hParentProcess + !!a->dwExplicitHandleCount +
+                   !!a->opt_hPseudoConsole;
   ok = InitializeProcThreadAttributeList(alist, items, 0, &size);
   if (!ok && GetLastError() == kNtErrorInsufficientBuffer) {
     ok = !!(alist = freeme = ntspawn_malloc(size));
@@ -194,6 +195,11 @@ textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
     ok = UpdateProcThreadAttribute(
         alist, 0, kNtProcThreadAttributeHandleList, a->opt_lpExplicitHandleList,
         a->dwExplicitHandleCount * sizeof(*a->opt_lpExplicitHandleList), 0, 0);
+  }
+  if (ok && a->opt_hPseudoConsole) {
+    ok = UpdateProcThreadAttribute(
+        alist, 0, kNtProcThreadAttributePseudoconsole,
+        (void *)a->opt_hPseudoConsole, sizeof(a->opt_hPseudoConsole), 0, 0);
   }
 
   // figure out current directory for new process

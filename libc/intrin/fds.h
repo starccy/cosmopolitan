@@ -57,6 +57,9 @@ struct Fd {
   void *tftimer;     // timerfd off linux: its posix timer
   void *inotify;     // inotify off linux: the watches and the queue
   void *epset;       // epoll on windows: the interest list
+  void *scm;         // unix stream on windows: received fds not yet taken
+  void *pty;         // pseudoconsole on windows, see pty.internal.h
+  bool ptymaster;
 };
 
 struct Fds {

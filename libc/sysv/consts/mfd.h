@@ -3,5 +3,6 @@
 
 #define MFD_CLOEXEC       1
 #define MFD_ALLOW_SEALING 2
+#define MFD_HUGETLB       4
 
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_MFD_H_ */

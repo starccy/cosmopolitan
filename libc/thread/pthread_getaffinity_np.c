@@ -19,14 +19,40 @@
 #include "libc/assert.h"
 #include "libc/calls/sched-sysv.internal.h"
 #include "libc/calls/struct/cpuset.h"
+#include "libc/cosmo.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
+#include "libc/nt/enum/status.h"
+#include "libc/nt/enum/threadinfoclass.h"
+#include "libc/nt/nt/thread.h"
+#include "libc/nt/runtime.h"
+#include "libc/nt/struct/threadbasicinformation.h"
 #include "libc/str/str.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/thread/posixthread.internal.h"
+
+// XNU has no cpu masks, so a thread may run anywhere
+static int sys_getaffinity_xnu(cpu_set_t *bitset) {
+  int n = cosmo_cpu_count();
+  bzero(bitset, sizeof(*bitset));
+  for (int i = 0; i < n && i < CPU_SETSIZE; ++i)
+    CPU_SET(i, bitset);
+  return sizeof(*bitset);
+}
+
+static dontinline textwindows int sys_pthread_getaffinity_nt(
+    struct PosixThread *pt, uint64_t size, cpu_set_t *bitset) {
+  struct NtThreadBasicInformation tbi;
+  NtStatus st = NtQueryInformationThread(
+      _pthread_syshand(pt), kNtThreadBasicInformation, &tbi, sizeof(tbi), 0);
+  if (!NtSuccess(st))
+    return esrch();
+  bitset->__bits[0] = tbi.AffinityMask;
+  return 8;
+}
 
 /**
  * Gets CPU affinity for thread.
@@ -34,19 +60,25 @@
  * @param size is bytes in bitset, which should be `sizeof(cpu_set_t)`
  * @return 0 on success, or errno on error
  * @raise EINVAL if `size` or `bitset` is invalid
- * @raise ENOSYS if not Linux, FreeBSD, or NetBSD
+ * @raise ENOSYS if not Linux, FreeBSD, NetBSD, MacOS, or Windows
  * @raise ESRCH if thread isn't alive
  */
 errno_t pthread_getaffinity_np(pthread_t thread, size_t size,
                                cpu_set_t *bitset) {
-  int rc, tid;
+  int e, rc, tid;
+  struct PosixThread *pt;
   unassert(thread);
   unassert(bitset);
-  tid = _pthread_tid((struct PosixThread *)thread);
-
+  e = errno;
+  pt = (struct PosixThread *)thread;
+  tid = _pthread_tid(pt);
   if (size != sizeof(cpu_set_t)) {
     rc = einval();
-  } else if (IsWindows() || IsMetal() || IsOpenbsd()) {
+  } else if (IsWindows()) {
+    rc = sys_pthread_getaffinity_nt(pt, size, bitset);
+  } else if (IsXnu()) {
+    rc = sys_getaffinity_xnu(bitset);
+  } else if (IsMetal() || IsOpenbsd()) {
     rc = enosys();
   } else if (IsFreebsd()) {
     if (!sys_sched_getaffinity_freebsd(CPU_LEVEL_WHICH, CPU_WHICH_TID, tid, 32,
@@ -69,8 +101,10 @@ errno_t pthread_getaffinity_np(pthread_t thread, size_t size,
       bzero((char *)bitset + rc, size - rc);
     }
     rc = 0;
+  } else if (rc == -1) {
+    rc = errno;
+    errno = e;
   }
-
   STRACE("pthread_getaffinity_np(%d, %'zu, %p) → %s", tid, size, bitset,
          DescribeErrno(rc));
   return rc;

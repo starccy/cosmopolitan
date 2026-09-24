@@ -18,47 +18,43 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
-#include "libc/calls/syscall-sysv.internal.h"
-#include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/strace.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/utmp.h"
-#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
-#include "libc/sysv/errfuns.h"
 
 /**
  * Prepares terminal for login.
  *
  * After this operation `fd` will be used for all stdio handles.
  *
+ * On Windows `fd` must be the slave side of an openpty() pair; the
+ * process then becomes a pty child when it execs.
+ *
  * @return 0 on success, or -1 w/ errno
  * @raise EPERM if terminal is already controlling another sid?
  * @raise EPERM if pledge() was used without tty
  * @raise ENOTTY if `fd` isn't a teletypewriter
- * @raise ENOSYS on Windows and Metal
  * @raise EBADF if `fd` isn't open
  */
 int login_tty(int fd) {
   int rc;
-  if (!IsLinux() && !IsBsd()) {
-    rc = enosys();
-  } else if (!isatty(fd)) {
+  if (!isatty(fd)) {
     rc = -1;  // validate before changing the process's state
   } else {
     // become session leader
     // we don't care if it fails due to already being the one
     int e = errno;
-    sys_setsid();
+    setsid();
     errno = e;
     // take control of teletypewriter (requires being leader)
-    if ((rc = sys_ioctl(fd, __ioctl2host(TIOCSCTTY), 0)) != -1) {
-      unassert(sys_dup2(fd, 0, 0) == 0);
-      unassert(sys_dup2(fd, 1, 0) == 1);
-      unassert(sys_dup2(fd, 2, 0) == 2);
+    if ((rc = ioctl(fd, TIOCSCTTY, 0)) != -1) {
+      unassert(dup2(fd, 0) == 0);
+      unassert(dup2(fd, 1) == 1);
+      unassert(dup2(fd, 2) == 2);
       if (fd > 2) {
-        unassert(!sys_close(fd));
+        unassert(!close(fd));
       }
       rc = 0;
     }
