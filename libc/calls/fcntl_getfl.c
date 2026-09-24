@@ -62,7 +62,7 @@ static int __unxoflags(int flags) {
 
 int __fcntl_getfl(int fd) {
   int rc;
-  if (__isfdkind(fd, kFdZip)) {
+  if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc)) {
     goto WindowsImpl;
   } else if (!IsWindows()) {
     rc = __sys_fcntl(fd, F_GETFL, 0);

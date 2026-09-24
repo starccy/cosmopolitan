@@ -62,6 +62,7 @@
 #include "libc/thread/thread.h"
 #include "libc/thread/tls.h"
 #include "libc/zip.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * @fileoverview Directory Streams for Linux+Mac+Windows+FreeBSD+OpenBSD.
@@ -75,17 +76,13 @@
 
 int sys_getdents(unsigned, void *, unsigned, long *) libcesque;
 
-int __ape_shim_virtdir_open(const char *, int *, void **);
-int __ape_shim_virtdir_read(void *, long, char *, size_t, int *);
-void __ape_shim_virtdir_close(void *);
-
 /**
  * Directory stream object.
  */
 struct dirstream {
   int fd;
   bool iszip;
-  void *virt;
+  bool isproc;
   long index;
   long offset;
   int64_t hand;
@@ -362,14 +359,9 @@ DIR *fdopendir(int fd) {
 
   // on unix, file descriptor isn't required to be tracked
   dir->fd = fd;
-  if (_weaken(__ape_shim_virtdir_open)) {
-    int rc = _weaken(__ape_shim_virtdir_open)(0, &dir->fd, &dir->virt);
-    if (rc > 0)
-      return dir;
-    if (rc < 0) {
-      free(dir);
-      return 0;
-    }
+  if (__isfdkind(fd, kFdProc)) {
+    dir->isproc = true;
+    return dir;
   }
   if (!__isfdkind(fd, kFdZip)) {
     if (IsWindows()) {
@@ -463,25 +455,6 @@ DIR *opendir(const char *name) {
 DIR *__opendirat(int dirfd, const char *name) {
   int fd;
   DIR *res;
-  if (dirfd == AT_FDCWD && _weaken(__ape_shim_virtdir_open)) {
-    void *state;
-    fd = -1;
-    int rc = _weaken(__ape_shim_virtdir_open)(name, &fd, &state);
-    if (rc > 0) {
-      if (!(res = calloc(1, sizeof(*res)))) {
-        _weaken(__ape_shim_virtdir_close)(state);
-        if (fd != -1)
-          close(fd);
-        return 0;
-      }
-      res->lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
-      res->fd = fd;
-      res->virt = state;
-      return res;
-    }
-    if (rc < 0)
-      return 0;
-  }
   fd = openat(dirfd, name, O_RDONLY | O_DIRECTORY | O_NOCTTY | O_CLOEXEC);
   if (fd == -1)
     return 0;
@@ -614,22 +587,18 @@ static struct dirent *readdir_unix(DIR *dir) {
   return ent;
 }
 
-static struct dirent *readdir_virt(DIR *dir) {
-  int type;
-  if (!_weaken(__ape_shim_virtdir_read)(dir->virt, dir->index,
-                                       dir->ent.d_name,
-                                       sizeof(dir->ent.d_name), &type))
+static struct dirent *readdir_proc(DIR *dir) {
+  struct ProcfsHandle *h =
+      (struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[dir->fd].handle;
+  if (!_weaken(__procfs_readdir)(h, dir->index, &dir->ent))
     return 0;
-  dir->ent.d_ino = dir->index + 1;
-  dir->ent.d_off = dir->index;
-  dir->ent.d_type = type;
   return &dir->ent;
 }
 
 static struct dirent *readdir_impl(DIR *dir) {
   struct dirent *res;
-  if (dir->virt) {
-    res = readdir_virt(dir);
+  if (dir->isproc) {
+    res = readdir_proc(dir);
   } else if (dir->iszip) {
     res = readdir_zipos(dir);
   } else if (IsWindows()) {
@@ -711,13 +680,11 @@ errno_t readdir_r(DIR *dir, struct dirent *output, struct dirent **result) {
 int closedir(DIR *dir) {
   int rc = 0;
   if (dir) {
-    if (dir->virt)
-      _weaken(__ape_shim_virtdir_close)(dir->virt);
     if (dir->iszip)
       critbit0_clear(&dir->zip.found);
     if (dir->fd != -1)
       rc |= close(dir->fd);
-    if (IsWindows() && !dir->iszip && !dir->virt)
+    if (IsWindows() && !dir->iszip && !dir->isproc)
       if (!FindClose(dir->hand))
         rc = __winerr();
     free(dir);
@@ -744,7 +711,7 @@ int dirfd(DIR *dir) {
 }
 
 static void rewinddir_impl(DIR *dir) {
-  if (dir->virt) {
+  if (dir->isproc) {
     dir->index = 0;
   } else if (dir->iszip) {
     critbit0_clear(&dir->zip.found);

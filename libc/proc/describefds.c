@@ -151,6 +151,8 @@ textwindows bool __is_cloexec(const struct Fd *f) {
     return true;
   if (f->kind == kFdZip)
     return true;
+  if (f->kind == kFdProc)
+    return true;
   if (f->kind == kFdEpoll)
     return true;
   if (f->flags & O_CLOEXEC)

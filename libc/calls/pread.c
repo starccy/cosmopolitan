@@ -32,6 +32,7 @@
 #include "libc/stdio/sysparam.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Reads from file at offset.
@@ -67,6 +68,8 @@ ssize_t pread(int fd, void *buf, size_t size, int64_t offset) {
     rc = einval();
   } else if (fd < 0) {
     rc = ebadf();
+  } else if (__isfdkind(fd, kFdProc)) {
+    rc = _weaken(__procfs_read)((struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, (struct iovec[]){{buf, size}}, 1, offset);
   } else if (__isfdkind(fd, kFdZip)) {
     rc = _weaken(__zipos_read)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle,

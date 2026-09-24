@@ -34,6 +34,7 @@
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/procfs/procfs.internal.h"
 
 // Implements dup(), dup2(), dup3(), and F_DUPFD for Windows.
 textwindows static int sys_dup_nt_impl(int oldfd, int newfd, int flags,
@@ -69,6 +70,9 @@ textwindows static int sys_dup_nt_impl(int oldfd, int newfd, int flags,
   if (__isfdkind(oldfd, kFdZip)) {
     handle = (intptr_t)_weaken(__zipos_keep)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[oldfd].handle);
+  } else if (__isfdkind(oldfd, kFdProc)) {
+    handle = (intptr_t)_weaken(__procfs_keep)(
+        (struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[oldfd].handle);
   } else {
     if (!DuplicateHandle(GetCurrentProcess(), __get_pib()->fds.p[oldfd].handle,
                          GetCurrentProcess(), &handle, 0, true,

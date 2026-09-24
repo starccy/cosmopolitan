@@ -30,6 +30,8 @@ int __fcntl_getfd(int fd) {
   int rc;
   if (__isfdkind(fd, kFdZip)) {
     rc = FD_CLOEXEC;
+  } else if (__isfdkind(fd, kFdProc) && !IsWindows()) {
+    rc = FD_CLOEXEC;
   } else if (!IsWindows()) {
     rc = __sys_fcntl(fd, F_GETFD, 0);
   } else if (__isfdopen(fd)) {

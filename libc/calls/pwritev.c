@@ -53,7 +53,7 @@ static ssize_t Pwritev(int fd, const struct iovec *iov, int iovlen,
     return ebadf();
   if (iovlen < 0)
     return einval();
-  if (__isfdkind(fd, kFdZip))
+  if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc))
     return ebadf();
   if (iovlen) {
     if (kisdangerous(iov))

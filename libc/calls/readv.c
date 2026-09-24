@@ -36,8 +36,7 @@
 #include "libc/stdckdint.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
-
-int __ape_shim_read_before(int, const struct iovec *, int, ssize_t *);
+#include "libc/procfs/procfs.internal.h"
 
 static size_t SumIovecBytes(const struct iovec *iov, int iovlen) {
   size_t count = 0;
@@ -86,12 +85,9 @@ static ssize_t readv_impl(int fd, const struct iovec *iov, int iovlen) {
     }
   }
 
-  ssize_t rc;
-  if (_weaken(__ape_shim_read_before) &&
-      _weaken(__ape_shim_read_before)(fd, iov, iovlen, &rc))
-    return rc;
-
-  if (__isfdkind(fd, kFdZip)) {
+  if (__isfdkind(fd, kFdProc)) {
+    return _weaken(__procfs_read)((struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, iov, iovlen, -1);
+  } else if (__isfdkind(fd, kFdZip)) {
     return _weaken(__zipos_read)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, iov,
         iovlen, -1);

@@ -282,6 +282,7 @@ include third_party/intel/BUILD.mk		# │
 include third_party/aarch64/BUILD.mk		# │
 include libc/BUILD.mk				#─┘
 include libc/sock/BUILD.mk			#─┐
+include libc/procfs/BUILD.mk			# │
 include net/http/BUILD.mk			# ├──ONLINE RUNTIME
 include third_party/musl/BUILD.mk		# │  You can communicate with the network
 include third_party/regex/BUILD.mk		# │
@@ -478,6 +479,7 @@ COSMOPOLITAN =				\
 	LIBC_NT_WINMM			\
 	LIBC_NT_WS2_32			\
 	LIBC_PROC			\
+	LIBC_PROCFS			\
 	LIBC_RUNTIME			\
 	LIBC_SOCK			\
 	LIBC_STDIO			\

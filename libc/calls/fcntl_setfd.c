@@ -34,7 +34,8 @@ int __fcntl_setfd(int fd, ...) {
   va_end(va);
   if (arg & ~FD_CLOEXEC) {
     rc = einval();
-  } else if (__isfdkind(fd, kFdZip)) {
+  } else if (__isfdkind(fd, kFdZip) ||
+             (__isfdkind(fd, kFdProc) && !IsWindows())) {
     if (arg == FD_CLOEXEC) {
       rc = 0;
     } else {

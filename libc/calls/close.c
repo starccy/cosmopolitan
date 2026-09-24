@@ -31,21 +31,13 @@
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
-
-int __ape_shim_close_hook(int, int *);
+#include "libc/procfs/procfs.internal.h"
 
 static int close_impl(int fd) {
 
   // handle obvious case
   if (fd < 0)
     return ebadf();
-
-  // let the shim see it first
-  if (!__vforked && _weaken(__ape_shim_close_hook)) {
-    int rc;
-    if (_weaken(__ape_shim_close_hook)(fd, &rc))
-      return rc;
-  }
 
   // give kprintf() the opportunity to dup() stderr
   if (fd == 2 && !__vforked && _weaken(kloghandle))
@@ -80,6 +72,10 @@ static int close_impl(int fd) {
     case kFdZip:
       if (_weaken(__zipos_close))
         rc = _weaken(__zipos_close)(fd);
+      break;
+    case kFdProc:
+      if (_weaken(__procfs_close))
+        rc = _weaken(__procfs_close)(fd);
       break;
     case kFdEvent:
       if (!__vforked) {

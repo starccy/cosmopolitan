@@ -35,6 +35,7 @@
 #include "libc/stdckdint.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/procfs/procfs.internal.h"
 
 static size_t SumIovecBytes(const struct iovec *iov, int iovlen) {
   size_t count = 0;
@@ -86,7 +87,9 @@ static ssize_t Preadv(int fd, struct iovec *iov, int iovlen, int64_t off) {
     }
   }
 
-  if (__isfdkind(fd, kFdZip)) {
+  if (__isfdkind(fd, kFdProc)) {
+    return _weaken(__procfs_read)((struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, iov, iovlen, off);
+  } else if (__isfdkind(fd, kFdZip)) {
     return _weaken(__zipos_read)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, iov,
         iovlen, off);

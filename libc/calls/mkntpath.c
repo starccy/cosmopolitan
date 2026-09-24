@@ -26,7 +26,6 @@
 #include "libc/sysv/pib.h"
 
 int __ape_shim_ntpath_rewrite(const char *, char *, size_t);
-void __ape_shim_ntpath_relative(const char16_t *, size_t);
 
 textwindows static size_t __normunixpath(char16_t *p, size_t n) {
   size_t i, j;
@@ -459,9 +458,6 @@ textwindows int __mkntpathath(int64_t dirhand, const char *path,
       if (!(dwFileAttrs & kNtFileAttributeDirectory))
         return enotdir();
   }
-
-  if (dirhand != AT_FDCWD && _weaken(__ape_shim_ntpath_relative))
-    _weaken(__ape_shim_ntpath_relative)(file, len);
 
   return len;
 }

@@ -28,6 +28,7 @@
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/procfs/procfs.internal.h"
 
 int __fcntl_dupfd_cloexec(int fd, ...) {
   int rc;
@@ -64,6 +65,8 @@ int __fcntl_dupfd_cloexec(int fd, ...) {
   }
   if (rc != -1 && _weaken(__zipos_postdup))
     _weaken(__zipos_postdup)(fd, rc);
+  if (rc != -1 && _weaken(__procfs_postdup))
+    _weaken(__procfs_postdup)(fd, rc);
   STRACE("fcntl(%d, F_DUPFD_CLOEXEC, %d) → %d% m", fd, arg, rc);
   return rc;
 }

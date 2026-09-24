@@ -79,7 +79,7 @@ ssize_t write(int fd, const void *buf, size_t size) {
     rc = ebadf();
   } else if (size && kisdangerous(buf)) {
     rc = efault();
-  } else if (__isfdkind(fd, kFdZip)) {
+  } else if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc)) {
     rc = ebadf();  // posix specifies this when not open()'d for writing
   } else if (__isfdkind(fd, kFdEvent)) {
     rc = __eventfd_write(fd, buf, size);

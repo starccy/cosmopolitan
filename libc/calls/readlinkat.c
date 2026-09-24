@@ -30,6 +30,7 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/str/str.h"
 #include "libc/calls/calls.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Reads symbolic link.
@@ -57,8 +58,6 @@
  * @raise ENOMEM if insufficient memory was available to the impl
  * @asyncsignalsafe
  */
-long __ape_shim_readlinkat_hook(int, const char *, char *, size_t);
-
 // whether an absolute path names this process's own exe link
 static bool IsOwnExeLink(const char *path) {
   if (strncmp(path, "/proc/", 6))
@@ -100,14 +99,6 @@ static bool IsApeLoader(const char *s, size_t n) {
 ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
   char mybuf[1];
   ssize_t bytes;
-  if (bufsiz && !kisdangerous(path) && _weaken(__ape_shim_readlinkat_hook)) {
-    long r = _weaken(__ape_shim_readlinkat_hook)(dirfd, path, buf, bufsiz);
-    if (r >= 0) {
-      STRACE("readlinkat(%s, %#s, [%#.*s]) → %d% m", DescribeDirfd(dirfd),
-             path, (int)r, buf, r);
-      return r;
-    }
-  }
   if (IsLinux() && !bufsiz) {
     // the linux kernel will einval if bufsiz is zero. linux is the only
     // os that does this. it's much simpler if we reserve einval for the
@@ -117,6 +108,10 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
   }
   if (kisdangerous(path)) {
     bytes = efault();
+  } else if (_weaken(__procfs_readlink) &&
+             (bytes = _weaken(__procfs_readlink)(dirfd, path, buf, bufsiz)) !=
+                 -2) {
+    // the /proc emulation answered
   } else if (_weaken(__zipos_notat) &&
              (bytes = __zipos_notat(dirfd, path)) == -1) {
     STRACE("TODO: zipos support for readlinkat");

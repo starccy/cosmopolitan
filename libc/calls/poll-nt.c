@@ -212,7 +212,8 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
         fileindices[pn] = i;
         filehands[pn] = __get_pib()->fds.p[fds[i].fd].handle;
         ++pn;
-      } else if (kind == kFdDevNull || kind == kFdDevRandom || kind == kFdZip) {
+      } else if (kind == kFdDevNull || kind == kFdDevRandom || kind == kFdZip ||
+                 kind == kFdProc) {
         // we can't wait on these kinds via win32
         if (fds[i].events & (POLLRDNORM_ | POLLWRNORM_)) {
           // the linux kernel does this irrespective of oflags

@@ -25,6 +25,7 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/procfs/procfs.internal.h"
 
 int __fcntl_dupfd(int fd, ...) {
   int rc;
@@ -44,6 +45,8 @@ int __fcntl_dupfd(int fd, ...) {
   }
   if (rc != -1 && _weaken(__zipos_postdup))
     _weaken(__zipos_postdup)(fd, rc);
+  if (rc != -1 && _weaken(__procfs_postdup))
+    _weaken(__procfs_postdup)(fd, rc);
   STRACE("fcntl(%d, F_DUPFD, %d) → %d% m", fd, arg, rc);
   return rc;
 }

@@ -38,7 +38,7 @@
  */
 int fchdir(int dirfd) {
   int rc;
-  if (__isfdkind(dirfd, kFdZip)) {
+  if (__isfdkind(dirfd, kFdZip) || __isfdkind(dirfd, kFdProc)) {
     rc = enotsup();
   } else if (!IsWindows()) {
     rc = sys_fchdir(dirfd);

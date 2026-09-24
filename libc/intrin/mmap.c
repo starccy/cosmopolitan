@@ -844,7 +844,9 @@ static void *__mmap(char *addr, size_t size, int prot, int flags, int fd,
     return (void *)enomem();
 
   // create memory mappping
-  if (!__isfdkind(fd, kFdZip)) {
+  if (__isfdkind(fd, kFdProc)) {
+    res = (void *)enodev();
+  } else if (!__isfdkind(fd, kFdZip)) {
     res = __mmap_impl(addr, size, prot, flags, fd, off);
   } else {
     res = _weaken(__zipos_mmap)(

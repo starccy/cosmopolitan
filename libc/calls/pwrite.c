@@ -61,7 +61,7 @@ ssize_t pwrite(int fd, const void *buf, size_t size, int64_t offset) {
     rc = einval();
   } else if (fd < 0) {
     rc = ebadf();
-  } else if (__isfdkind(fd, kFdZip)) {
+  } else if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc)) {
     rc = ebadf();
   } else if (!IsWindows()) {
     rc = sys_pwrite(fd, buf, size, offset, offset);

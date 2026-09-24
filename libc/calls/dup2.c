@@ -28,6 +28,7 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/str/str.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Duplicates file descriptor, granting it specific number.
@@ -77,13 +78,18 @@ int dup2(int oldfd, int newfd) {
   } else
 #endif
       if (!IsWindows()) {
-    if (__isfdkind(oldfd, kFdZip) || __isfdkind(newfd, kFdZip)) {
+    if (__isfdkind(oldfd, kFdZip) || __isfdkind(newfd, kFdZip) ||
+        __isfdkind(oldfd, kFdProc) || __isfdkind(newfd, kFdProc)) {
       if (__vforked) {
         rc = enotsup();
       } else {
         rc = sys_dup2(oldfd, newfd, 0);
-        if (rc != -1)
-          _weaken(__zipos_postdup)(oldfd, newfd);
+        if (rc != -1) {
+          if (_weaken(__zipos_postdup))
+            _weaken(__zipos_postdup)(oldfd, newfd);
+          if (_weaken(__procfs_postdup))
+            _weaken(__procfs_postdup)(oldfd, newfd);
+        }
       }
     } else {
       rc = sys_dup2(oldfd, newfd, 0);
