@@ -89,6 +89,7 @@ struct PosixThread {
   intptr_t pt_exiter[5];
   pthread_attr_t pt_attr;
   atomic_bool pt_intoff;
+  char pt_name[64];  // xnu: the kernel has no read-back for a name
 };
 
 typedef void (*atfork_f)(void);

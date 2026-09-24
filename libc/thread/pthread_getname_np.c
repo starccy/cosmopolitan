@@ -25,6 +25,8 @@
 #include "libc/intrin/asmflag.h"
 #include "libc/intrin/atomic.h"
 #include "libc/macros.h"
+#include "libc/nt/memory.h"
+#include "libc/nt/thread.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/consts/o.h"
@@ -76,6 +78,26 @@ static errno_t pthread_getname_impl(struct PosixThread *pt, char *name,
       return ERANGE;
     return 0;
 
+  } else if (IsXnu()) {
+    size_t len = strlen(pt->pt_name);
+    memcpy(name, pt->pt_name, MIN(len, size - 1));
+    if (len > size - 1)
+      return ERANGE;
+    return 0;
+  } else if (IsWindows()) {
+    char16_t *name16 = 0;
+    intptr_t hr = (intptr_t)GetThreadDescription(_pthread_syshand(pt),
+                                                 (char16_t *)&name16);
+    if (hr < 0 || !name16)
+      return ENOSYS;
+    char buf[256];
+    tprecode16to8(buf, sizeof(buf), name16);
+    LocalFree(name16);
+    size_t len = strlen(buf);
+    memcpy(name, buf, MIN(len, size - 1));
+    if (len > size - 1)
+      return ERANGE;
+    return 0;
   } else if (IsNetbsd() || IsOpenbsd()) {
     int ax;
     char cf;

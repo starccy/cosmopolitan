@@ -25,6 +25,8 @@
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
+#include "libc/macros.h"
+#include "libc/nt/thread.h"
 #include "libc/runtime/syslib.internal.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
@@ -42,13 +44,33 @@ static errno_t pthread_setname_impl(struct PosixThread *pt, const char *name) {
   len = strlen(name);
   tid = _pthread_tid(pt);
 
-  if (IsXnuSilicon()) {
-    if (pt == _pthread_self()) {
-      __syslib->__pthread_setname_np(name);
-      return 0;
-    } else {
+  if (IsXnu()) {
+    // xnu only names the calling thread, which is all Apple's own
+    // pthread_setname_np() offers too. the kernel keeps 63 bytes and
+    // has no way to read a name back, so a copy stays here for
+    // pthread_getname_np()
+    if (pt != _pthread_self())
       return EPERM;
+    if (IsXnuSilicon()) {
+      __syslib->__pthread_setname_np(name);
+    } else {
+      // PROC_INFO_CALL_SETCONTROL, PROC_SELFSET_THREADNAME
+      e = errno;
+      if (sys_proc_info(5, getpid(), 2, 0, (void *)name, len) == -1) {
+        rc = errno;
+        errno = e;
+        return rc;
+      }
     }
+    strlcpy(pt->pt_name, name, sizeof(pt->pt_name));
+    return 0;
+  } else if (IsWindows()) {
+    // SetThreadDescription() (Windows 10 1607+) takes any length; the
+    // name shows up in debuggers and in the ETW thread events
+    char16_t name16[256];
+    tprecode8to16(name16, ARRAYLEN(name16), name);
+    intptr_t hr = (intptr_t)SetThreadDescription(_pthread_syshand(pt), name16);
+    return hr < 0 ? ENOSYS : 0;
   } else if (IsLinux()) {
     e = errno;
     if (tid == gettid()) {

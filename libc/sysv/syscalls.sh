@@ -566,7 +566,7 @@ scall	sys_bsdthread_register	0xfffffffff216efff	0xfff	globl hidden
 #scall	pid_suspend		0xfffffffff21b1fff	0xfff	globl
 #scall	poll_nocancel		0xfffffffff21a1fff	0xfff	globl
 #scall	pread_nocancel		0xfffffffff219efff	0xfff	globl
-#scall	proc_info		0xfffffffff2150fff	0xfff	globl
+scall	sys_proc_info		0xfffffffff2150fff	0xfff	globl
 #scall	proc_rlimit_control	0xfffffffff21befff	0xfff	globl
 #scall	proc_trace_log		0xfffffffff21ddfff	0xfff	globl
 #scall	proc_uuid_policy	0xfffffffff21c4fff	0xfff	globl

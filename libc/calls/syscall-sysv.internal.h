@@ -117,6 +117,7 @@ i32 sys_sem_unlink(const char *);
 i32 sys_sem_wait(i64);
 i32 sys_wait6(i32, i32, i32 *, i32, void *, void *);
 i32 sys_waitid(i32, i32, void *, i32, void *);
+i32 sys_proc_info(i32, i32, u32, u64, void *, i32);
 i32 __sys_socketpair(i32, i32, i32, i32[2]);
 i32 sys_setfsgid(i32);
 i32 sys_setfsuid(i32);
