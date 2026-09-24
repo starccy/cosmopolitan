@@ -32,7 +32,6 @@
 #include "libc/intrin/weaken.h"
 #include "libc/sysv/errfuns.h"
 
-int __ape_shim_getcwd_hook(char *, size_t);
 
 #define XNU_F_GETPATH   50
 #define XNU_MAXPATHLEN  1024
@@ -98,11 +97,6 @@ dontinline textwindows static int sys_getcwd_nt(char *buf, size_t size) {
   int m = __unc_cwd(p8, PATH_MAX);
   if (m > 0)
     n8 = m - 1;
-  if (_weaken(__ape_shim_getcwd_hook)) {
-    int m = _weaken(__ape_shim_getcwd_hook)(p8, PATH_MAX);
-    if (m > 0)
-      n8 = m - 1;
-  }
 
   // we now know the final length
   // check if the user supplied a buffer large enough
