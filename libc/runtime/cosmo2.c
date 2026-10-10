@@ -90,17 +90,24 @@ wontreturn textstartup void cosmo(long *sp, struct Syslib *m1, char *exename,
   // its used by --strace and also kprintf() %T
   kStartTsc = rdtsc();
 
-  // enable enough tls to survive until it can be allocated properly
-  struct CosmoTib tib = {
-      .tib_self = &tib,
-      .tib_self2 = &tib,
-      .tib_sigmask = -1,
-      .tib_sigstack_size = 57344,
-      .tib_sigstack_addr = (char *)__builtin_frame_address(0) - 57344,
-      .tib_ptid = 1,
-      .tib_ctid = 1,
+  // enough tls to survive until it can be allocated properly. the two
+  // words after the tib are what the thread register points at
+  struct {
+    struct CosmoTib tib;
+    uintptr_t tp[2];
+  } boot = {
+      .tib =
+          {
+              .tib_self = &boot.tib,
+              .tib_self2 = &boot.tib,
+              .tib_sigmask = -1,
+              .tib_sigstack_size = 57344,
+              .tib_sigstack_addr =
+                  (char *)__builtin_frame_address(0) - 57344,
+              .tib_ptid = 1,
+              .tib_ctid = 1,
+          },
   };
-  __set_tls(&tib);
 
   // check for freebsd
   if (is_freebsd) {
@@ -160,6 +167,9 @@ wontreturn textstartup void cosmo(long *sp, struct Syslib *m1, char *exename,
     sys_write(2, "need newer ape loader\n", 22);
     _Exit(127);
   }
+
+  // enable tls, which on xnu needs the host's pthread keys
+  __set_tls(&boot.tib);
 
   // disable enosys trapping
   if (IsBsd()) {

@@ -188,6 +188,8 @@ $(LIBC_SYSV_MACHCALLS_A).pkg:				\
 # let aarch64 compile these
 o/$(MODE)/libc/sysv/gc.o: libc/sysv/gc.S
 	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) $<
+o/$(MODE)/libc/sysv/tlsasm.o: libc/sysv/tlsasm.S
+	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) $<
 o/$(MODE)/libc/sysv/syscon.o: libc/sysv/syscon.S
 	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) $<
 o/$(MODE)/libc/sysv/hostos.o: libc/sysv/hostos.S

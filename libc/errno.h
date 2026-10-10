@@ -123,12 +123,12 @@ COSMOPOLITAN_C_START_
 #if defined(__GNUC__) && defined(__aarch64__) && !defined(__cplusplus)
 /* this header is included by 700+ files; therefore we */
 /* hand-roll &__get_tls()->tib_errno to avoid #include */
-/* cosmopolitan uses x28 as the tls register b/c apple */
-#define errno                                       \
-  (*__extension__({                                 \
-    errno_t *__ep;                                  \
-    __asm__("sub\t%0,x28,#1024-0x3c" : "=r"(__ep)); \
-    __ep;                                           \
+/* tlscc turns the tpidr_el0 read into a __get_tls_xN call */
+#define errno                                                       \
+  (*__extension__({                                                 \
+    errno_t *__ep;                                                  \
+    __asm__("mrs\t%0, tpidr_el0\n\tsub\t%0,%0,#1024-0x34" : "=r"(__ep)); \
+    __ep;                                                           \
   }))
 #else
 #define errno (*__errno_location())

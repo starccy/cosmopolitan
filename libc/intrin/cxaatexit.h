@@ -23,6 +23,7 @@ void __cxa_unlock(void) dontthrow;
 void __cxa_thread_finalize(void) dontthrow;
 void __cxa_printexits(FILE *, void *) libcesque;
 int __cxa_thread_atexit_impl(void *, void *, void *);
+void __emutls_thread_finalize(void);
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_RUNTIME_CXAATEXIT_H_ */

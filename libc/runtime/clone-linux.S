@@ -65,7 +65,7 @@ sys_clone_linux:
 2:	beg
 	.cfi_undefined x30
 	mov	x29,#0			// wipe backtrace
-	mov	x28,x3			// set cosmo tls
+	msr	tpidr_el0,x3		// set cosmo tls
 	mov	x0,x6			// child thread
 	blr	x5
 	mov	x8,#93			// __NR_exit

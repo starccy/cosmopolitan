@@ -17,6 +17,8 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/intrin/getenv.h"
+#include "libc/intrin/hostlibc.h"
+#include "libc/intrin/weaken.h"
 #include "libc/intrin/strace.h"
 #include "libc/runtime/runtime.h"
 
@@ -31,6 +33,8 @@
 char *getenv(const char *s) {
   char **p;
   struct Env e;
+  if (__hostlibc.envsync && _weaken(__host_env_pull))
+    _weaken(__host_env_pull)();
   if (!(p = environ))
     return 0;
   e = __getenv(p, s);

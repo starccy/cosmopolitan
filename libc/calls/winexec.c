@@ -19,6 +19,7 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/dce.h"
+#include "libc/nt/enum/filemovemethod.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/events.h"
 #include "libc/nt/files.h"
@@ -58,11 +59,36 @@ textwindows int IsWindowsExecutableName(const char16_t *path) {
   // shaves away 100ms of gnu make latency in cosmo monorepo
   uint32_t ext;
   if (!IsTiny() && (ext = GetFileExtension(path))) {
-    if (ext == EXT("c") ||   // c code
-        ext == EXT("cc") ||  // c++ code
-        ext == EXT("h") ||   // c/c++ header
-        ext == EXT("s") ||   // assembly code
-        ext == EXT("o")) {   // object file
+    if (ext == EXT("c") ||      // c code
+        ext == EXT("cc") ||     // c++ code
+        ext == EXT("cpp") ||    // c++ code
+        ext == EXT("h") ||      // c/c++ header
+        ext == EXT("hpp") ||    // c++ header
+        ext == EXT("s") ||      // assembly code
+        ext == EXT("o") ||      // object file
+        ext == EXT("a") ||      // static library
+        ext == EXT("rs") ||     // rust code
+        ext == EXT("rlib") ||   // rust library
+        ext == EXT("md") ||     // markdown
+        ext == EXT("txt") ||    // text
+        ext == EXT("toml") ||   // config
+        ext == EXT("json") ||   // data
+        ext == EXT("yml") ||    // config
+        ext == EXT("yaml") ||   // config
+        ext == EXT("xml") ||    // data
+        ext == EXT("html") ||   // markup
+        ext == EXT("css") ||    // stylesheet
+        ext == EXT("lock") ||   // lock file
+        ext == EXT("log") ||    // log
+        ext == EXT("csv") ||    // data
+        ext == EXT("png") ||    // image
+        ext == EXT("jpg") ||    // image
+        ext == EXT("gif") ||    // image
+        ext == EXT("svg") ||    // image
+        ext == EXT("pdf") ||    // document
+        ext == EXT("zip") ||    // archive
+        ext == EXT("gz") ||     // archive
+        ext == EXT("tar")) {    // archive
       return 0;
     }
     if (ext == EXT("com") ||  // mz executable
@@ -87,11 +113,17 @@ textwindows int IsWindowsExecutable(int64_t handle, const char16_t *path) {
   intptr_t hEvent;
   if ((hEvent = CreateEventTls())) {
     uint32_t got;
+    int64_t pos;
     struct NtOverlapped overlap = {.hEvent = hEvent};
+    // a synchronous handle's file pointer is moved by the read, and it
+    // may be the one a host library or the c runtime reads through
+    bool32 keep = SetFilePointerEx(handle, 0, &pos, kNtFileCurrent);
     if (!ReadFile(handle, buf, 2, &got, &overlap) &&
         GetLastError() == kNtErrorIoPending) {
       GetOverlappedResult(handle, &overlap, &got, true);
     }
+    if (keep)
+      SetFilePointerEx(handle, pos, 0, kNtFileBegin);
     CloseEventTls(hEvent);
   }
   ALLOW_SIGNALS;

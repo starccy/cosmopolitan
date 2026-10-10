@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/cxxabi.h"
 #include "libc/intrin/cxaatexit.h"
+#include "libc/intrin/hostlibc.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/runtime/internal.h"
@@ -36,6 +37,8 @@
  * @see _Exit()
  * @noreturn
  */
+void __host_crt_exit(void);
+
 wontreturn void exit(int exitcode) {
   STRACE("exit(%d)", exitcode);
 
@@ -50,6 +53,12 @@ wontreturn void exit(int exitcode) {
   for (p = __fini_array_end; p > __fini_array_start;) {
     ((void (*)(void))(*--p))();
   }
+
+  // let the host libc cosmo_dlopen() loaded run its own handlers
+  if (__hostlibc.dual && _weaken(__host_exit))
+    _weaken(__host_exit)(exitcode);
+  if (__hostlibc.loaded && _weaken(__host_crt_exit))
+    _weaken(__host_crt_exit)();
 
   // terminate process
   _Exit(exitcode);

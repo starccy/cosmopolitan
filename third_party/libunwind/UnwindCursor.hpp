@@ -1306,6 +1306,10 @@ private:
   }
 #endif // defined(_LIBUNWIND_SUPPORT_TBTAB_UNWIND)
 
+#if defined(__COSMOPOLITAN__)
+  int hostFrame(bool step);
+#endif
+
   A               &_addressSpace;
   R                _registers;
   unw_proc_info_t  _info;
@@ -2885,11 +2889,53 @@ int UnwindCursor<A, R>::stepThroughSigReturn(Registers_s390x &) {
 #endif // defined(_LIBUNWIND_CHECK_LINUX_SIGRETURN) &&
        // defined(_LIBUNWIND_TARGET_S390X)
 
+#if defined(__COSMOPOLITAN__)
+// steps through a frame of a host library that has no table this
+// unwinder can read, see libc/dlopen/dlopen.c. the registers go in the
+// unwinder's numbering, up to rip on x86-64 and up to pc on arm64
+extern "C" int __unw_step_host(uint64_t *, int) __attribute__((__weak__));
+
+#if defined(__x86_64__)
+#define _LIBUNWIND_HOST_REGS 17
+#else
+#define _LIBUNWIND_HOST_REGS 33
+#endif
+
+// with `step` false, tells whether the frame the registers are in is a
+// host library's that can be stepped through. with `step` true, steps
+template <typename A, typename R>
+int UnwindCursor<A, R>::hostFrame(bool step) {
+  uint64_t r[_LIBUNWIND_HOST_REGS];
+  if (!__unw_step_host)
+    return 0;
+  for (int i = 0; i < _LIBUNWIND_HOST_REGS; ++i)
+    r[i] = _registers.getRegister(i);
+  if (__unw_step_host(r, step) <= 0)
+    return 0;
+  if (step)
+    for (int i = 0; i < _LIBUNWIND_HOST_REGS; ++i)
+      _registers.setRegister(i, r[i]);
+  return 1;
+}
+#endif
+
 template <typename A, typename R> int UnwindCursor<A, R>::step(bool stage2) {
   (void)stage2;
   // Bottom of stack is defined is when unwind info cannot be found.
-  if (_unwindInfoMissing)
+  if (_unwindInfoMissing) {
+#if defined(__COSMOPOLITAN__)
+    // a host library's frame. only walked, never unwound for real, since
+    // on arm64 the registers it saved can't be told
+    if (!stage2 && hostFrame(true)) {
+      // only ever set by the lookup, never cleared
+      _unwindInfoMissing = false;
+      this->setInfoBasedOnIPRegister(true);
+      if (!_unwindInfoMissing || hostFrame(false))
+        return UNW_STEP_SUCCESS;
+    }
+#endif
     return UNW_STEP_END;
+  }
 
   // Use unwinding info to modify register set as if function returned.
   int result;
@@ -2920,8 +2966,13 @@ template <typename A, typename R> int UnwindCursor<A, R>::step(bool stage2) {
   // update info based on new PC
   if (result == UNW_STEP_SUCCESS) {
     this->setInfoBasedOnIPRegister(true);
+#if defined(__COSMOPOLITAN__)
+    if (_unwindInfoMissing && (stage2 || !hostFrame(false)))
+      return UNW_STEP_END;
+#else
     if (_unwindInfoMissing)
       return UNW_STEP_END;
+#endif
   }
 
   return result;

@@ -147,7 +147,7 @@ struct Syslib {
 #define AT_GID                      13
 #define AT_EGID                     14
 #define AT_HWCAP                    16
-#define AT_HWCAP2                   16
+#define AT_HWCAP2                   26
 #define AT_SECURE                   23
 #define AT_RANDOM                   25
 #define AT_EXECFN                   31
@@ -1065,7 +1065,7 @@ int main(int argc, char **argv, char **envp) {
     Emit("usage: ape   PROG [ARGV1,ARGV2,...]\n"
          "       ape - PROG [ARGV0,ARGV1,...]\n"
          "         PROG.ape [ARGV1,ARGV2,...]\n"
-         "actually portable executable loader silicon 1.10\n"
+         "actually portable executable loader silicon 1.11\n"
          "copyrights 2023 justine alexandra roberts tunney\n"
          "https://justine.lol/ape.html\n");
     _exit(1);

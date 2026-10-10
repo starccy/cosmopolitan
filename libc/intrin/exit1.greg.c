@@ -69,6 +69,9 @@ wontreturn void _Exit1(int rc) {
       __builtin_unreachable();
     }
   } else if (IsWindows()) {
+    struct CosmoTib *tib = __get_tls_win32();
+    if (tib && tib->tib_ntstack[1])
+      __set_stack_win32(tib->tib_ntstack);
     __imp_ExitThread(rc);
     __builtin_unreachable();
   }

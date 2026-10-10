@@ -47,24 +47,28 @@ static void _pthread_unkey(struct CosmoTib *tib) {
   for (int j = 0; j < PTHREAD_DESTRUCTOR_ITERATIONS; ++j) {
     bool gotsome = false;
     for (pthread_key_t i = 0; i < PTHREAD_KEYS_MAX; ++i) {
-      void *val;
+      void **slot;
       if (i < PTHREAD_KEYS_FAST) {
-        val = tib->tib_keys_static[i];
-        tib->tib_keys_static[i] = 0;
+        slot = &tib->tib_keys_static[i];
       } else {
         if (!tib->tib_keys_dynamic)
           break;
-        val = tib->tib_keys_dynamic[i - PTHREAD_KEYS_FAST];
-        tib->tib_keys_dynamic[i - PTHREAD_KEYS_FAST] = 0;
+        slot = &tib->tib_keys_dynamic[i - PTHREAD_KEYS_FAST];
       }
+      // a key without a destructor keeps its value, so a destructor of
+      // another key that runs later can still read it (rust's thread
+      // handle lives in such a key and is released by the destructor of
+      // another one)
+      pthread_key_dtor dtor =
+          atomic_load_explicit(&_pthread_key_dtor[i], memory_order_acquire);
+      if (!dtor || dtor == (pthread_key_dtor)-1)
+        continue;
+      void *val = *slot;
       if (val) {
+        *slot = 0;
         gotsome = true;
-        pthread_key_dtor dtor =
-            atomic_load_explicit(&_pthread_key_dtor[i], memory_order_acquire);
-        if (dtor && dtor != (pthread_key_dtor)-1) {
-          STRACE("pthread_key_dtor(%t, %p)", dtor, val);
-          dtor(val);
-        }
+        STRACE("pthread_key_dtor(%t, %p)", dtor, val);
+        dtor(val);
       }
     }
     if (!gotsome) {
@@ -99,14 +103,9 @@ void __cxa_thread_finalize(void) {
   //  pushed and then executed." ──Quoth POSIX.1-2017
   _pthread_unwind(tib);
 
-  // "After all cancellation cleanup handlers have been executed, if the
-  //  thread has any thread-specific data, appropriate destructor
-  //  functions shall be called in an unspecified order."
-  //                              ──Quoth POSIX.1-2017
-  _pthread_unkey(tib);
-  _pthread_ungarbage(tib);
-
-  // call user-specified callbacks
+  // thread_local destructors registered through __cxa_thread_atexit
+  // run before the key destructors, as glibc has it, so one can still
+  // use what a key holds (rust's thread handle, say)
   while ((dtor = tib->tib_atexit)) {
     STRACE("__cxa_finalize(%t, %p)", dtor->fun, dtor->arg);
     tib->tib_atexit = dtor->next;
@@ -114,6 +113,15 @@ void __cxa_thread_finalize(void) {
     _weaken(free)(dtor);
   }
 
+  // "After all cancellation cleanup handlers have been executed, if the
+  //  thread has any thread-specific data, appropriate destructor
+  //  functions shall be called in an unspecified order."
+  //                              ──Quoth POSIX.1-2017
+  _pthread_unkey(tib);
+  _pthread_ungarbage(tib);
+
+  if (_weaken(__emutls_thread_finalize))
+    _weaken(__emutls_thread_finalize)();
   // get rid of cached win32 event handles
   if (IsWindows()) {
     for (int i = 0; i < ARRAYLEN(tib->tib_events); ++i) {

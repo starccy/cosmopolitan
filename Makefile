@@ -155,9 +155,7 @@ DOWNLOAD := $(shell build/download-cosmocc.sh $(COSMOCC) 3.9.2 f4ff13af65fcd309f
 
 IGNORE := $(shell $(MKDIR) $(TMPDIR))
 
-ifeq ($(ARCH), x86_64)
 TLSCC = build/bootstrap/tlscc
-endif
 
 AS = $(TOOLCHAIN)as
 CC = $(TLSCC) $(TOOLCHAIN)gcc
@@ -263,12 +261,12 @@ include libc/mem/BUILD.mk			#─┐
 include third_party/gdtoa/BUILD.mk		# ├──DYNAMIC RUNTIME
 include third_party/nsync/mem/BUILD.mk		# │  You can now use stdio
 include libc/proc/BUILD.mk			# │  You can now use threads
-include libc/dlopen/BUILD.mk			# │  You can now use processes
 include third_party/libunwind/BUILD.mk		# |  You can finally call malloc()
 include libc/thread/BUILD.mk			# │
 include third_party/zlib/BUILD.mk		# │
 include third_party/haclstar/BUILD.mk		# │
 include libc/stdio/BUILD.mk			# │
+include libc/dlopen/BUILD.mk			# │
 include tool/hello/BUILD.mk			# │
 include third_party/tz/BUILD.mk			# │
 include net/BUILD.mk				# │
@@ -278,6 +276,7 @@ include third_party/getopt/BUILD.mk		# │
 include third_party/bzip2/BUILD.mk		# │
 include dsp/core/BUILD.mk			# │
 include third_party/zlib/gz/BUILD.mk		# │
+include third_party/libffi/BUILD.mk		# │
 include third_party/intel/BUILD.mk		# │
 include third_party/aarch64/BUILD.mk		# │
 include libc/BUILD.mk				#─┘
@@ -497,6 +496,7 @@ COSMOPOLITAN =				\
 	THIRD_PARTY_GDTOA		\
 	THIRD_PARTY_GETOPT		\
 	THIRD_PARTY_LIBCXXABI		\
+	THIRD_PARTY_LIBFFI		\
 	THIRD_PARTY_LIBUNWIND		\
 	THIRD_PARTY_MUSL		\
 	THIRD_PARTY_NSYNC		\
@@ -540,6 +540,7 @@ COSMOPOLITAN_H_PKGS =			\
 	THIRD_PARTY_DLMALLOC		\
 	THIRD_PARTY_GDTOA		\
 	THIRD_PARTY_GETOPT		\
+	THIRD_PARTY_LIBFFI		\
 	THIRD_PARTY_MUSL		\
 	THIRD_PARTY_ZLIB		\
 	THIRD_PARTY_ZLIB_GZ		\

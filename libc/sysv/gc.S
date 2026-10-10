@@ -40,7 +40,7 @@ __gc:	beg
 #if SupportsXnu() || SupportsWindows()
 	call	__get_tls_rcx
 #else
-	mov	%fs:0x30,%rcx
+	mov	%fs:0x38,%rcx
 #endif
 	mov	0x48(%rcx),%rcx			// tls::garbages
 	decl	(%rcx)				// --g->i
@@ -70,7 +70,10 @@ __gc:	beg
 
 //	if this code fails
 //	check if CosmoTib's size changed
-	sub	x8,x28,#1024			// __get_tls()
+	str	x30,[sp,#-16]!
+	bl	__get_tls_x8			// see libc/sysv/tlsasm.S
+	ldr	x30,[sp],#16
+	sub	x8,x8,#1024			// __get_tls()
 	ldr	x9,[x8,0x48]			// tib::garbages
 	ldr	x10,[x9]			// g->i
 	ldr	x8,[x9,8]			// g->p

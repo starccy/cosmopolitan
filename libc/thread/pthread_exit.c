@@ -25,6 +25,7 @@
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/cxaatexit.h"
 #include "libc/intrin/describebacktrace.h"
+#include "libc/intrin/hostlibc.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/limits.h"
@@ -81,6 +82,14 @@ wontreturn void pthread_exit(void *rc) {
   // get posix thread object
   tib = __get_tls();
   pt = (struct PosixThread *)tib->tib_pthread;
+
+  // a thread the host created ends through the host's pthread_exit();
+  // cosmo's state for it is cleaned up when the host runs its key
+  // destructor, see libc/thread/adopt.c
+  if ((pt->pt_flags & PT_ADOPTED) && _weaken(__tls_adopt_exit)) {
+    pt->pt_val = rc;
+    _weaken(__tls_adopt_exit)(rc);
+  }
 
   // "The behavior of pthread_exit() is undefined if called from a
   //  cancellation cleanup handler or destructor function that was
@@ -145,6 +154,8 @@ wontreturn void pthread_exit(void *rc) {
   if (!population) {
     for (int i = __fini_array_end - __fini_array_start; i--;)
       ((void (*)(void))__fini_array_start[i])();
+    if (__hostlibc.dual && _weaken(__host_exit))
+      _weaken(__host_exit)(0);
     _Exit(0);
   }
 

@@ -22,12 +22,75 @@
 #define SIZE 0x0200
 #define SKEW 0x10
 
+	.section .text.tpidr_raw,"ax",@progbits
 foreign_tramp:
+	.cfi_startproc
 
 #ifdef __x86_64__
 
+//	once the host glibc is loaded every thread can run with the host's
+//	thread block, see libc/thread/hostthread.c. a cosmo tib has itself
+//	at 0x00 and 0x38, a host thread block has itself at 0x00 and our
+//	tib at 0x38
+	cmpb	$0,__hostlibc+4(%rip)	// HostLibc::dual
+	je	.Lswitch
+	mov	%fs:0,%r10
+	cmp	%fs:0x38,%r10
+	je	.Lenter
+	jmp	*%r11
+.Lenter:
+	.cfi_remember_state
 	push	%rbp
+	.cfi_def_cfa_offset 16
+	.cfi_offset %rbp,-16
 	mov	%rsp,%rbp
+	.cfi_def_cfa_register %rbp
+	sub	$0xc0,%rsp
+	movdqu	%xmm0,0x00(%rsp)
+	movdqu	%xmm1,0x10(%rsp)
+	movdqu	%xmm2,0x20(%rsp)
+	movdqu	%xmm3,0x30(%rsp)
+	movdqu	%xmm4,0x40(%rsp)
+	movdqu	%xmm5,0x50(%rsp)
+	movdqu	%xmm6,0x60(%rsp)
+	movdqu	%xmm7,0x70(%rsp)
+	mov	%rdi,0x80(%rsp)
+	mov	%rsi,0x88(%rsp)
+	mov	%rdx,0x90(%rsp)
+	mov	%rcx,0x98(%rsp)
+	mov	%r8,0xa0(%rsp)
+	mov	%r9,0xa8(%rsp)
+	mov	%rax,0xb0(%rsp)
+	mov	%r11,0xb8(%rsp)
+	call	__host_enter
+	movdqu	0x00(%rsp),%xmm0
+	movdqu	0x10(%rsp),%xmm1
+	movdqu	0x20(%rsp),%xmm2
+	movdqu	0x30(%rsp),%xmm3
+	movdqu	0x40(%rsp),%xmm4
+	movdqu	0x50(%rsp),%xmm5
+	movdqu	0x60(%rsp),%xmm6
+	movdqu	0x70(%rsp),%xmm7
+	mov	0x80(%rsp),%rdi
+	mov	0x88(%rsp),%rsi
+	mov	0x90(%rsp),%rdx
+	mov	0x98(%rsp),%rcx
+	mov	0xa0(%rsp),%r8
+	mov	0xa8(%rsp),%r9
+	mov	0xb0(%rsp),%rax
+	mov	0xb8(%rsp),%r11
+	leave
+	.cfi_def_cfa %rsp,8
+	jmp	*%r11
+	.cfi_restore_state
+	.weak	__host_enter
+
+.Lswitch:
+	push	%rbp
+	.cfi_def_cfa_offset 16
+	.cfi_offset %rbp,-16
+	mov	%rsp,%rbp
+	.cfi_def_cfa_register %rbp
 	sub	$SIZE,%rsp
 
 //	save vector arguments
@@ -48,8 +111,9 @@ foreign_tramp:
 	mov	%r8,-0xa8(%rbp)
 	mov	%r9,-0xb0(%rbp)
 
-//	save function pointer
-	mov	%rax,-0xb8(%rbp)
+//	save function pointer, and %al for a variadic callee
+	mov	%r11,-0xb8(%rbp)
+	mov	%rax,-0xd0(%rbp)
 
 //	block signals
 	call	__sig_block
@@ -59,7 +123,7 @@ foreign_tramp:
 #if SupportsXnu() || SupportsWindows()
 	call	__get_tls_rax
 #else
-	mov	%fs:0x30,%rax
+	mov	%fs:0x38,%rax
 #endif
 	mov	%rax,-0xc8(%rbp)
 	mov	__foreign+8(%rip),%rdi
@@ -118,8 +182,8 @@ foreign_tramp:
 	mov	-0xb0(%rbp),%r9
 
 //	call function
-	mov	-0xb8(%rbp),%rax
-	call	*%rax
+	mov	-0xd0(%rbp),%rax
+	call	*-0xb8(%rbp)
 
 //	save function result
 	movdqu	%xmm0,-0x10(%rbp)
@@ -143,12 +207,70 @@ foreign_tramp:
 
 	add	$SIZE,%rsp
 	pop	%rbp
+	.cfi_def_cfa %rsp,8
 	ret
 
 #elif defined(__aarch64__)
 
-	stp	x29,x30,[sp,-0x100]!
+//	the thread register is the host's on xnu. on linux, once the host
+//	glibc is loaded, a thread runs with a host thread block whose second
+//	word is our tib; a cosmo thread's register points just past its tib
+	adrp	x9,__hostos
+	ldr	w9,[x9,#:lo12:__hostos]
+	tbnz	w9,#3,.Ldirect			// _HOSTXNU
+	adrp	x9,__hostlibc
+	add	x9,x9,#:lo12:__hostlibc
+	ldrb	w9,[x9,#4]			// HostLibc::dual
+	cbz	w9,.Lswitch
+	mrs	x9,tpidr_el0
+	ldr	x10,[x9,#8]
+	add	x10,x10,#1024
+	cmp	x9,x10
+	b.eq	.Lenter
+.Ldirect:
+	br	x16
+.Lenter:
+	.cfi_remember_state
+	stp	x29,x30,[sp,#-0xe0]!
+	.cfi_def_cfa_offset 0xe0
+	.cfi_offset x29,-0xe0
+	.cfi_offset x30,-0xd8
 	mov	x29,sp
+	.cfi_def_cfa_register x29
+	stp	q0,q1,[sp,#0x10]
+	stp	q2,q3,[sp,#0x30]
+	stp	q4,q5,[sp,#0x50]
+	stp	q6,q7,[sp,#0x70]
+	stp	x0,x1,[sp,#0x90]
+	stp	x2,x3,[sp,#0xa0]
+	stp	x4,x5,[sp,#0xb0]
+	stp	x6,x7,[sp,#0xc0]
+	stp	x8,x16,[sp,#0xd0]
+	bl	__host_enter
+	ldp	q0,q1,[sp,#0x10]
+	ldp	q2,q3,[sp,#0x30]
+	ldp	q4,q5,[sp,#0x50]
+	ldp	q6,q7,[sp,#0x70]
+	ldp	x0,x1,[sp,#0x90]
+	ldp	x2,x3,[sp,#0xa0]
+	ldp	x4,x5,[sp,#0xb0]
+	ldp	x6,x7,[sp,#0xc0]
+	ldp	x8,x16,[sp,#0xd0]
+	ldp	x29,x30,[sp],#0xe0
+	.cfi_def_cfa sp,0
+	.cfi_restore x29
+	.cfi_restore x30
+	br	x16
+	.cfi_restore_state
+	.weak	__host_enter
+
+.Lswitch:
+	stp	x29,x30,[sp,-0x100]!
+	.cfi_def_cfa_offset 0x100
+	.cfi_offset x29,-0x100
+	.cfi_offset x30,-0xf8
+	mov	x29,sp
+	.cfi_def_cfa_register x29
 
 //	save vector arguments
 	stp	q0,q1,[sp,0x10]
@@ -162,12 +284,20 @@ foreign_tramp:
 	stp	x4,x5,[sp,0xb0]
 	stp	x6,x7,[sp,0xc0]
 
-//	save function pointer
-	str	x8,[sp,0xd0]
+//	save function pointer, and x8 for a callee returning a struct
+	str	x16,[sp,0xd0]
+	str	x8,[sp,0xe8]
 
 //	block signals
 	bl	__sig_block
 	str	x0,[sp,0xd8]
+
+//	switch to the host thread block
+	mrs	x9,tpidr_el0
+	str	x9,[sp,0xe0]
+	adrp	x9,__foreign
+	ldr	x9,[x9,#:lo12:__foreign+8]
+	msr	tpidr_el0,x9
 
 //	move stack arguments
 	sub	sp,sp,#0x100
@@ -201,8 +331,9 @@ foreign_tramp:
 	ldp	x6,x7,[sp,0x100+0xc0]
 
 //	call function
-	ldr	x8,[sp,0x100+0xd0]
-	blr	x8
+	ldr	x16,[sp,0x100+0xd0]
+	ldr	x8,[sp,0x100+0xe8]
+	blr	x16
 	add	sp,sp,#0x100
 
 //	save vector results
@@ -216,6 +347,10 @@ foreign_tramp:
 	stp	x2,x3,[sp,0xa0]
 	stp	x4,x5,[sp,0xb0]
 	stp	x6,x7,[sp,0xc0]
+
+//	switch back to our thread register
+	ldr	x9,[sp,0xe0]
+	msr	tpidr_el0,x9
 
 //	unblock signals
 	ldr	x0,[sp,0xd8]
@@ -234,8 +369,12 @@ foreign_tramp:
 	ldp	x6,x7,[sp,0xc0]
 
 	ldp	x29,x30,[sp],0x100
+	.cfi_def_cfa sp,0
+	.cfi_restore x29
+	.cfi_restore x30
 	ret
 
 #endif // __x86_64__
 
+	.cfi_endproc
 	.endfn	foreign_tramp,globl

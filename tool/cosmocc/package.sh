@@ -339,7 +339,7 @@ for arch in $AMD64 $ARM64; do
   cp -f o/$arch-optlinux/third_party/libcxx/libcxx.a "$OUTDIR/$arch-linux-cosmo/lib/optlinux/"
   cp -f o/$arch-tinylinux/third_party/libcxx/libcxx.a "$OUTDIR/$arch-linux-cosmo/lib/tinylinux/"
 
-  for lib in c dl gcc_s m crypt pthread resolv rt dl unwind gomp stdc++; do
+  for lib in c dl gcc_s m crypt pthread resolv rt dl unwind gomp stdc++ ffi; do
     printf '\041\074\141\162\143\150\076\012' >"$OUTDIR/$arch-linux-cosmo/lib/lib$lib.a"
   done
   mkdir -p "$OUTDIR/lib/gcc/"

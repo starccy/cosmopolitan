@@ -23,12 +23,43 @@
 #include "libc/nexgen32e/msr.internal.h"
 #include "libc/nt/thread.h"
 #include "libc/sysv/consts/arch.h"
+#include "libc/intrin/weaken.h"
+#include "libc/runtime/runtime.h"
+#include "libc/runtime/syslib.internal.h"
 #include "libc/thread/tls.h"
 
 #define AMD64_SET_FSBASE 129
 #define AMD64_SET_GSBASE 131
 
 int sys_set_tls(uintptr_t, void *);
+
+#ifdef __aarch64__
+
+static int (*__tls_setspecific)(unsigned long, const void *);
+
+// our tib's tsd slot is a libSystem pthread key, whose destructor is
+// how threads the host created get cleaned up after, see adopt.c
+dontinstrument static void __tls_init_xnu(void) {
+  unsigned long key;
+  int (*key_create)(unsigned long *, void (*)(void *)) =
+      __syslib->__dlsym((void *)-2, "pthread_key_create");
+  __tls_setspecific = __syslib->__dlsym((void *)-2, "pthread_setspecific");
+  void (*dtor)(void *) = _weaken(__tls_adopt_xnu_exit);
+  if (!key_create || !__tls_setspecific || key_create(&key, dtor))
+    notpossible;
+  __tls_slot_offset = key * sizeof(void *);
+}
+
+// writes the calling thread's tib to its tsd slot. this goes through
+// libSystem rather than tpidrro_el0, since libSystem only runs the key
+// destructors up to the highest key a thread has set that way
+dontinstrument void __tls_set_xnu(struct CosmoTib *tib) {
+  if (!__tls_slot_offset)
+    __tls_init_xnu();
+  __tls_setspecific(__tls_slot_offset / sizeof(void *), tib);
+}
+
+#endif /* __aarch64__ */
 
 // we can't allow --ftrace here because cosmo_dlopen() calls this
 // function to fix the tls register, and ftrace needs it unbroken
@@ -60,8 +91,13 @@ dontinstrument textstartup void __set_tls(struct CosmoTib *tib) {
                    "d"((uint32_t)(val >> 32)));
   }
 #elif defined(__aarch64__)
-  register long x28 asm("x28") = (long)tib;
-  asm volatile("" : "+r"(x28));
+  // the word after the tib holds its address, see libc/sysv/tlsasm.S
+  ((struct CosmoTib **)tib)[1] = tib - 1;
+  if (IsXnu()) {
+    __tls_set_xnu(tib - 1);
+  } else {
+    asm volatile("msr\ttpidr_el0,%0" : /* no outputs */ : "r"(tib) : "memory");
+  }
 #else
 #error "unsupported architecture"
 #endif

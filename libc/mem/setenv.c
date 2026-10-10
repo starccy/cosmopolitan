@@ -17,7 +17,9 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/cosmo.h"
+#include "libc/intrin/hostlibc.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
 #include "libc/mem/internal.h"
 #include "libc/mem/mem.h"
 #include "libc/runtime/runtime.h"
@@ -39,9 +41,14 @@ int setenv(const char *name, const char *value, int overwrite) {
   size_t n, m;
   if (!name || !*name || !value || strchr(name, '='))
     return einval();
+  if (__hostlibc.envsync && _weaken(__host_env_pull))
+    _weaken(__host_env_pull)();
   if ((s = cosmo_permalloc((n = strlen(name)) + 1 + (m = strlen(value)) + 1))) {
     memcpy(mempcpy(mempcpy(s, name, n), "=", 1), value, m + 1);
     rc = __putenv(s, overwrite);
+    if (!rc && (__hostlibc.dual || __hostlibc.envsync) &&
+        _weaken(__host_setenv))
+      _weaken(__host_setenv)(name, getenv(name));
   } else {
     rc = -1;
   }

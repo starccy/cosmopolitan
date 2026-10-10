@@ -90,6 +90,8 @@ struct PosixThread {
   pthread_attr_t pt_attr;
   atomic_bool pt_intoff;
   char pt_name[64];  // xnu: the kernel has no read-back for a name
+  void *pt_buddy;    // parked host thread whose tcb we borrowed
+  struct Dll pt_reap;
 };
 
 typedef void (*atfork_f)(void);
@@ -106,6 +108,8 @@ intptr_t _pthread_syshand(struct PosixThread *) libcesque;
 long _pthread_cancel_ack(void) libcesque;
 void _pthread_decimate(enum PosixThreadStatus) dontthrow;
 void _pthread_free(struct PosixThread *) libcesque paramsnonnull();
+void __tls_adopt_free(struct PosixThread *) libcesque;
+void __host_leave(struct PosixThread *) libcesque;
 void _pthread_lock(void) dontthrow;
 void _pthread_onfork_child(void) dontthrow;
 void _pthread_onfork_parent(void) dontthrow;

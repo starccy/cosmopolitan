@@ -50,6 +50,10 @@
 #include "libc/thread/tls.h"
 #include "third_party/make/gnumake.h"
 
+#ifdef __x86_64__
+extern uintptr_t __winmain_ntstack[3];
+#endif
+
 #define I(x) ((uintptr_t)x)
 
 extern unsigned char __tls_mov_nt_rax[];
@@ -208,7 +212,7 @@ textstartup void __enable_tls(void) {
   // @see musl/src/env/__init_tls.c
   // @see https://chao-tic.github.io/blog/2018/12/25/tls
   dtv[0] = 1;
-  dtv[1] = (uintptr_t)tdata;
+  dtv[1] = (uintptr_t)tib;  // the thread register points at dtv, see tlsasm.S
 
 #else
 #error "unsupported architecture"
@@ -227,6 +231,9 @@ textstartup void __enable_tls(void) {
                     GetCurrentProcess(), &hThread, 0, false,
                     kNtDuplicateSameAccess);
     atomic_init(&tib->tib_syshand, hThread);
+#ifdef __x86_64__
+    memcpy(tib->tib_ntstack, __winmain_ntstack, sizeof(__winmain_ntstack));
+#endif
   } else if (IsXnuSilicon()) {
     tib->tib_syshand = __syslib->__pthread_self();
   }

@@ -30,6 +30,10 @@
 //	@note	thunk that jumps here must setup frame
 //	@note	this is so much faster than __nt2sysv()
 __sysv2nt14:
+	.cfi_startproc
+//	the thunk that jumped here pushed %rbp and made it the frame
+	.cfi_def_cfa %rbp,16
+	.cfi_offset %rbp,-16
 	pushq	72(%rbp)
 	pushq	64(%rbp)
 	.type	__sysv2nt14,@function
@@ -72,10 +76,15 @@ __sysv2nt:
 	sub	$32,%rsp
 	call	*%rax
 	leave
+	.cfi_def_cfa %rsp,8
 	ret
+	.cfi_endproc
 	.type	__sysv2nt,@function
 	.size	__sysv2nt,.-__sysv2nt
 	.globl	__sysv2nt
 	.hidden	__sysv2nt
+	.globl	__sysv2nt_end
+	.hidden	__sysv2nt_end
+__sysv2nt_end:
 
 #endif /* __x86_64__ */

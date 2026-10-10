@@ -270,6 +270,13 @@ int DwarfInstructions<A, R>::stepWithDwarf(A &addressSpace, pint_t pc,
             newRegisters.setRegister(
                 i, getSavedRegister(addressSpace, registers, cfa,
                                     prolog.savedRegisters[i]));
+#if defined(__COSMOPOLITAN__) && defined(_LIBUNWIND_TARGET_X86_64)
+          // xmm6-xmm15, which a function taking microsoft's convention
+          // saves before it calls one taking ours. they aren't kept here,
+          // so the caller's frame is found but its xmm registers aren't
+          else if (R::getArch() == REGISTERS_X86_64 && i >= 17 && i <= 32)
+            continue;
+#endif
           else
             return UNW_EBADREG;
         } else if (i == (int)cieInfo.returnAddressRegister) {

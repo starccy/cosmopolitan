@@ -346,6 +346,61 @@ void __unw_remove_dynamic_eh_frame_section(unw_word_t eh_frame_start) {
       (LocalAddressSpace::pint_t)eh_frame_start);
 }
 
+#if defined(__x86_64__)
+#include "libc/dlopen/ntunwind.internal.h"
+
+// the frame layout at `pc` in this program's own code, from its
+// .eh_frame, for libc/dlopen/ntunwind.c: 1 with `out` filled, 0 if no
+// FDE covers pc, -1 if the layout can't be put in those terms
+extern "C" int __unw_frame_info(uintptr_t pc, struct UnwFrame *out) {
+  typedef CFI_Parser<LocalAddressSpace> P;
+  LocalAddressSpace &as = LocalAddressSpace::sThisAddressSpace;
+  LocalAddressSpace::pint_t start = (LocalAddressSpace::pint_t)&__eh_frame_start;
+  size_t len = (size_t)(&__eh_frame_end - &__eh_frame_start);
+  P::FDE_Info fde;
+  P::CIE_Info cie;
+  bool found = false, cached = false;
+  LocalAddressSpace::pint_t hint =
+      DwarfFDECache<LocalAddressSpace>::findFDE(0, pc);
+  if (hint) {
+    found = P::findFDE(as, pc, start, len, hint, &fde, &cie);
+    cached = found;
+  }
+  if (!found)
+    found = P::findFDE(as, pc, start, len, 0, &fde, &cie);
+  if (!found)
+    return 0;
+  if (!cached)
+    DwarfFDECache<LocalAddressSpace>::add(0, fde.pcStart, fde.pcEnd,
+                                          fde.fdeStart);
+  P::PrologInfo prolog;
+  if (!P::parseFDEInstructions(as, fde, cie, pc, REGISTERS_X86_64, &prolog))
+    return -1;
+  if (prolog.cfaRegister != 6 && prolog.cfaRegister != 7)
+    return -1;
+  out->begin = fde.pcStart;
+  out->end = fde.pcEnd;
+  out->cfa_reg = (int)prolog.cfaRegister;
+  out->cfa_off = prolog.cfaRegisterOffset;
+  out->mask = 0;
+  for (int r = 0; r <= 32; ++r) {
+    out->saved[r] = 0;
+    switch (prolog.savedRegisters[r].location) {
+      case P::kRegisterUnused:
+      case P::kRegisterUndefined:
+        break;
+      case P::kRegisterInCFA:
+        out->saved[r] = prolog.savedRegisters[r].value;
+        out->mask |= 1ull << r;
+        break;
+      default:
+        return -1;
+    }
+  }
+  return 1;
+}
+#endif
+
 #endif // defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND)
 #endif // !defined(__USING_SJLJ_EXCEPTIONS__)
 

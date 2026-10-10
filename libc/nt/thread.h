@@ -58,6 +58,10 @@ bool32 CancelIoEx(int64_t hFile, struct NtOverlapped *opt_lpOverlapped);
 uint32_t TlsAlloc(void);
 bool32 TlsFree(uint32_t);
 bool32 TlsSetValue(uint32_t, void *);
+uint32_t FlsAlloc(void *);  // callback must be __msabi
+bool32 FlsFree(uint32_t);
+void *FlsGetValue(uint32_t);
+bool32 FlsSetValue(uint32_t, void *);
 void *TlsGetValue(uint32_t);
 
 uint32_t SuspendThread(int64_t hThread);

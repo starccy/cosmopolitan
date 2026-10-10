@@ -19,35 +19,53 @@
 #include "libc/dlopen/dlfcn.h"
 #include "libc/intrin/strace.h"
 
-#define DLOPEN_ERROR \
-  "dlopen() isn't supported; consider using cosmo_dlopen() and read its docs"
+// in a separate file from dlopen(), so that a program which only looks
+// symbols up, like Rust's std does for weak ones, doesn't pull the host
+// library loader in with it
 
-/**
- * Opens dynamic shared object using host platform libc.
- *
- * Cosmo's `dlopen()` function is a stub that always returns NULL. An
- * alternative `cosmo_dlopen()` implementation is provided, which can
- * help some users with tasks like talking to GPU and GUI libraries.
- *
- * @return null always
- */
-void *dlopen(const char *path, int mode) {
-  STRACE("dlopen(%#s, %d) → 0 [%s]", path, mode, DLOPEN_ERROR);
-  return 0;
-}
+#define DLOPEN_ERROR "dlopen() wasn't linked into this program"
+
+void *__dlsym_plain(void *, const char *) __attribute__((__weak__));
+void *__dlsym_global(const char *, bool) __attribute__((__weak__));
+
+// what dlopen(NULL) returns
+char __dlopen_self[1];
+char *cosmo_dlerror(void) __attribute__((__weak__));
 
 int dlinfo(void *addr, int req, void *info) {
   return -1;
 }
 
+/**
+ * Returns string describing last dlopen/dlsym/dlclose error.
+ */
 char *dlerror(void) {
+  if (cosmo_dlerror)
+    return cosmo_dlerror();
   return DLOPEN_ERROR;
 }
 
-void *dlsym(void *, const char *) {
-  return 0;
-}
-
-int dlclose(void *) {
-  return -1;
+/**
+ * Looks up symbol in a library dlopen() returned.
+ *
+ * A function comes back ready to be called, see cosmo_dltramp().
+ *
+ * `RTLD_DEFAULT`, and the handle dlopen(NULL) returns, look through the
+ * functions cosmo_dlexport() made known and then the libraries opened
+ * with `RTLD_GLOBAL`, each for its own symbols only. `RTLD_NEXT` does
+ * the same without the first part. The rest of this program can't be
+ * found, since it has no dynamic symbol table, and neither can the host
+ * libc, whose functions would bypass ours.
+ */
+void *dlsym(void *handle, const char *name) {
+  void *res = 0;
+  if (handle == RTLD_DEFAULT || handle == RTLD_NEXT ||
+      handle == __dlopen_self) {
+    if (__dlsym_global)
+      res = __dlsym_global(name, handle == RTLD_NEXT);
+  } else if (__dlsym_plain) {
+    res = __dlsym_plain(handle, name);
+  }
+  STRACE("dlsym(%p, %#s) → %p", handle, name, res);
+  return res;
 }

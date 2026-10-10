@@ -25,13 +25,15 @@
 │  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                      │
 │                                                                              │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/intrin/hostlibc.h"
+#include "libc/intrin/weaken.h"
 #include "libc/str/str.h"
 #include "libc/str/locale.internal.h"
 __static_yoink("musl_libc_notice");
 
 static char buf[LC_ALL*(LOCALE_NAME_MAX+1)];
 
-char *setlocale(int cat, const char *name)
+static char *setlocale_impl(int cat, const char *name)
 {
 	const struct __locale_map *lm;
 
@@ -99,4 +101,12 @@ char *setlocale(int cat, const char *name)
 	pthread_mutex_unlock(&__locale_lock);
 
 	return ret;
+}
+
+char *setlocale(int cat, const char *name)
+{
+	char *res = setlocale_impl(cat, name);
+	if (res && name && __hostlibc.dual && _weaken(__host_setlocale))
+		_weaken(__host_setlocale)(cat, name);
+	return res;
 }

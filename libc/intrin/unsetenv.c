@@ -16,6 +16,8 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/intrin/hostlibc.h"
+#include "libc/intrin/weaken.h"
 #include "libc/runtime/runtime.h"
 #include "libc/str/str.h"
 #include "libc/sysv/errfuns.h"
@@ -32,9 +34,11 @@ int unsetenv(const char *name) {
 
   if (!name || !*name || strchr(name, '='))
     return einval();
+  if (__hostlibc.envsync && _weaken(__host_env_pull))
+    _weaken(__host_env_pull)();
 
   long k = 0;
-  for (long i = 0; environ[i]; ++i) {
+  for (long i = 0; environ && environ[i]; ++i) {
     bool matches = false;
     for (long j = 0;; ++j) {
       if (!name[j]) {
@@ -47,7 +51,10 @@ int unsetenv(const char *name) {
     if (!matches)
       environ[k++] = environ[i];
   }
-  environ[k] = 0;
+  if (environ)
+    environ[k] = 0;
 
+  if ((__hostlibc.dual || __hostlibc.envsync) && _weaken(__host_setenv))
+    _weaken(__host_setenv)(name, 0);
   return 0;
 }

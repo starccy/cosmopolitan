@@ -18,6 +18,8 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/cosmo.h"
 #include "libc/intrin/getenv.h"
+#include "libc/intrin/hostlibc.h"
+#include "libc/intrin/weaken.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/strace.h"
 #include "libc/macros.h"
@@ -96,7 +98,17 @@ int __putenv(char *s, bool overwrite) {
 int putenv(char *s) {
   int rc;
   if (s && *s != '=' && strchr(s, '=')) {
+    if (__hostlibc.envsync && _weaken(__host_env_pull))
+      _weaken(__host_env_pull)();
     rc = __putenv(s, true);
+    if (!rc && (__hostlibc.dual || __hostlibc.envsync) &&
+        _weaken(__host_setenv)) {
+      size_t n = strchr(s, '=') - s;
+      char name[n + 1];
+      memcpy(name, s, n);
+      name[n] = 0;
+      _weaken(__host_setenv)(name, s + n + 1);
+    }
   } else {
     rc = einval();
   }

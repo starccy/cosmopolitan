@@ -19,6 +19,7 @@
 #include "libc/calls/calls.h"
 #include "libc/calls/struct/sigaction.h"
 #include "libc/calls/struct/sigset.h"
+#include "libc/fmt/conv.h"
 #include "libc/fmt/libgen.h"
 #include "libc/limits.h"
 #include "libc/macros.h"
@@ -203,6 +204,79 @@ static bool IsJoinArg(const char *arg) {
   return false;
 }
 
+// on aarch64 the tls register belongs to the host, so each read of it
+// becomes a call to a getter that returns what cosmo thinks it holds.
+// the link register is saved around the call, since it's live in leaf
+// functions. see libc/sysv/tlsasm.S
+static const char *ReplaceLineAarch64(const char *line) {
+  static char buf[160];
+  const char *p;
+  if (!(p = strstr(line, "tpidr_el0")) || !startswith(line, "\tmrs\tx"))
+    return line;
+  char *e;
+  long reg = strtol(line + 6, &e, 10);
+  if (e == line + 6 || strcmp(e, ", tpidr_el0") || reg < 0 || reg > 30 ||
+      reg == 18)
+    Die(input, "unsupported tpidr_el0 read in compiler output");
+  if (reg == 30) {
+    snprintf(buf, sizeof(buf),
+             "\tstr\tx0, [sp, -16]!\n"
+             "\tbl\t__get_tls_x0\n"
+             "\tmov\tx30, x0\n"
+             "\tldr\tx0, [sp], 16");
+  } else {
+    snprintf(buf, sizeof(buf),
+             "\tstr\tx30, [sp, -16]!\n"
+             "\tbl\t__get_tls_x%ld\n"
+             "\tldr\tx30, [sp], 16",
+             reg);
+  }
+  return buf;
+}
+
+// any other instruction that reads %fs:0 as a source operand, such as
+// the `testb $3, %fs:0` and `cmpq %fs:0, %rax` gcc makes of
+// __builtin_thread_pointer(). the tib pointer is fetched into a scratch
+// register that the instruction doesn't name, stored on the stack, and
+// the instruction reads it from there. flags are set by the instruction
+// itself, since leaq and popq leave them alone
+static const char *ReplaceFsSource(const char *line) {
+  static char buf[512];
+  const char *fs = strstr(line, "%fs:0");
+  if (!fs || (fs[5] != ',' && fs[5]))
+    return 0;
+  const char *op = line;
+  while (*op == '\t' || *op == ' ')
+    ++op;
+  if (!fs[5] && strncmp(op, "test", 4) && strncmp(op, "cmp", 3))
+    return 0;  // %fs:0 is the destination
+  if (strstr(fs + 5, "%fs") || strstr(line, "%rsp") || strstr(line, "%esp"))
+    return 0;
+  static const char *const kScratch[] = {"r11", "r10", "r9", "r8"};
+  const char *reg = 0;
+  for (int i = 0; i < ARRAYLEN(kScratch); ++i) {
+    char name[8];
+    snprintf(name, sizeof(name), "%%%s", kScratch[i]);
+    if (!strstr(line, name)) {
+      reg = kScratch[i];
+      break;
+    }
+  }
+  if (!reg)
+    return 0;
+  int n = snprintf(buf, sizeof(buf),
+                   "\tpushq\t%%%s\n"
+                   "\tcall\t__get_tls_%s\n"
+                   "\tpushq\t%%%s\n"
+                   "%.*s(%%rsp)%s\n"
+                   "\tleaq\t8(%%rsp), %%rsp\n"
+                   "\tpopq\t%%%s",
+                   reg, reg, reg, (int)(fs - line), line, fs + 5, reg);
+  if (n >= sizeof(buf))
+    return 0;
+  return buf;
+}
+
 static const char *ReplaceLine(const char *line) {
   if (!strstr(line, "%fs"))
     return line;
@@ -219,6 +293,9 @@ static const char *ReplaceLine(const char *line) {
       return kReplacements[m].to;
     }
   }
+  const char *res;
+  if ((res = ReplaceFsSource(line)))
+    return res;
   return line;
 }
 
@@ -391,8 +468,15 @@ int main(int argc, char *argv[]) {
   }
 
   // finish up arguments
-  AppendString(&compile_args, "-mno-red-zone");
-  AppendString(&compile_args, "-mno-tls-direct-seg-refs");
+  bool aarch64 = !!strstr(argv[optind], "aarch64");
+  for (int i = optind + 1; i < argc; ++i)
+    if ((startswith(argv[i], "--target=") || startswith(argv[i], "-target")) &&
+        strstr(argv[i] + 7, "aarch64"))
+      aarch64 = true;
+  if (!aarch64) {
+    AppendString(&compile_args, "-mno-red-zone");
+    AppendString(&compile_args, "-mno-tls-direct-seg-refs");
+  }
   AppendString(&compile_args, "-S");
   if (language)
     AppendString(&compile_args, StrCat("-x", language));
@@ -453,7 +537,7 @@ int main(int argc, char *argv[]) {
     DieSys(want_assembly ? output : asm_path_fix);
   char *line;
   while ((line = chomp(fgetln(fin, 0)))) {
-    fputs(ReplaceLine(line), fout);
+    fputs(aarch64 ? ReplaceLineAarch64(line) : ReplaceLine(line), fout);
     fputc('\n', fout);
   }
   fclose(fout);

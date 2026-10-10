@@ -24,6 +24,8 @@
 #include "libc/errno.h"
 #include "libc/intrin/asmflag.h"
 #include "libc/intrin/atomic.h"
+#include "libc/intrin/hostlibc.h"
+#include "libc/intrin/weaken.h"
 #include "libc/intrin/ulock.h"
 #include "libc/limits.h"
 #include "libc/mem/alloca.h"
@@ -68,6 +70,7 @@ struct CloneArgs {
   char *tls;
   int (*func)(void *);
   void *arg;
+  char *stk;
 };
 
 int sys_set_tls(uintptr_t, void *);
@@ -92,7 +95,12 @@ WinThreadEntry(int rdi,                            // rcx
   atomic_int *ctid = wt->ctid;
   atomic_init(ctid, tid);
   atomic_init(wt->ptid, tid);
+  struct CosmoTib *tib = (struct CosmoTib *)wt->tls;
+  __get_stack_win32(tib->tib_ntstack);
+  uintptr_t stack[3] = {(uintptr_t)wt->stk, wt->sp, (uintptr_t)wt->stk};
+  __set_stack_win32(stack);
   int rc = __stack_call(wt->arg, tid, 0, 0, wt->func, wt->sp);
+  __set_stack_win32(tib->tib_ntstack);
   // we can now clear ctid directly since we're no longer using our own
   // stack memory, which can now be safely free'd by the parent thread.
   atomic_store_explicit(ctid, 0, memory_order_release);
@@ -121,6 +129,7 @@ textwindows static errno_t CloneWindows(int (*func)(void *), char *stk,
   wt->arg = arg;
   wt->tls = tls;
   wt->sp = tip & -16;
+  wt->stk = stk;
   if ((h = CreateThread(0, 65536, (void *)WinThreadEntry, wt,
                         kNtStackSizeParamIsAReservation, &utid))) {
     atomic_init(ptid, utid);
@@ -372,7 +381,7 @@ static int CloneNetbsd(int (*func)(void *), char *stk, size_t stksz, void *arg,
 wontreturn dontinstrument static void FreebsdThreadMain(void *p) {
   struct CloneArgs *wt = p;
 #ifdef __aarch64__
-  asm volatile("mov\tx28,%0" : /* no outputs */ : "r"(wt->tls));
+  asm volatile("msr\ttpidr_el0,%0" : /* no outputs */ : "r"(wt->tls));
 #elif defined(__x86_64__)
   sys_set_tls(AMD64_SET_GSBASE, wt->tls);
 #endif
@@ -465,8 +474,11 @@ dontinstrument static void *SiliconThreadMain(void *arg) {
   struct CloneArgs *wt = arg;
   atomic_int *ctid = wt->ctid;
   int tid = atomic_load_explicit(ctid, memory_order_relaxed);
-  asm volatile("mov\tx28,%0" : /* no outputs */ : "r"(wt->tls));
+  __tls_set_xnu((struct CosmoTib *)wt->tls - 1);
   __stack_call(wt->arg, tid, 0, 0, wt->func, wt->sp);
+  // the tib is freed once ctid is clear, and libSystem shouldn't hand
+  // it to our pthread key destructor after that
+  __tls_set_xnu(0);
   atomic_store_explicit(ctid, 0, memory_order_release);
   ulock_wake(UL_COMPARE_AND_WAIT | ULF_WAKE_ALL, ctid, 0);
   return 0;
@@ -564,7 +576,11 @@ errno_t __clone(void *func, void *stk, size_t stksz, int flags, void *arg,
     __isthreaded = 1;
 
   if (IsLinux()) {
-    err = CloneLinux(func, stk, stksz, flags, arg, tls, ptid, ctid);
+    if (__hostlibc.dual && _weaken(__host_clone)) {
+      err = _weaken(__host_clone)(func, stk, stksz, arg, tls, ptid, ctid);
+    } else {
+      err = CloneLinux(func, stk, stksz, flags, arg, tls, ptid, ctid);
+    }
   } else if (IsXnu()) {
 #if defined(__x86_64__)
     err = CloneXnu(func, stk, stksz, arg, tls, ptid, ctid);

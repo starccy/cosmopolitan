@@ -50,11 +50,9 @@
  * @fileoverview GCC Codegen Fixer-Upper.
  */
 
-#define COSMO_TLS_REG 28
 #define MRS_TPIDR_EL0 0xd53bd040u
 #define IFUNC_SECTION ".init.202.ifunc"
 
-#define MOV_REG(DST, SRC) (0xaa0003e0u | (SRC) << 16 | (DST))
 
 static int mode;
 static int fildes;
@@ -254,24 +252,36 @@ static void CheckPrivilegedCrossReferences(void) {
   }
 }
 
-// Modify ARM64 code to use x28 for TLS rather than tpidr_el0.
-static void RewriteTlsCodeArm64(void) {
-  int i;
+// Complains about ARM64 code that reads tpidr_el0 directly. Compiler
+// output goes through tool/build/tlscc.c, which turns those reads into
+// calls to the getters in libc/sysv/tlsasm.S, since the host owns that
+// register; a leftover read gets the host's value instead of ours.
+static void CheckTlsCodeArm64(void) {
+  int i, n = 0;
   Elf64_Shdr *shdr;
   uint32_t *p, *pe;
+  if (elf->e_type != ET_REL)
+    return;  // sections are merged by now, so can't tell what's allowed
   for (i = 0; i < elf->e_shnum; ++i) {
     if (!(shdr = GetElfSectionHeaderAddress(elf, esize, i)))
       Die("elf header overflow #1");
     if (shdr->sh_type == SHT_PROGBITS &&  //
         (shdr->sh_flags & SHF_ALLOC) &&   //
         (shdr->sh_flags & SHF_EXECINSTR)) {
+      const char *name = GetElfSectionName(elf, esize, shdr);
+      if (name && (!strcmp(name, ".privileged") ||
+                   strstr(name, "tpidr_raw")))
+        continue;  // the getters and the code that switches threads
       if (!(p = GetElfSectionAddress(elf, esize, shdr)))
         Die("elf header overflow #2");
-      for (pe = p + shdr->sh_size / 4; p <= pe; ++p)
+      for (pe = p + shdr->sh_size / 4; p < pe; ++p)
         if ((*p & -32) == MRS_TPIDR_EL0)
-          *p = MOV_REG(*p & 31, COSMO_TLS_REG);
+          ++n;
     }
   }
+  if (n)
+    tinyprint(2, epath, ": warning: reads tpidr_el0 directly, which cosmo "
+                        "code has to do through tlscc\n", NULL);
 }
 
 static void UseFreebsdOsAbi(void) {
@@ -606,8 +616,16 @@ static void FixupObject(void) {
       SysExit("pread");
     if (!IsElf64Binary(elf, esize))
       Die("not an elf64 binary");
-    if (!(syms = GetElfSymbols(elf, esize, SHT_SYMTAB, &symcount)))
+    if (!(syms = GetElfSymbols(elf, esize, SHT_SYMTAB, &symcount))) {
+      // an object with nothing in it, like an assembly file whose whole
+      // body sits behind an #if that came out false, has nothing to fix
+      if (elf->e_type == ET_REL) {
+        if (close(fildes))
+          SysExit("close");
+        return;
+      }
       Die("missing elf symbol table");
+    }
     if (!(secstrs = GetElfSectionNameStringTable(elf, esize)))
       Die("missing elf section string table");
     if (!(symstrs = GetElfStringTable(elf, esize, ".strtab")))
@@ -618,7 +636,7 @@ static void FixupObject(void) {
         OptimizePatchableFunctionEntries();
         GenerateIfuncInit();
       } else if (elf->e_machine == EM_AARCH64) {
-        RewriteTlsCodeArm64();
+        CheckTlsCodeArm64();
         if (elf->e_type != ET_REL)
           UseFreebsdOsAbi();
       }

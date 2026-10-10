@@ -17,6 +17,8 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/intrin/getauxval.h"
+#include "libc/sysv/consts/auxv.h"
+#include "libc/dce.h"
 #include "libc/runtime/runtime.h"
 #include "libc/sysv/consts/host.internal.h"
 
@@ -31,9 +33,21 @@
  */
 struct AuxiliaryValue __getauxval(unsigned long at) {
   unsigned long *ap;
+#ifdef __aarch64__
+  unsigned long key = at;
+#endif
   at = __auxv2host(at);
   for (ap = __auxv; ap && ap[0]; ap += 2)
-    if (at == ap[0])
-      return (struct AuxiliaryValue){ap[1], true};
+    if (at == ap[0]) {
+      unsigned long x = ap[1];
+#ifdef __aarch64__
+      // the macOS loader hands over the arm64 feature bits Linux would.
+      // HWCAP_CPUID promises that reading MIDR_EL1 and the other ID
+      // registers from user space works, which XNU doesn't emulate
+      if (IsXnu() && key == AT_HWCAP)
+        x &= ~(1ul << 11);
+#endif
+      return (struct AuxiliaryValue){x, true};
+    }
   return (struct AuxiliaryValue){0, false};
 }

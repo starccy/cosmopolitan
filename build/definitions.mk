@@ -107,12 +107,11 @@ ifeq ($(ARCH), aarch64)
 # - Apple says in "Writing ARM64 code for Apple platforms" that we're
 #   not allowed to use the x18 register.
 #
-# - Cosmopolitan Libc uses x28 for thread-local storage because Apple
-#   forbids us from using tpidr_el0 too.
+# - Thread-local storage doesn't reserve a register. tlscc turns each
+#   tpidr_el0 read into a call, see libc/sysv/tlsasm.S
 #
 DEFAULT_COPTS +=							\
 	-ffixed-x18							\
-	-ffixed-x28							\
 	-fsigned-char
 endif
 

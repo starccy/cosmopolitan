@@ -70,6 +70,7 @@ __static_yoink("nsync_mu_rtrylock");
 __static_yoink("_pthread_onfork_prepare");
 __static_yoink("_pthread_onfork_parent");
 __static_yoink("_pthread_onfork_child");
+__static_yoink("__tls_adopt");
 
 void _pthread_free(struct PosixThread *pt) {
 
@@ -79,6 +80,16 @@ void _pthread_free(struct PosixThread *pt) {
   // do nothing for the one and only magical statical posix thread
   if (pt->pt_flags & PT_STATIC)
     return;
+
+  // threads the host created live in a mapping of their own
+  if (pt->pt_flags & PT_ADOPTED) {
+    __tls_adopt_free(pt);
+    return;
+  }
+
+  // a forked child can inherit threads that borrowed a host thread
+  // block, but not the host threads that owned the blocks
+  free(pt->pt_buddy);
 
   // unmap stack if the cosmo runtime was responsible for mapping it
   if (pt->pt_flags & PT_OWNSTACK)
@@ -196,6 +207,15 @@ static int PosixThread(void *arg) {
 
   // avoid signal handler being triggered after we trash our own stack
   __sig_block();
+
+  // give back any host thread block this thread borrowed. the flag and
+  // the check go under the lock __host_threads_init() holds while it
+  // hands out buddies, so it either sees us leaving or we see the buddy
+  _pthread_lock();
+  pt->pt_flags |= PT_EXITING;
+  _pthread_unlock();
+  if (pt->pt_buddy && _weaken(__host_leave))
+    _weaken(__host_leave)(pt);
 
   // return to clone polyfill which clears tid, wakes futex, and exits
   return 0;

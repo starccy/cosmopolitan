@@ -103,6 +103,8 @@ textwindows dontinstrument int __sig_crash_sig(unsigned exception, int *code) {
       return cs.sig;
     }
   }
+  // anything else is a software exception, like a C++ throw or
+  // OutputDebugString(), which whoever raised it expects to catch
   *code = exception;
-  return SIGSEGV;
+  return 0;
 }

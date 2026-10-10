@@ -6,6 +6,7 @@
 
 #define TIB_FLAG_VFORKED 1
 #define TIB_FLAG_SPAWNED 2
+#define TIB_FLAG_NORSEQ  4
 
 #ifdef MODE_DBG
 #define PTHREAD_KEYS_FAST 0
@@ -33,9 +34,9 @@ struct CosmoTib {
   void *(*tib_malloc)(void);      /* 0x18 */
   _Atomic(int32_t) tib_ptid;      /* 0x20 transitions 0 → tid */
   intptr_t tib_pthread;           /* 0x28 */
-  struct CosmoTib *tib_self2;     /* 0x30 */
-  _Atomic(int32_t) tib_ctid;      /* 0x38 transitions -1 → tid → 0 */
-  int32_t tib_errno;              /* 0x3c */
+  _Atomic(int32_t) tib_ctid;      /* 0x30 transitions -1 → tid → 0 */
+  int32_t tib_errno;              /* 0x34 */
+  struct CosmoTib *tib_self2;     /* 0x38 host libc's unused tcb slot */
   uint64_t tib_flags;             /* 0x40 */
   void *tib_garbages;             /* 0x48 */
   int tib_ftrace;                 /* inherited */
@@ -53,13 +54,23 @@ struct CosmoTib {
   void *tib_vfork;
   void *tib_keys_static[37];
   void **tib_keys_dynamic;
-  void *tib_locks[64];
+  void *tib_locks[61];
+  uintptr_t tib_ntstack[3]; /* win32 teb's own stack, see __set_stack_win32 */
   char tib_rseq[32];
 } __attribute__((__aligned__(64)));
 
 extern unsigned __tls_index;
+extern unsigned long __tls_slot_offset;
 
 char *_mktls(struct CosmoTib **) libcesque;
+char *_mktls_at(char *, struct CosmoTib **) libcesque;
+size_t _mktls_size(size_t *) libcesque;
+struct CosmoTib *__tls_adopt(void) libcesque;
+void __tls_adopt_exit(void *) libcesque wontreturn;
+void __tls_adopt_onfork_prepare(void) libcesque;
+void __tls_adopt_onfork_parent(void) libcesque;
+void __tls_adopt_onfork_child(void) libcesque;
+int __tls_adopt_init(void) libcesque;
 void __bootstrap_tls(struct CosmoTib *, char *) libcesque;
 
 #ifdef __x86_64__
@@ -73,6 +84,9 @@ extern char __tls_enabled;
 #endif
 
 void __set_tls(struct CosmoTib *) libcesque;
+void __tls_set_xnu(struct CosmoTib *) libcesque;
+void *__get_tls_raw(void) libcesque;
+void __tls_adopt_xnu_exit(void *) libcesque;
 struct CosmoTib *__get_tls_rax(void) dontthrow pureconst;
 
 #if defined(__x86_64__) && (SupportsWindows() || SupportsXnu())
@@ -94,7 +108,8 @@ forceinline pureconst struct CosmoTib *__get_tls(void) {
   __asm__("movq\t%%fs:0, %0" : "=r"(__tib));
   return __tib;
 #elif defined(__aarch64__)
-  register struct CosmoTib *__tls __asm__("x28");
+  struct CosmoTib *__tls;
+  __asm__("mrs\t%0, tpidr_el0" : "=r"(__tls));
   return __tls - 1;
 #endif
 }
@@ -117,6 +132,32 @@ forceinline void __set_tls_win32(void *tls) {
   __asm__ volatile("mov\t%1,%%gs:0x1480(,%0,8)"
                    : /* no outputs */
                    : "r"((long)__tls_index), "r"(tls)
+                   : "memory");
+#endif
+}
+
+// the stack the teb has on record for the calling thread: StackLimit,
+// StackBase and DeallocationStack. exception dispatch ignores frames
+// outside the first two, and a guard page hit between the third and
+// StackBase is taken as the stack growing
+forceinline void __get_stack_win32(uintptr_t s[3]) {
+#ifdef __x86_64__
+  __asm__ volatile("mov\t%%gs:0x10,%0\n\t"
+                   "mov\t%%gs:0x08,%1\n\t"
+                   "mov\t%%gs:0x1478,%2"
+                   : "=r"(s[0]), "=r"(s[1]), "=r"(s[2])
+                   : /* no inputs */
+                   : "memory");
+#endif
+}
+
+forceinline void __set_stack_win32(const uintptr_t s[3]) {
+#ifdef __x86_64__
+  __asm__ volatile("mov\t%0,%%gs:0x10\n\t"
+                   "mov\t%1,%%gs:0x08\n\t"
+                   "mov\t%2,%%gs:0x1478"
+                   : /* no outputs */
+                   : "r"(s[0]), "r"(s[1]), "r"(s[2])
                    : "memory");
 #endif
 }

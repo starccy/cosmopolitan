@@ -16,7 +16,10 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/intrin/hostlibc.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
+#include "libc/str/str.h"
 #include "libc/runtime/runtime.h"
 
 /**
@@ -25,7 +28,19 @@
  * @return 0 on success, or nonzero on error
  */
 int clearenv(void) {
+  if ((__hostlibc.dual || __hostlibc.envsync) && _weaken(__host_setenv)) {
+    for (char **p = environ; p && *p; ++p) {
+      char *eq = strchr(*p, '=');
+      size_t n = eq ? eq - *p : strlen(*p);
+      char name[n + 1];
+      memcpy(name, *p, n);
+      name[n] = 0;
+      _weaken(__host_setenv)(name, 0);
+    }
+  }
   environ = 0;
+  if (__hostlibc.envsync && _weaken(__host_setenv))
+    _weaken(__host_setenv)(0, 0);
   STRACE("clearenv() → 0");
   return 0;
 }

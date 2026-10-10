@@ -110,7 +110,7 @@ systemfive_cancellable:			// our pthread_cancel() miracle code
 #if SupportsXnu() || SupportsWindows()
 	call	__get_tls_r10		// CosmoTib::tib_self
 #else
-	mov	%fs:0x30,%r10		// CosmoTib::tib_self
+	mov	%fs:0x38,%r10		// CosmoTib::tib_self2
 #endif
 	mov	0x28(%r10),%r10		// CosmoTib::tib_pthread
 	test	%r10,%r10		// is it a posix thread?
@@ -140,7 +140,7 @@ systemfive_cancellable_end:		// i/o calls park here for long time
 #if SupportsXnu() || SupportsWindows()
 	call	__get_tls_rcx		// CosmoTib::tib_self
 #else
-	mov	%fs:0x30,%rcx		// CosmoTib::tib_self
+	mov	%fs:0x38,%rcx		// CosmoTib::tib_self2
 #endif
 	mov	0x28(%rcx),%rcx		// CosmoTib::tib_pthread
 	test	%rcx,%rcx		// is it a posix thread?

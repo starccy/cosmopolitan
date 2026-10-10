@@ -248,6 +248,7 @@ imp	'ReleaseMutex'						ReleaseMutex						kernel32	1
 imp	'ReleaseSRWLockExclusive'				ReleaseSRWLockExclusive					kernel32	1
 imp	'ReleaseSRWLockShared'					ReleaseSRWLockShared					kernel32	1
 imp	'ReleaseSemaphore'					ReleaseSemaphore					kernel32	3
+imp	'RemoveDllDirectory'					RemoveDllDirectory					kernel32	1
 imp	'RemoveVectoredContinueHandler'				RemoveVectoredContinueHandler				kernel32	1
 imp	'RemoveVectoredExceptionHandler'			RemoveVectoredExceptionHandler				kernel32	1
 imp	'ResetEvent'						ResetEvent						kernel32	1
@@ -296,6 +297,10 @@ imp	'SleepEx'						SleepEx							kernel32	2
 imp	'SuspendThread'						SuspendThread						kernel32	1
 imp	'SystemTimeToFileTime'					SystemTimeToFileTime					kernel32	2
 imp	'TerminateThread'					TerminateThread						kernel32	2
+imp	'FlsAlloc'						FlsAlloc						kernel32	1
+imp	'FlsFree'						FlsFree							kernel32	1
+imp	'FlsGetValue'						FlsGetValue						kernel32	1
+imp	'FlsSetValue'						FlsSetValue						kernel32	2
 imp	'TlsAlloc'						TlsAlloc						kernel32	0
 imp	'TlsFree'						TlsFree							kernel32	1
 imp	'TlsGetValue'						TlsGetValue						kernel32	1
@@ -310,6 +315,7 @@ imp	'UnmapViewOfFile2'					UnmapViewOfFile2					kernel32	2
 imp	'UnmapViewOfFileEx'					UnmapViewOfFileEx					kernel32	3
 imp	'UpdateProcThreadAttribute'				UpdateProcThreadAttribute				kernel32	7
 imp	'VirtualFree'						VirtualFree						kernel32	3
+imp	'K32QueryWorkingSetEx'					K32QueryWorkingSetEx					kernel32	3
 imp	'VirtualLock'						VirtualLock						kernel32	2
 imp	'VirtualQuery'						VirtualQuery						kernel32	3
 imp	'VirtualQueryEx'					VirtualQueryEx						kernel32	4
@@ -724,9 +730,11 @@ imp	'LdrGetProcedureAddress'				LdrGetProcedureAddress					ntdll		4
 imp	'LdrLoadDll'						LdrLoadDll						ntdll		4
 imp	'LdrUnloadDll'						LdrUnloadDll						ntdll		1
 imp	'NtAllocateVirtualMemory'				NtAllocateVirtualMemory					ntdll		6
+imp	'NtAssociateWaitCompletionPacket'			NtAssociateWaitCompletionPacket				ntdll		8
 imp	'NtCallbackReturn'					NtCallbackReturn					ntdll		3
 imp	'NtCancelIoFile'					NtCancelIoFile						ntdll		2
 imp	'NtCancelIoFileEx'					NtCancelIoFileEx					ntdll		3
+imp	'NtCancelWaitCompletionPacket'				NtCancelWaitCompletionPacket				ntdll		2
 imp	'NtClearEvent'						NtClearEvent						ntdll		1
 imp	'NtClose'						NtClose							ntdll		1
 imp	'NtContinue'						NtContinue						ntdll		2
@@ -742,6 +750,7 @@ imp	'NtCreateProfile'					NtCreateProfile						ntdll		9
 imp	'NtCreateSection'					NtCreateSection						ntdll		7
 imp	'NtCreateThread'					NtCreateThread						ntdll		8
 imp	'NtCreateTimer'						NtCreateTimer						ntdll		4
+imp	'NtCreateWaitCompletionPacket'				NtCreateWaitCompletionPacket				ntdll		3
 imp	'NtDelayExecution'					NtDelayExecution					ntdll		2
 imp	'NtDeleteFile'						NtDeleteFile						ntdll		1
 imp	'NtDeleteKey'						NtDeleteKey						ntdll		1
@@ -793,6 +802,7 @@ imp	'NtRaiseHardError'					NtRaiseHardError					ntdll		6
 imp	'NtReadFile'						NtReadFile						ntdll		9
 imp	'NtReadVirtualMemory'					NtReadVirtualMemory					ntdll		5
 imp	'NtReleaseKeyedEvent'					NtReleaseKeyedEvent					ntdll		4
+imp	'NtResumeProcess'					NtResumeProcess					ntdll		1
 imp	'NtResumeThread'					NtResumeThread						ntdll		2
 imp	'NtSetContextThread'					NtSetContextThread					ntdll		2
 imp	'NtSetEvent'						NtSetEvent						ntdll		2
@@ -805,6 +815,7 @@ imp	'NtSetValueKey'						NtSetValueKey						ntdll		6
 imp	'NtSignalAndWaitForSingleObject'			NtSignalAndWaitForSingleObject				ntdll		4
 imp	'NtStartProfile'					NtStartProfile						ntdll		1
 imp	'NtStopProfile'						NtStopProfile						ntdll		1
+imp	'NtSuspendProcess'					NtSuspendProcess					ntdll		1
 imp	'NtSuspendThread'					NtSuspendThread						ntdll		2
 imp	'NtTerminateProcess'					NtTerminateProcess					ntdll		2
 imp	'NtTerminateThread'					NtTerminateThread					ntdll		2

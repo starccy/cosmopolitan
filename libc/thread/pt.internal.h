@@ -10,5 +10,6 @@
 #define PT_OPENBSD_KLUDGE 64
 #define PT_EXITING        128
 #define PT_OWNSIGALTSTACK 256
+#define PT_ADOPTED        512  // a host thread that ran our code
 
 #endif /* COSMOPOLITAN_LIBC_THREAD_PT_H_ */

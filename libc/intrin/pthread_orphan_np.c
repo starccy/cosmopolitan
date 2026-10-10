@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/intrin/atomic.h"
+#include "libc/intrin/dll.h"
 #include "libc/thread/posixthread.internal.h"
 #include "libc/thread/thread.h"
 
@@ -26,9 +27,15 @@
  */
 int pthread_orphan_np(void) {
   bool res;
+  int ours = 0;
   _pthread_lock();
-  res = _pthread_list == _pthread_list->prev &&
-        _pthread_list == _pthread_list->next;
+  // threads the host created and cosmo adopted don't count, they aren't
+  // ours to wait for
+  for (struct Dll *e = dll_first(_pthread_list); e;
+       e = dll_next(_pthread_list, e))
+    if (!(POSIXTHREAD_CONTAINER(e)->pt_flags & PT_ADOPTED))
+      ++ours;
+  res = ours <= 1;
   _pthread_unlock();
   unassert(!res || atomic_load(&_pthread_count) <= 1);
   return res;

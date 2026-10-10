@@ -33,11 +33,14 @@ int64_t LoadLibraryEx(const char16_t *lpLibFileName, int64_t hFile,
 uint32_t GetModuleFileNameA(int64_t hModule, char *lpFilename, uint32_t nSize);
 intptr_t GetModuleHandle(const char *opt_lpModuleName);
 intptr_t GetModuleHandleW(const char16_t *opt_lpModuleName);
+bool32 GetModuleHandleEx(uint32_t dwFlags, const char16_t *opt_lpModuleName,
+                         int64_t *out_phModule);
 void *GetProcAddress(int64_t hModule, const char *lpProcName);
 int32_t FreeResource(int64_t hResData);
 intptr_t LockResource(int64_t hResData);
 int32_t FreeLibrary(int64_t hLibModule);
 void *AddDllDirectory(const char16_t *NewDirectory);
+bool32 RemoveDllDirectory(void *Cookie);
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_NT_DLL_H_ */

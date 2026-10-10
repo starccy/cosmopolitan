@@ -61,6 +61,8 @@ __attribute__((__constructor__(49))) void init_mparams(void) {
 
   // Bolt on rseq allocator if Linux 4.18+ (c. 2018)
   use_threaded_allocator();
+  if (IsXnuSilicon() && _weaken(cosmo_dlopen))
+    use_system_allocator();
   if (HAVE_RSEQ) {
     const char *s;
     if ((s = getenv("COSMOPOLITAN_M_RSEQ_MAX")))

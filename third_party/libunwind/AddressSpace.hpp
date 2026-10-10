@@ -99,6 +99,11 @@ extern char __eh_frame_end __attribute__((__weak__)); // [jart]
 
 #if defined(_LIBUNWIND_SUPPORT_DWARF_INDEX)
 extern char __eh_frame_hdr_start __attribute__((__weak__)); // [jart]
+// finds the .eh_frame_hdr of a host library's code, see libc/dlopen: 1 if
+// found, -1 for code outside this program that no host library has, and
+// 0 for this program's own code
+extern "C" int __unw_find_host_eh_frame(uintptr_t, uintptr_t *, uintptr_t *,
+                                        size_t *) __attribute__((__weak__));
 extern char __eh_frame_hdr_end __attribute__((__weak__)); // [jart]
 #endif
 
@@ -518,6 +523,25 @@ inline bool LocalAddressSpace::findUnwindSections(pint_t targetAddr,
   }
 
 #elif defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND) && defined(_LIBUNWIND_IS_BAREMETAL)
+  if (__unw_find_host_eh_frame) {
+    uintptr_t base, hdr;
+    size_t hdrlen;
+    int r = __unw_find_host_eh_frame(targetAddr, &base, &hdr, &hdrlen);
+    if (r < 0)
+      return false;
+    if (r > 0) {
+      EHHeaderParser<LocalAddressSpace>::EHHeaderInfo hdrInfo;
+      info.dso_base = base;
+      info.dwarf_index_section = hdr;
+      info.dwarf_index_section_length = hdrlen;
+      if (!EHHeaderParser<LocalAddressSpace>::decodeEHHdr(*this, hdr, hdrlen,
+                                                          hdrInfo))
+        return false;
+      info.dwarf_section = hdrInfo.eh_frame_ptr;
+      info.dwarf_section_length = SIZE_MAX;
+      return true;
+    }
+  }
   info.dso_base = 0;
   // Bare metal is statically linked, so no need to ask the dynamic loader
   info.dwarf_section_length = (size_t)(&__eh_frame_end - &__eh_frame_start);

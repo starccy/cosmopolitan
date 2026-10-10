@@ -35,15 +35,18 @@ static_assert(sizeof(struct CosmoTib) == 1024);
 #define I(x) ((uintptr_t)x)
 
 static char *_mktls_finish(struct CosmoTib **out_tib, char *mem,
-                           struct CosmoTib *tib) {
-  struct CosmoTib *old;
-  old = __get_tls();
+                           struct CosmoTib *tib, struct CosmoTib *old) {
   bzero(tib, sizeof(*tib));
   tib->tib_self = tib;
   tib->tib_self2 = tib;
-  tib->tib_ftrace = old->tib_ftrace;
-  tib->tib_strace = old->tib_strace;
-  tib->tib_sigmask = old->tib_sigmask;
+  if (old) {
+    tib->tib_ftrace = old->tib_ftrace;
+    tib->tib_strace = old->tib_strace;
+    tib->tib_sigmask = old->tib_sigmask;
+  } else {
+    tib->tib_ftrace = __ftrace;
+    tib->tib_strace = __strace;
+  }
   ((struct rseq *)tib->tib_rseq)->cpu_id = RSEQ_CPU_ID_UNINITIALIZED;
   atomic_init(&tib->tib_ctid, -1);
   if (out_tib)
@@ -51,9 +54,15 @@ static char *_mktls_finish(struct CosmoTib **out_tib, char *mem,
   return mem;
 }
 
-static char *_mktls_below(struct CosmoTib **out_tib) {
+static size_t _mktls_below_size(void) {
+  return ROUNDUP(I(_tls_size) + sizeof(struct CosmoTib),
+                 _Alignof(struct CosmoTib));
+}
+
+static char *_mktls_below(char *mem, struct CosmoTib **out_tib,
+                          struct CosmoTib *old) {
   size_t siz;
-  char *mem, *tls;
+  char *tls;
   struct CosmoTib *tib;
 
   // Here's the TLS memory layout on x86_64
@@ -69,13 +78,7 @@ static char *_mktls_below(struct CosmoTib **out_tib) {
   //    Linux/FreeBSD/Windows/Mac %gs
   //
 
-  siz = ROUNDUP(I(_tls_size) + sizeof(*tib), _Alignof(struct CosmoTib));
-  siz = ROUNDUP(siz, _Alignof(struct CosmoTib));
-  mem = memalign(_Alignof(struct CosmoTib), siz);
-  if (!mem) {
-    return 0;
-  }
-
+  siz = _mktls_below_size();
   tib = (struct CosmoTib *)(mem + siz - sizeof(*tib));
   tls = mem + siz - sizeof(*tib) - I(_tls_size);
 
@@ -88,10 +91,18 @@ static char *_mktls_below(struct CosmoTib **out_tib) {
     bzero(tls + I(_tbss_offset), I(_tbss_size));
 
   // set up thread information block
-  return _mktls_finish(out_tib, mem, tib);
+  return _mktls_finish(out_tib, mem, tib, old);
 }
 
-static char *_mktls_above(struct CosmoTib **out_tib) {
+static size_t _mktls_above_size(void) {
+  return ROUNDUP(sizeof(struct CosmoTib), I(_tls_align)) +  //
+         ROUNDUP(sizeof(uintptr_t) * 2, I(_tdata_align)) +  //
+         ROUNDUP(I(_tdata_size), I(_tbss_align)) +          //
+         I(_tbss_size);
+}
+
+static char *_mktls_above(char *mem, struct CosmoTib **out_tib,
+                          struct CosmoTib *old) {
 
   // Here's the TLS memory layout on aarch64
   //
@@ -105,16 +116,6 @@ static char *_mktls_above(struct CosmoTib **out_tib) {
   //         │
   //     __get_tls()
   //
-
-  size_t size = ROUNDUP(sizeof(struct CosmoTib), I(_tls_align)) +  //
-                ROUNDUP(sizeof(uintptr_t) * 2, I(_tdata_align)) +  //
-                ROUNDUP(I(_tdata_size), I(_tbss_align)) +          //
-                I(_tbss_size);
-
-  char *mem = memalign(I(_tls_align), size);
-  if (!mem) {
-    return 0;
-  }
 
   struct CosmoTib *tib =
       (struct CosmoTib *)(mem +
@@ -133,9 +134,39 @@ static char *_mktls_above(struct CosmoTib **out_tib) {
     bzero(tbss, I(_tbss_size));
 
   dtv[0] = 1;
-  dtv[1] = (uintptr_t)tdata;
+  dtv[1] = (uintptr_t)tib;  // the thread register points at dtv, see tlsasm.S
 
-  return _mktls_finish(out_tib, mem, tib);
+  return _mktls_finish(out_tib, mem, tib, old);
+}
+
+/**
+ * Returns how much memory _mktls_at() lays out, and its alignment.
+ */
+size_t _mktls_size(size_t *out_align) {
+#ifdef __x86_64__
+  if (out_align)
+    *out_align = _Alignof(struct CosmoTib);
+  return _mktls_below_size();
+#else
+  if (out_align)
+    *out_align = I(_tls_align);
+  return _mktls_above_size();
+#endif
+}
+
+/**
+ * Lays out thread-local storage for a new thread in `mem`.
+ *
+ * This neither allocates nor reads the calling thread's tls, so it can
+ * set up a thread that has no tib yet. The tracing flags come from the
+ * globals and the signal mask starts out empty.
+ */
+char *_mktls_at(char *mem, struct CosmoTib **out_tib) {
+#ifdef __x86_64__
+  return _mktls_below(mem, out_tib, 0);
+#else
+  return _mktls_above(mem, out_tib, 0);
+#endif
 }
 
 /**
@@ -143,9 +174,13 @@ static char *_mktls_above(struct CosmoTib **out_tib) {
  * @return buffer that must be released with free()
  */
 char *_mktls(struct CosmoTib **out_tib) {
+  char *mem;
+  size_t align, size = _mktls_size(&align);
+  if (!(mem = memalign(align, size)))
+    return 0;
 #ifdef __x86_64__
-  return _mktls_below(out_tib);
+  return _mktls_below(mem, out_tib, __get_tls());
 #else
-  return _mktls_above(out_tib);
+  return _mktls_above(mem, out_tib, __get_tls());
 #endif
 }

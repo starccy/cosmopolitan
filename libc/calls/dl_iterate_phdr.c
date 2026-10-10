@@ -20,14 +20,27 @@
 #include "libc/elf/link.h"
 #include "libc/runtime/runtime.h"
 
+// the host's libraries, once cosmo_dlopen() has loaded one; see dlopen.c
+int __dl_iterate_phdr_host(int (*)(struct dl_phdr_info *, size_t, void *),
+                           void *) __attribute__((__weak__));
+
+/**
+ * Calls `callback` for this program and then, on Linux once a host
+ * library is loaded, for each object the host's loader has mapped.
+ */
 int dl_iterate_phdr(int callback(struct dl_phdr_info *info, size_t size,
                                  void *data),
                     void *data) {
+  int rc;
   struct dl_phdr_info info = {
       .dlpi_addr = (uintptr_t)__executable_start,
       .dlpi_name = GetProgramExecutableName(),
       .dlpi_phdr = (const Elf64_Phdr *)ape_phdrs,
       .dlpi_phnum = 3,
   };
-  return callback(&info, sizeof(info), data);
+  if ((rc = callback(&info, sizeof(info), data)))
+    return rc;
+  if (__dl_iterate_phdr_host)
+    rc = __dl_iterate_phdr_host(callback, data);
+  return rc;
 }

@@ -147,7 +147,7 @@ elif [ x"$ARCH" = x"aarch64" ]; then
   OBJCOPYFLAGS="-S"
   PAGESZ=16384
   CPPFLAGS="$CPPFLAGS -fsigned-char"
-  CFLAGS="$CFLAGS -ffixed-x18 -ffixed-x28"
+  CFLAGS="$CFLAGS -ffixed-x18"
   LDFLAGS="$LDFLAGS -Wl,-T,$LIB/aarch64.lds"
 else
   fatal_error "$ARCH: unsupported architecture"
@@ -311,9 +311,9 @@ fi
 
 if [ $INTENT = cpp ]; then
   set -- "$CC" $PLATFORM $CPPFLAGS "$@"
-elif [ $INTENT = s ] && [ x"$ARCH" = x"x86_64" ] && [ -n "$TLSFLAG" ]; then
+elif [ $INTENT = s ] && { [ x"$ARCH" = x"aarch64" ] || [ -n "$TLSFLAG" ]; }; then
   set -- "$BIN/tlscc" "$CC" $PLATFORM $PREDEF $CFLAGS $CPPFLAGS "$@" $PRECIOUS
-elif [ $INTENT = cc ] && [ x"$ARCH" = x"x86_64" ] && [ -n "$TLSFLAG" ]; then
+elif [ $INTENT = cc ] && { [ x"$ARCH" = x"aarch64" ] || [ -n "$TLSFLAG" ]; }; then
   set -- "$BIN/tlscc" "$CC" $PLATFORM $PREDEF $CFLAGS $CPPFLAGS "$@" $PRECIOUS
 elif [ $INTENT = cc ] || [ $INTENT = s ] || [ $INTENT = h ]; then
   set -- "$CC" $PLATFORM $PREDEF $CFLAGS $CPPFLAGS "$@" $PRECIOUS
