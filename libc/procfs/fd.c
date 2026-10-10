@@ -7,6 +7,7 @@
 #include "libc/sock/struct/sockaddr6.h"
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/sock.h"
+#include "libc/sysv/consts/f.h"
 
 // /proc/self/fd, read out of cosmo's own descriptor table. For any other
 // process only the socket tables say what it holds, but for ourselves
@@ -90,22 +91,27 @@ static void file_text(const struct Fd *f, char *out, size_t n) {
   snprintf(out, n, "pipe:[%llu]", (unsigned long long)(h & 0xffffffffffull));
 }
 
-int pfs_self_fds(struct pfs_fdent *out, int cap) {
+int pfs_self_fds(struct pfs_fdent **out) {
+  *out = 0;
   if (IsXnuSilicon()) {
     // the kernel names the descriptor a /proc handle sits on (a dup of
     // stderr); the table knows what it stands for
-    int n = pfs_xnu_fds_of(pfs_self_pid(), out, cap);
+    int n = pfs_xnu_fds_of(pfs_self_pid(), out);
     for (int i = 0; i < n; i++)
-      if (__isfdkind(out[i].fd, kFdProc))
-        pc_fd_vpath(out[i].fd, out[i].text, sizeof out[i].text);
+      if (__isfdkind((*out)[i].fd, kFdProc))
+        pc_fd_vpath((*out)[i].fd, (*out)[i].text, sizeof (*out)[i].text);
     return n;
   }
   if (!IsWindows())
     return 0;
+  int nfds = (int)__get_pib()->fds.n;
+  struct pfs_fdent *ents = malloc((nfds ? nfds : 1) * sizeof *ents);
+  if (!ents)
+    return 0;
   int n = 0;
-  for (int fd = 0; fd < (int)__get_pib()->fds.n && n < cap; fd++) {
+  for (int fd = 0; fd < nfds; fd++) {
     const struct Fd *f = &__get_pib()->fds.p[fd];
-    struct pfs_fdent *e = &out[n];
+    struct pfs_fdent *e = &ents[n];
     switch (f->kind) {
       case kFdFile:
         file_text(f, e->text, sizeof e->text);
@@ -147,14 +153,72 @@ int pfs_self_fds(struct pfs_fdent *out, int cap) {
     e->fd = fd;
     n++;
   }
+  *out = ents;
   return n;
 }
 
 // Another process's descriptors, where the kernel will enumerate them. NT
 // will not; -1 sends its callers to the socket tables (pfs_net_fds_of),
 // the one cross-process source it has.
-int pfs_other_fds(uint32_t pid, struct pfs_fdent *out, int cap) {
+int pfs_other_fds(uint32_t pid, struct pfs_fdent **out) {
+  *out = 0;
   if (IsXnuSilicon())
-    return pfs_xnu_fds_of(pid, out, cap);
+    return pfs_xnu_fds_of(pid, out);
   return -1;
+}
+
+// /proc/<pid>/fdinfo/<fd>. Our own descriptors answer from the fd table
+// and the descriptor itself (flags, offset, and a stat for files); on
+// XNU the kernel's per-descriptor facts cover any process the caller may
+// see. Another process on NT is only known through the socket tables,
+// whose dense numbering carries no offset or flags.
+bool pfs_fd_info(uint32_t pid, int fd, struct pfs_fdinfo *out) {
+  memset(out, 0, sizeof *out);
+  if (fd < 0)
+    return false;
+  if (pid == pfs_self_pid()) {
+    if (IsWindows()) {
+      if (!__isfdopen(fd))
+        return false;
+      if (__isfdkind(fd, kFdFile)) {
+        int64_t pos = lseek(fd, 0, SEEK_CUR);
+        out->pos = pos < 0 ? 0 : pos;
+        struct stat st;
+        if (!fstat(fd, &st))
+          out->ino = st.st_ino;
+      }
+    } else if (!pfs_xnu_fd_info(pid, fd, out)) {
+      return false;
+    }
+    // the descriptor itself says what it was opened with, in our own
+    // spelling of the flags
+    int fl = fcntl(fd, F_GETFL);
+    if (fl >= 0)
+      out->flags = (unsigned)fl;
+    if (fcntl(fd, F_GETFD) > 0)
+      out->flags |= O_CLOEXEC;
+    return true;
+  }
+  if (IsXnuSilicon())
+    return pfs_xnu_fd_info(pid, fd, out);
+  uint64_t *inodes;
+  int n = pfs_net_fds_of(pid, &inodes);
+  bool ok = fd < n;
+  if (ok) {
+    out->flags = O_RDWR;
+    out->ino = inodes[fd];
+  }
+  free(inodes);
+  return ok;
+}
+
+// The file's text: offset, the open flags in octal, and the inode of
+// what sits behind it (0 where nothing has one), the kernel's shape.
+bool pfs_gen_fdinfo(struct pfs_buf *b, uint32_t pid, int fd) {
+  struct pfs_fdinfo fi;
+  if (!pfs_fd_info(pid, fd, &fi))
+    return false;
+  pfs_printf(b, "pos:\t%lld\nflags:\t0%o\nmnt_id:\t0\nino:\t%llu\n",
+             (long long)fi.pos, fi.flags, (unsigned long long)fi.ino);
+  return true;
 }

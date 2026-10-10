@@ -249,12 +249,36 @@ bool pfs_xnu_procargs(uint32_t pid, char **out, size_t *len) {
   return raw_procargs(pid, out, len);
 }
 
-int pfs_xnu_threads(uint32_t pid, uint64_t *out, int cap) {
-  if (!pfs_xnu_ready())
+// A list the kernel truncates to the buffer: a full buffer may mean
+// more, so the buffer doubles until the answer comes back short.
+static int list_grow(uint32_t pid, int what, size_t entsz, void **out) {
+  *out = 0;
+  size_t cap = 256;
+  for (int tries = 0; tries < 16; tries++) {
+    void *buf = malloc(cap * entsz);
+    if (!buf)
+      return 0;
+    int r = g.pidinfo((int)pid, what, 0, buf, (int)(cap * entsz));
+    if (r <= 0) {
+      free(buf);
+      return 0;
+    }
+    if ((size_t)r < cap * entsz) {
+      *out = buf;
+      return r / (int)entsz;
+    }
+    free(buf);
+    cap *= 2;
+  }
+  return 0;
+}
+
+int pfs_xnu_threads(uint32_t pid, uint64_t **out) {
+  if (!pfs_xnu_ready()) {
+    *out = 0;
     return 0;
-  int r = g.pidinfo((int)pid, XNU_PROC_PIDLISTTHREADS, 0, out,
-                    cap * (int)sizeof *out);
-  return r > 0 ? r / (int)sizeof *out : 0;
+  }
+  return list_grow(pid, XNU_PROC_PIDLISTTHREADS, sizeof **out, (void **)out);
 }
 
 long pfs_xnu_cwd(uint32_t pid, char *buf, size_t n) {
@@ -405,12 +429,67 @@ long pfs_xnu_ape_program(uint32_t pid, char *buf, size_t n) {
   return r;
 }
 
-int pfs_xnu_listfds(uint32_t pid, struct xnu_proc_fdinfo *out, int cap) {
-  if (!pfs_xnu_ready())
+int pfs_xnu_listfds(uint32_t pid, struct xnu_proc_fdinfo **out) {
+  if (!pfs_xnu_ready()) {
+    *out = 0;
     return 0;
+  }
+  return list_grow(pid, XNU_PROC_PIDLISTFDS, sizeof **out, (void **)out);
+}
+
+// BSD open flags as Linux spells them: the access mode from FREAD/FWRITE,
+// then the few status bits both sides have.
+static unsigned linux_oflags(uint32_t bsd) {
+  unsigned f = (bsd & 3) == 3 ? O_RDWR : (bsd & 2) ? O_WRONLY : O_RDONLY;
+  if (bsd & 0x4)
+    f |= O_NONBLOCK;
+  if (bsd & 0x8)
+    f |= O_APPEND;
+  if (bsd & 0x40)
+    f |= 020000;  // O_ASYNC
+  if (bsd & 0x100000)
+    f |= O_DIRECTORY;
+  if (bsd & 0x1000000)
+    f |= O_CLOEXEC;
+  return f;
+}
+
+bool pfs_xnu_fd_info(uint32_t pid, int fd, struct pfs_fdinfo *out) {
+  if (!pfs_xnu_ready() || !g.pidfdinfo)
+    return false;
+  static _Thread_local struct xnu_vnode_fdinfowithpath vi;
   int r =
-      g.pidinfo((int)pid, XNU_PROC_PIDLISTFDS, 0, out, cap * (int)sizeof *out);
-  return r > 0 ? r / (int)sizeof *out : 0;
+      g.pidfdinfo((int)pid, fd, XNU_PROC_PIDFDVNODEPATHINFO, &vi, sizeof vi);
+  if (r == (int)sizeof vi) {
+    out->pos = vi.pfi.fi_offset;
+    out->flags = linux_oflags(vi.pfi.fi_openflags);
+    out->ino = vi.vip_vi.vi_stat.vst_ino;
+    return true;
+  }
+  static _Thread_local union {
+    struct xnu_socket_fdinfo si;
+    char pad[3072];
+  } u;
+  r = g.pidfdinfo((int)pid, fd, XNU_PROC_PIDFDSOCKETINFO, &u, sizeof u);
+  if (r >= (int)sizeof u.si.pfi) {
+    out->pos = 0;
+    out->flags = linux_oflags(u.si.pfi.fi_openflags);
+    out->ino = 0;
+    return true;
+  }
+  // a pipe, kqueue or other kind: known to exist from the list only
+  struct xnu_proc_fdinfo *fds;
+  int n = pfs_xnu_listfds(pid, &fds);
+  bool found = false;
+  for (int i = 0; i < n && !found; i++)
+    found = fds[i].proc_fd == fd;
+  free(fds);
+  if (found) {
+    out->pos = 0;
+    out->flags = O_RDWR;
+    out->ino = 0;
+  }
+  return found;
 }
 
 long pfs_xnu_fdpath(uint32_t pid, int fd, char *buf, size_t n) {
@@ -428,10 +507,10 @@ long pfs_xnu_fdpath(uint32_t pid, int fd, char *buf, size_t n) {
   return (long)l;
 }
 
-bool pfs_xnu_iflist2(char **out, size_t *len) {
+bool pfs_xnu_rtdump(int af, int kind, int flags, char **out, size_t *len) {
   if (!pfs_xnu_ready())
     return false;
-  int mib[6] = {XNU_CTL_NET, XNU_PF_ROUTE, 0, 0, XNU_NET_RT_IFLIST2, 0};
+  int mib[6] = {XNU_CTL_NET, XNU_PF_ROUTE, 0, af, kind, flags};
   for (int tries = 0; tries < 3; tries++) {
     size_t n = 0;
     if (__syslib->__sysctl(mib, 6, 0, &n, 0, 0) != 0 || !n)
@@ -448,6 +527,10 @@ bool pfs_xnu_iflist2(char **out, size_t *len) {
     free(buf);  // the list grew between the calls
   }
   return false;
+}
+
+bool pfs_xnu_iflist2(char **out, size_t *len) {
+  return pfs_xnu_rtdump(0, XNU_NET_RT_IFLIST2, 0, out, len);
 }
 
 bool pfs_xnu_pcblist(const char *name, char **out, size_t *len) {
@@ -492,12 +575,29 @@ long pfs_xnu_regionfile(uint64_t addr, char *buf, size_t n) {
 // reads. Thread ids are not enumerated here; task/ pretends one thread per
 // process until someone needs better.
 
-#define XNU_SNAP_MS   200
-#define XNU_MAX_PROCS 2048
+#define XNU_SNAP_MS 200
 
-static struct pfs_proc g_procs[XNU_MAX_PROCS];
-static int g_nprocs;
+// The table is handed to readers outside the lock, so an outgrown array
+// is kept, not freed (the NT side does the same).
+static struct pfs_proc *g_procs;
+static int g_nprocs, g_capprocs;
 static int64_t g_snap_ms;
+
+static bool procs_reserve(int n) {
+  if (n <= g_capprocs)
+    return true;
+  int cap = g_capprocs ? g_capprocs : 1024;
+  while (cap < n)
+    cap *= 2;
+  struct pfs_proc *grown = malloc(cap * sizeof *grown);
+  if (!grown)
+    return false;
+  if (g_nprocs)
+    memcpy(grown, g_procs, g_nprocs * sizeof *grown);
+  g_procs = grown;
+  g_capprocs = cap;
+  return true;
+}
 
 static void set_comm(struct pfs_proc *p, const char *name) {
   int j = 0;
@@ -517,11 +617,20 @@ static void snap_locked(void) {
     return;
   if (!init_locked())
     return;
-  static int pids[XNU_MAX_PROCS];
-  int bytes = g.listpids(XNU_PROC_ALL_PIDS, 0, pids, (int)sizeof pids);
+  // the kernel sizes the list for us; room for what starts meanwhile
+  int bytes = g.listpids(XNU_PROC_ALL_PIDS, 0, 0, 0);
+  int want = (bytes > 0 ? bytes / (int)sizeof(int) : 0) + 64;
+  int *pids = malloc(want * sizeof *pids);
+  if (!pids)
+    return;
+  bytes = g.listpids(XNU_PROC_ALL_PIDS, 0, pids, want * (int)sizeof *pids);
   int n = bytes > 0 ? bytes / (int)sizeof(int) : 0;
+  if (!procs_reserve(n)) {
+    free(pids);
+    return;
+  }
   g_nprocs = 0;
-  for (int i = 0; i < n && g_nprocs < XNU_MAX_PROCS; i++) {
+  for (int i = 0; i < n; i++) {
     if (pids[i] <= 0)
       continue;
     struct xnu_proc_bsdinfo bi;
@@ -546,6 +655,7 @@ static void snap_locked(void) {
       }
     }
   }
+  free(pids);
   // The kernel names this process after the ape loader; answer with the
   // program it ran, like the NT side does.
   for (int i = 0; i < g_nprocs; i++) {

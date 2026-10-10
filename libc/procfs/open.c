@@ -93,6 +93,9 @@ static int open_sys(const char *vpath, int flags) {
 }
 
 int __procfs_open(int dirfd, const char *path, int flags, unsigned mode) {
+  int rc;
+  if ((rc = pc_userdirs_open(dirfd, path, flags)) != -2)
+    return rc;
   char vpath[PATH_MAX];
   int r = pc_resolve(dirfd, path, vpath, sizeof vpath);
   if (r == 0)
@@ -101,7 +104,7 @@ int __procfs_open(int dirfd, const char *path, int flags, unsigned mode) {
     return -1;
   if (r == 2)
     return openat(AT_FDCWD, vpath, flags, mode);
-  int rc = pc_is_sys(vpath) ? open_sys(vpath, flags) : open_proc(vpath, flags);
+  rc = pc_is_sys(vpath) ? open_sys(vpath, flags) : open_proc(vpath, flags);
   STRACE("procfs open(%#s) → %d% m", vpath, rc);
   return rc;
 }

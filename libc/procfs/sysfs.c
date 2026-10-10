@@ -65,8 +65,8 @@ static void sysfs_net_walk(sysfs_emit emit, void *ctx) {
 // energy_* trio, power_now and voltage_now per battery; everything else has
 // a fallback. Design capacity, cycle count and chemistry come off the
 // battery device itself; when that query has no answer, design falls back
-// to full (health then reads 100%). Voltage NT never says, so it is a
-// nominal constant that only feeds the display field.
+// to full (health then reads 100%). Voltage NT never says, so there it is
+// a nominal constant that only feeds the display field.
 static void sysfs_power_walk(sysfs_emit emit, void *ctx) {
   static struct pfs_batt b;
   static bool have;
@@ -97,7 +97,7 @@ static void sysfs_power_walk(sysfs_emit emit, void *ctx) {
        (uint64_t)(b.design_mwh ? b.design_mwh : b.max_mwh) * 1000},
       {"cycle_count", 0, b.cycles},
       {"power_now", 0, (uint64_t)b.rate_mw * 1000},
-      {"voltage_now", 0, 11400000},  // nominal; NT does not say
+      {"voltage_now", 0, b.volt_mv ? (uint64_t)b.volt_mv * 1000 : 11400000},
       {"model_name", "APE Battery", 0},
       {"manufacturer", "cosmopolitan", 0},
       {"technology", 0, 0},  // filled below

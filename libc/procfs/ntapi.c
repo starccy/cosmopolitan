@@ -246,11 +246,15 @@ static bool snap_query_locked(void) {
       p->peak_vsize = vm->PeakPagefileUsage;
       p->peak_rss = vm->PeakWorkingSetSize;
       p->minflt = vm->PageFaultCount;
+      p->private = e->PrivatePageCount;
       p->io = e->IoCounters;
     }
     const struct NtSystemThreads *th = (void *)(q + sizeof *e);
-    for (uint32_t i = 0; i < e->NumberOfThreads; i++)
+    for (uint32_t i = 0; i < e->NumberOfThreads; i++) {
       add_thread((uint32_t)(uintptr_t)th[i].ClientId.UniqueThread, pid);
+      if (p)
+        p->csw += th[i].ContextSwitchCount;
+    }
     if (!e->NextEntryOffset)
       break;
     q += e->NextEntryOffset;
@@ -325,16 +329,26 @@ const struct pfs_proc *pfs_proc_find(uint32_t pid) {
   return 0;
 }
 
-int pfs_threads_of(uint32_t pid, uint64_t *out, int cap) {
+int pfs_threads_of(uint32_t pid, uint64_t **out) {
   if (IsXnuSilicon())
-    return pfs_xnu_threads(pid, out, cap);
+    return pfs_xnu_threads(pid, out);
   pthread_mutex_lock(&g_snap_lock);
   snap_refresh_locked();
   int n = 0;
-  for (int i = 0; i < g_nthreads && n < cap; i++)
+  for (int i = 0; i < g_nthreads; i++)
     if (g_threads[i].pid == pid)
-      out[n++] = g_threads[i].tid;
+      n++;
+  uint64_t *tids = n ? malloc(n * sizeof *tids) : 0;
+  if (tids) {
+    int k = 0;
+    for (int i = 0; i < g_nthreads; i++)
+      if (g_threads[i].pid == pid)
+        tids[k++] = g_threads[i].tid;
+  } else {
+    n = 0;
+  }
   pthread_mutex_unlock(&g_snap_lock);
+  *out = tids;
   return n;
 }
 

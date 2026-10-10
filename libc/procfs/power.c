@@ -8,6 +8,7 @@
 #include "libc/nt/systeminfo.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/procfs/internal.h"
+#include "libc/procfs/xnu.internal.h"
 
 // Power facts for the sysfs slices, the battery behind
 // /sys/class/power_supply and the per-core frequencies behind
@@ -94,6 +95,8 @@ static void batt_design(struct pfs_batt *out) {
 }
 
 bool pfs_battery(struct pfs_batt *out) {
+  if (IsXnuSilicon())
+    return pfs_xnu_battery(out);
   if (!IsWindows())
     return false;
   CallNtPowerF f = power_fn();
@@ -117,6 +120,7 @@ bool pfs_battery(struct pfs_batt *out) {
   out->rate_mw = b.Rate < 0 ? -b.Rate : b.Rate;
   out->design_mwh = 0;
   out->cycles = 0;
+  out->volt_mv = 0;
   memset(out->chem, 0, sizeof out->chem);
   if (out->present)
     batt_design(out);

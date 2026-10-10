@@ -99,16 +99,26 @@ struct pfs_proc {
   bool facts;
   uint64_t utime, stime, create;
   uint64_t vsize, rss, peak_vsize, peak_rss;
+  uint64_t private;  // committed private bytes, what VmData reports
+  uint64_t csw;      // context switches, summed over the threads
   uint32_t minflt;
   struct NtIoCounters io;
 };
 int pfs_procs(const struct pfs_proc **out);  // returns count
 const struct pfs_proc *pfs_proc_find(uint32_t pid);
 
-// Thread ids of one process, via Thread32First on NT and the libproc
-// listing on XNU, whose ids need the full 64 bits; returns 0 when the host
-// cannot say (caller then pretends one thread, the pid).
-int pfs_threads_of(uint32_t pid, uint64_t *out, int cap);
+// Thread ids of one process, via the process snapshot on NT and the
+// libproc listing on XNU, whose ids need the full 64 bits. The array is
+// malloc'd into *out and the caller frees it; 0 when the host cannot say
+// (caller then pretends one thread, the pid).
+int pfs_threads_of(uint32_t pid, uint64_t **out);
+
+// What the runtime knows about this process for /proc/self/status: the
+// main thread's stack and the text in bytes, and the blocked, ignored and
+// caught signal sets as Linux prints them (bit 0 = signal 1). selfvm.c
+uint64_t pfs_self_stack(void);
+uint64_t pfs_self_text(void);
+void pfs_self_sigs(uint64_t *blk, uint64_t *ign, uint64_t *cgt);
 
 // Time. Jiffies run at sysconf(_SC_CLK_TCK), see pfs_filetime_jiffies.
 uint64_t pfs_filetime_jiffies(uint64_t ft100ns);
@@ -140,16 +150,17 @@ long pfs_pid_link(uint32_t pid, const char *name, char *buf, size_t n);
 extern const char *const pfs_net_files[];
 bool pfs_gen_net_file(struct pfs_buf *b, const char *name);
 
-// Socket inodes held by one pid, for /proc/<pid>/fd. Refreshes the tables
-// if stale.
-int pfs_net_fds_of(uint32_t pid, uint64_t *inodes, int cap);
+// Socket inodes held by one pid, for /proc/<pid>/fd, malloc'd into *out
+// (the caller frees it). Refreshes the tables if stale.
+int pfs_net_fds_of(uint32_t pid, uint64_t **out);
 
 // One interface's counters and state, joined from the adapter list (which
 // filters out NDIS shadow rows and carries the name) and the interface
 // table (which carries 64-bit counters). Shared by /proc/net/dev and the
 // /sys/class/net emulation.
 struct pfs_ifstat {
-  char name[16];  // cosmo's spelling of the FriendlyName
+  char name[16];   // cosmo's spelling of the FriendlyName
+  uint32_t index;  // the host's interface index, what route rows name
   uint64_t rx_bytes, tx_bytes, rx_pkts, tx_pkts;
   uint64_t rx_errs, tx_errs, rx_drop, tx_drop;
   uint32_t mtu;
@@ -175,12 +186,24 @@ struct pfs_fdent {
   int fd;
   char text[512];  // the link target
 };
-int pfs_self_fds(struct pfs_fdent *out, int cap);
+// The entries are malloc'd into *out and the caller frees them.
+int pfs_self_fds(struct pfs_fdent **out);
 
 // Another process's descriptors, real fd numbers and link texts, on hosts
 // whose kernel enumerates them (XNU); -1 where none will (NT), and the
 // caller falls back to the socket tables' dense numbering.
-int pfs_other_fds(uint32_t pid, struct pfs_fdent *out, int cap);
+int pfs_other_fds(uint32_t pid, struct pfs_fdent **out);
+
+// What /proc/<pid>/fdinfo/<fd> says about one descriptor. False when the
+// process has no such descriptor. flags are Linux-coded (an O_CLOEXEC
+// descriptor carries it, as the kernel prints).
+struct pfs_fdinfo {
+  int64_t pos;
+  unsigned flags;
+  uint64_t ino;
+};
+bool pfs_fd_info(uint32_t pid, int fd, struct pfs_fdinfo *out);
+bool pfs_gen_fdinfo(struct pfs_buf *b, uint32_t pid, int fd);
 
 // ---------------------------------------------------------------------------
 // sysinfo.c. The top-level files (/proc/meminfo, uptime, stat, ...).
@@ -200,7 +223,7 @@ extern const char *const pfs_sys_files[];
 // ---------------------------------------------------------------------------
 // power.c. CallNtPowerInformation, for /sys/class/power_supply and the
 // per-core frequencies in /sys/devices/system/cpu and /proc/cpuinfo.
-// NT only; the XNU side answers nothing here.
+// On XNU the same facts come out of IOKit (xnuiokit.c).
 
 struct pfs_batt {
   bool present, ac, charging, discharging;
@@ -208,7 +231,8 @@ struct pfs_batt {
   int32_t rate_mw;            // drain/charge rate, absolute value
   uint32_t design_mwh;        // 0 when the battery device will not say
   uint32_t cycles;
-  char chem[5];  // chemistry tag ("LION"); empty when unknown
+  uint32_t volt_mv;  // 0 when the host will not say
+  char chem[5];      // chemistry tag ("LION"); empty when unknown
 };
 bool pfs_battery(struct pfs_batt *out);
 int pfs_cpu_mhz(uint32_t *cur, uint32_t *max, int cap);  // per-cpu, MHz
@@ -222,7 +246,8 @@ int pfs_cpu_topology(uint8_t *coreid, uint8_t *pkgid, int cap);
 // ---------------------------------------------------------------------------
 // dmi.c. The SMBIOS identity behind /sys/class/dmi/id. Each have_* says
 // whether that structure exists in the table; a missing one leaves its
-// files out, the way the kernel does. NT only.
+// files out, the way the kernel does. XNU answers from IOKit's platform
+// device, with the firmware version standing in for the BIOS.
 
 struct pfs_dmi {
   bool have_bios, have_sys, have_board, have_chassis;
@@ -280,6 +305,7 @@ bool pc_spelled_self(const char *sub);
 const char *pc_link_name(const struct node *n);  // exe, cwd, root or 0
 unsigned pc_link_mode(const char *vpath);        // 0 unless vpath is a symlink
 bool pc_is_dir_node(const struct node *n);
+int pc_fd_number(const char *s);  // -1 unless s spells a descriptor
 bool pc_content_exists(const struct node *n);
 uint64_t pc_fnv64(const void *data, size_t n, uint64_t h);
 uint64_t pc_inode(const char *vpath);
@@ -326,6 +352,7 @@ struct ProcfsHandle {
   int64_t gen;  // slot generation the content came from, 0 if not a slot
   bool dir;
   bool link;  // opened with O_PATH|O_NOFOLLOW: names the link itself
+  bool fixed;  // made once, not regenerated on a rewind (user-dirs.dirs)
   struct pfs_virtent *ents;
   int nents;
   char vpath[PC_PATH_MAX];
@@ -335,6 +362,9 @@ int pc_handle_fd(struct ProcfsHandle *h, int flags, unsigned mode);
 bool pc_fd_vpath(int fd, char *out, size_t n);
 int pc_open_dir(const char *vpath, int flags);
 int pc_open_content(const char *vpath, int flags);
+int pc_userdirs_open(int dirfd, const char *path, int flags);
+int pc_userdirs_stat(int dirfd, const char *path, struct stat *st);
+int pc_userdirs_access(int dirfd, const char *path, int amode);
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_PROCFS_INTERNAL_H_ */

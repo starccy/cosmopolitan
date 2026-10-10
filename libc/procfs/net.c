@@ -25,8 +25,8 @@
 typedef uint32_t(__msabi *GetExtTableF)(void *, uint32_t *, int32_t, uint32_t,
                                         uint32_t, uint32_t);
 
-const char *const pfs_net_files[] = {"tcp", "tcp6", "udp", "udp6",
-                                     "dev", "unix", 0};
+const char *const pfs_net_files[] = {"tcp",  "tcp6",  "udp", "udp6", "dev",
+                                     "unix", "route", "arp", "snmp", 0};
 
 struct row {
   uint8_t proto;   // 0 tcp, 1 udp
@@ -222,6 +222,9 @@ static void emit_addr(struct pfs_buf *b, const uint8_t *a, int family) {
 }
 
 static bool gen_net_dev(struct pfs_buf *b);
+static void gen_net_route(struct pfs_buf *b);
+static void gen_net_arp(struct pfs_buf *b);
+static void gen_net_snmp(struct pfs_buf *b);
 
 bool pfs_gen_net_file(struct pfs_buf *b, const char *name) {
   if (IsXnuSilicon())
@@ -229,6 +232,12 @@ bool pfs_gen_net_file(struct pfs_buf *b, const char *name) {
   uint8_t proto, family;
   if (!strcmp(name, "dev"))
     return gen_net_dev(b);
+  if (!strcmp(name, "route"))
+    return gen_net_route(b), true;
+  if (!strcmp(name, "arp"))
+    return gen_net_arp(b), true;
+  if (!strcmp(name, "snmp"))
+    return gen_net_snmp(b), true;
   if (!strcmp(name, "unix"))  // header only: NT cannot enumerate these
     return pfs_printf(b, "Num       RefCount Protocol Flags    Type St "
                          "Inode Path\n"),
@@ -279,16 +288,27 @@ bool pfs_gen_net_file(struct pfs_buf *b, const char *name) {
   return ok;
 }
 
-int pfs_net_fds_of(uint32_t pid, uint64_t *inodes, int cap) {
+int pfs_net_fds_of(uint32_t pid, uint64_t **out) {
+  *out = 0;
   if (IsXnuSilicon())
     return 0;  // no socket table source wired up yet
   pthread_mutex_lock(&g_net_lock);
   net_refresh_locked();
   int n = 0;
-  for (int i = 0; i < g_nrows && n < cap; i++)
+  for (int i = 0; i < g_nrows; i++)
     if (g_rows[i].pid == pid)
-      inodes[n++] = g_rows[i].inode;
+      n++;
+  uint64_t *inodes = n ? malloc(n * sizeof *inodes) : 0;
+  if (inodes) {
+    int k = 0;
+    for (int i = 0; i < g_nrows; i++)
+      if (g_rows[i].pid == pid)
+        inodes[k++] = g_rows[i].inode;
+  } else {
+    n = 0;
+  }
   pthread_mutex_unlock(&g_net_lock);
+  *out = inodes;
   return n;
 }
 
@@ -373,6 +393,7 @@ static int ifstats_fetch(struct pfs_ifstat *out, int cap) {
     // [0] octets [1] ucast pkts [2] nucast pkts [3] discards [4] errors
     struct pfs_ifstat *s = &out[n++];
     if_name(s->name, p->FriendlyName);
+    s->index = p->IfIndex;
     s->rx_bytes = in[0];
     s->rx_pkts = in[1] + in[2];
     s->rx_drop = in[3];
@@ -437,4 +458,204 @@ static bool gen_net_dev(struct pfs_buf *b) {
                (unsigned long long)s->tx_drop);
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// /proc/net/route, arp and snmp, out of the IPv4 tables and counters (the
+// Linux files are IPv4 only as well). The legacy table calls are used
+// since their rows are plain arrays of u32: MIB_IPFORWARDROW is 14 of
+// them, MIB_IPNETROW is index, address length, 8 address bytes, address
+// and type; a table is a u32 count followed by its rows.
+
+typedef uint32_t(__msabi *GetTableF)(void *, uint32_t *, int32_t);
+typedef uint32_t(__msabi *GetStatsExF)(void *, uint32_t);
+
+static void *fetch_table(const char *name) {
+  GetTableF f = (GetTableF)pfs_sym(u"iphlpapi.dll", name);
+  if (!f)
+    return 0;
+  uint32_t size = 0;
+  f(0, &size, 0);
+  for (int tries = 0; size && tries < 4; tries++) {
+    size += size / 4 + 64;
+    void *buf = malloc(size);
+    if (!buf)
+      return 0;
+    uint32_t rc = f(buf, &size, 1);
+    if (!rc)
+      return buf;
+    free(buf);
+    if (rc != 122)
+      return 0;  // ERROR_INSUFFICIENT_BUFFER
+  }
+  return 0;
+}
+
+// cosmo's name of the interface the host numbers `index`
+static void if_name_of(uint32_t index, char *out, size_t n) {
+  struct pfs_ifstat ifs[32];
+  int k = pfs_net_ifstats(ifs, 32);
+  for (int i = 0; i < k; i++) {
+    if (ifs[i].index == index) {
+      snprintf(out, n, "%s", ifs[i].name);
+      return;
+    }
+  }
+  snprintf(out, n, "if%u", index);
+}
+
+// the kernel pads every line of this file to 127 columns
+static void pad_line(struct pfs_buf *b, size_t from) {
+  size_t len = b->n - from;
+  while (len++ < 127)
+    pfs_put(b, " ", 1);
+  pfs_put(b, "\n", 1);
+}
+
+// Addresses print as the %08X of the network-order bytes read as one
+// host-order word, which is how NT stores them in the row already.
+static void gen_net_route(struct pfs_buf *b) {
+  size_t from = b->n;
+  pfs_printf(b, "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\t"
+                "Mask\t\tMTU\tWindow\tIRTT");
+  pad_line(b, from);
+  uint32_t *t = fetch_table("GetIpForwardTable");
+  if (!t)
+    return;
+  uint32_t n = t[0];
+  for (uint32_t i = 0; i < n; i++) {
+    const uint32_t *r = t + 1 + i * 14;
+    uint32_t dest = r[0], mask = r[1], nexthop = r[3], ifindex = r[4];
+    uint32_t type = r[5], metric = r[9];
+    unsigned flags = 1;  // RTF_UP
+    if (type == 4)       // MIB_IPROUTE_TYPE_INDIRECT: through a gateway
+      flags |= 2;
+    if (mask == 0xffffffffu)
+      flags |= 4;  // RTF_HOST
+    char name[16];
+    if_name_of(ifindex, name, sizeof name);
+    from = b->n;
+    pfs_printf(b, "%s\t%08X\t%08X\t%04X\t0\t0\t%u\t%08X\t0\t0\t0", name, dest,
+               type == 4 ? nexthop : 0, flags, metric, mask);
+    pad_line(b, from);
+  }
+  free(t);
+}
+
+// Resolved unicast neighbors only: Linux's table has no multicast or
+// broadcast rows, which NT lists as static entries.
+static void gen_net_arp(struct pfs_buf *b) {
+  pfs_printf(b, "IP address       HW type     Flags       HW address       "
+                "     Mask     Device\n");
+  uint32_t *t = fetch_table("GetIpNetTable");
+  if (!t)
+    return;
+  uint32_t n = t[0];
+  for (uint32_t i = 0; i < n; i++) {
+    const uint8_t *r = (const uint8_t *)(t + 1) + i * 24;
+    uint32_t ifindex, physlen, addr, type;
+    memcpy(&ifindex, r, 4);
+    memcpy(&physlen, r + 4, 4);
+    memcpy(&addr, r + 16, 4);
+    memcpy(&type, r + 20, 4);
+    const uint8_t *mac = r + 8;
+    const uint8_t *ip = (const uint8_t *)&addr;
+    if (type == 2)  // MIB_IPNET_TYPE_INVALID
+      continue;
+    if ((ip[0] & 0xf0) == 0xe0 || addr == 0xffffffffu)
+      continue;
+    if (physlen == 6 && mac[0] == 0xff && mac[1] == 0xff && mac[2] == 0xff &&
+        mac[3] == 0xff && mac[4] == 0xff && mac[5] == 0xff)
+      continue;
+    unsigned flags = physlen ? 0x2 : 0;  // ATF_COM
+    if (type == 4)                       // MIB_IPNET_TYPE_STATIC
+      flags |= 0x4;                      // ATF_PERM
+    char ipstr[16], hw[18], name[16];
+    snprintf(ipstr, sizeof ipstr, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    snprintf(hw, sizeof hw, "%02x:%02x:%02x:%02x:%02x:%02x",
+             physlen > 0 ? mac[0] : 0, physlen > 1 ? mac[1] : 0,
+             physlen > 2 ? mac[2] : 0, physlen > 3 ? mac[3] : 0,
+             physlen > 4 ? mac[4] : 0, physlen > 5 ? mac[5] : 0);
+    if_name_of(ifindex, name, sizeof name);
+    pfs_printf(b, "%-16s 0x%-10x0x%-10x%s     *        %s\n", ipstr, 1, flags,
+               hw, name);
+  }
+  free(t);
+}
+
+// The four protocol counter blocks, each a run of u32s in MIB order:
+// MIB_IPSTATS has 23, MIB_TCPSTATS 15, MIB_UDPSTATS 5, and MIB_ICMP_EX is
+// two of {messages, errors, 256 per-type counts}, in then out.
+static void gen_net_snmp(struct pfs_buf *b) {
+  uint32_t ip[32] = {0}, tcp[32] = {0}, udp[32] = {0};
+  static uint32_t icmp[2 * 258];  // under pc_lock
+  memset(icmp, 0, sizeof icmp);
+  GetStatsExF f;
+  if ((f = (GetStatsExF)pfs_sym(u"iphlpapi.dll", "GetIpStatisticsEx")))
+    f(ip, 2 /* AF_INET */);
+  if ((f = (GetStatsExF)pfs_sym(u"iphlpapi.dll", "GetTcpStatisticsEx")))
+    f(tcp, 2);
+  if ((f = (GetStatsExF)pfs_sym(u"iphlpapi.dll", "GetUdpStatisticsEx")))
+    f(udp, 2);
+  if ((f = (GetStatsExF)pfs_sym(u"iphlpapi.dll", "GetIcmpStatisticsEx")))
+    f(icmp, 2);
+  const uint32_t *in = icmp, *out = icmp + 258;
+
+  pfs_printf(b, "Ip: Forwarding DefaultTTL InReceives InHdrErrors "
+                "InAddrErrors ForwDatagrams InUnknownProtos InDiscards "
+                "InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout "
+                "ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates "
+                "OutTransmits\n");
+  pfs_printf(b, "Ip: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u "
+                "%u\n",
+             ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7], ip[8],
+             ip[9], ip[11], ip[12], ip[13], ip[14], ip[15], ip[16], ip[17],
+             ip[18], ip[19], ip[9] + ip[5]);
+  pfs_printf(b, "Icmp: InMsgs InErrors InCsumErrors InDestUnreachs "
+                "InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos "
+                "InEchoReps InTimestamps InTimestampReps InAddrMasks "
+                "InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal "
+                "OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs "
+                "OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps "
+                "OutTimestampReps OutAddrMasks OutAddrMaskReps\n");
+  pfs_printf(b, "Icmp: %u %u 0 %u %u %u %u %u %u %u %u %u %u %u %u %u 0 0 %u "
+                "%u %u %u %u %u %u %u %u %u %u\n",
+             in[0], in[1], in[2 + 3], in[2 + 11], in[2 + 12], in[2 + 4],
+             in[2 + 5], in[2 + 8], in[2 + 0], in[2 + 13], in[2 + 14],
+             in[2 + 17], in[2 + 18], out[0], out[1], out[2 + 3], out[2 + 11],
+             out[2 + 12], out[2 + 4], out[2 + 5], out[2 + 8], out[2 + 0],
+             out[2 + 13], out[2 + 14], out[2 + 17], out[2 + 18]);
+  bool any = false;
+  for (int t = 0; t < 256; t++)
+    any |= in[2 + t] || out[2 + t];
+  if (any) {
+    pfs_printf(b, "IcmpMsg:");
+    for (int t = 0; t < 256; t++) {
+      if (in[2 + t])
+        pfs_printf(b, " InType%d", t);
+      if (out[2 + t])
+        pfs_printf(b, " OutType%d", t);
+    }
+    pfs_printf(b, "\nIcmpMsg:");
+    for (int t = 0; t < 256; t++) {
+      if (in[2 + t])
+        pfs_printf(b, " %u", in[2 + t]);
+      if (out[2 + t])
+        pfs_printf(b, " %u", out[2 + t]);
+    }
+    pfs_printf(b, "\n");
+  }
+  pfs_printf(b, "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens "
+                "PassiveOpens AttemptFails EstabResets CurrEstab InSegs "
+                "OutSegs RetransSegs InErrs OutRsts InCsumErrors\n");
+  pfs_printf(b, "Tcp: %u %u %u %d %u %u %u %u %u %u %u %u %u %u 0\n", tcp[0],
+             tcp[1], tcp[2], (int)tcp[3], tcp[4], tcp[5], tcp[6], tcp[7],
+             tcp[8], tcp[9], tcp[10], tcp[11], tcp[12], tcp[13]);
+  pfs_printf(b, "Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors "
+                "SndbufErrors InCsumErrors IgnoredMulti MemErrors\n");
+  pfs_printf(b, "Udp: %u %u %u %u 0 0 0 0 0\n", udp[0], udp[1], udp[2],
+             udp[3]);
+  pfs_printf(b, "UdpLite: InDatagrams NoPorts InErrors OutDatagrams "
+                "RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti "
+                "MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n");
 }

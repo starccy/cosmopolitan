@@ -1,4 +1,6 @@
 #include "libc/nt/accounting.h"
+#include "libc/nt/dll.h"
+#include "libc/nt/enum/accessmask.h"
 #include "libc/nt/enum/processaccess.h"
 #include "libc/nt/enum/processinfoclass.h"
 #include "libc/nt/files.h"
@@ -10,8 +12,10 @@
 #include "libc/nt/struct/memorybasicinformation.h"
 #include "libc/nt/struct/processbasicinformation.h"
 #include "libc/nt/struct/processmemorycounters.h"
+#include "libc/nt/struct/psapiworkingsetexinformation.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/procfs/internal.h"
+#include "libc/str/str.h"
 #include "libc/procfs/xnu.internal.h"
 
 // /proc/<pid>/* content. The facts come from three places, the shared
@@ -29,8 +33,9 @@ extern char **environ;
 // a process's lifetime and only ever needs writing once.
 const char *const pfs_pid_volatile[] = {"stat", "status", "statm", "io", 0};
 const char *const pfs_pid_stable[] = {
-    "cmdline",   "comm",   "environ",       "limits",    "maps", "cgroup",
-    "mountinfo", "mounts", "oom_score_adj", "oom_score", 0};
+    "cmdline",       "comm",      "environ", "limits",        "maps",
+    "cgroup",        "mountinfo", "mounts",  "oom_score_adj", "oom_score",
+    "smaps",         "smaps_rollup", 0};
 
 static uint64_t ft(struct NtFileTime t) {
   return (uint64_t)t.dwHighDateTime << 32 | t.dwLowDateTime;
@@ -44,6 +49,8 @@ struct pidfacts {
   uint64_t starttime;     // jiffies since boot
   uint64_t vsize, rss;    // bytes
   uint64_t peak_vsize, peak_rss;
+  uint64_t private;  // committed private bytes
+  uint64_t csw;      // context switches of all its threads
   uint32_t minflt;
   struct NtIoCounters io;
 };
@@ -62,6 +69,8 @@ static void gather(uint32_t pid, struct pidfacts *f) {
     f->rss = p->rss;
     f->peak_vsize = p->peak_vsize;
     f->peak_rss = p->peak_rss;
+    f->private = p->private;
+    f->csw = p->csw;
     f->minflt = p->minflt;
     f->io = p->io;
     return;
@@ -87,6 +96,7 @@ static void gather(uint32_t pid, struct pidfacts *f) {
     f->rss = mc.WorkingSetSize;
     f->peak_vsize = mc.PeakPagefileUsage;
     f->peak_rss = mc.PeakWorkingSetSize;
+    f->private = mc.PrivateUsage;
     f->minflt = mc.PageFaultCount;
   }
   GetProcessIoCounters(h, &f->io);
@@ -95,6 +105,41 @@ static void gather(uint32_t pid, struct pidfacts *f) {
 
 static char state_of(uint32_t pid) {
   return pid == pfs_self_pid() ? 'R' : 'S';
+}
+
+struct NtModuleInfo {
+  void *lpBaseOfDll;
+  uint32_t SizeOfImage;
+  void *EntryPoint;
+};
+typedef int32_t(__msabi *EnumModsF)(int64_t, int64_t *, uint32_t, uint32_t *);
+typedef int32_t(__msabi *ModInfoF)(int64_t, int64_t, struct NtModuleInfo *,
+                                   uint32_t);
+
+// the DLLs mapped into this process, in bytes, our own image left out:
+// what VmLib is on Linux, where it's the shared libraries' mappings
+static uint64_t self_libs(void) {
+  static EnumModsF em;
+  static ModInfoF mi;
+  if (!em) {
+    em = (EnumModsF)pfs_sym(u"kernel32.dll", "K32EnumProcessModules");
+    mi = (ModInfoF)pfs_sym(u"kernel32.dll", "K32GetModuleInformation");
+  }
+  int64_t handles[256];
+  uint32_t need = 0;
+  if (!em || !mi || !em(-1, handles, sizeof handles, &need))
+    return 0;
+  int n = (int)(need / 8);
+  if (n > 256)
+    n = 256;
+  int64_t self = (int64_t)GetModuleHandle(0);
+  uint64_t total = 0;
+  for (int i = 0; i < n; i++) {
+    struct NtModuleInfo info;
+    if (handles[i] != self && mi(-1, handles[i], &info, sizeof info))
+      total += info.SizeOfImage;
+  }
+  return total;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,11 +157,101 @@ static void gen_stat(struct pfs_buf *b, uint32_t pid, const struct pfs_proc *p,
                 "0 0 0 0 0 0 0 0 0 0\n");
 }
 
+// ---------------------------------------------------------------------------
+// Another process's uid, the number that process's own getuid() gives: on
+// NT cosmo hashes the account name (libc/calls/getuid-nt.c), and gid is the
+// same number. LocalSystem is root. A token that can't be opened, mostly
+// protected system processes, reads as 0 too. Answers are cached per pid and
+// creation time, and names per SID, since LookupAccountSid goes to LSA.
+
+typedef bool32(__msabi *GetTokenInfoF)(int64_t, int, void *, uint32_t,
+                                       uint32_t *);
+typedef bool32(__msabi *LookupSidF)(const char16_t *, const void *, char16_t *,
+                                    uint32_t *, char16_t *, uint32_t *, int *);
+
+static struct {
+  uint32_t pid;
+  uint64_t create;
+  unsigned uid;
+} g_uidcache[256];
+
+static struct {
+  unsigned char sid[68];
+  unsigned uid;
+} g_sidcache[16];
+static int g_sidcount;
+
+static unsigned sid_uid(const unsigned char *sid) {
+  static LookupSidF lookup;
+  size_t len = 8 + 4 * (size_t)sid[1];
+  if (len > sizeof(g_sidcache[0].sid))
+    return 0;
+  // S-1-5-18
+  static const unsigned char kSystem[12] = {1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0};
+  if (len == sizeof(kSystem) && !memcmp(sid, kSystem, len))
+    return 0;
+  for (int i = 0; i < g_sidcount; i++)
+    if (!memcmp(g_sidcache[i].sid, sid, len))
+      return g_sidcache[i].uid;
+  if (!lookup)
+    lookup = (LookupSidF)pfs_sym(u"advapi32.dll", "LookupAccountSidW");
+  char16_t name[257], domain[257];
+  uint32_t n = 257, dn = 257;
+  int use;
+  if (!lookup || !lookup(0, sid, name, &n, domain, &dn, &use))
+    return 0;
+  // getuid-nt.c hashes what GetUserName() gives, whose count has the NUL
+  unsigned uid = __fnv(name, (n + 1) >> 1) & 32767;
+  if (!uid)
+    uid = 1;
+  int slot = g_sidcount < 16 ? g_sidcount++ : 15;
+  memcpy(g_sidcache[slot].sid, sid, len);
+  g_sidcache[slot].uid = uid;
+  return uid;
+}
+
+static unsigned other_uid(uint32_t pid, uint64_t create) {
+  static GetTokenInfoF info;
+  unsigned slot = (pid >> 2) % 256;
+  if (create && g_uidcache[slot].pid == pid &&
+      g_uidcache[slot].create == create)
+    return g_uidcache[slot].uid;
+  if (!info)
+    info = (GetTokenInfoF)pfs_sym(u"advapi32.dll", "GetTokenInformation");
+  if (!info)
+    return 0;
+  int64_t h = OpenProcess(kNtProcessQueryLimitedInformation, false, pid);
+  if (!h)
+    return 0;
+  int64_t tok;
+  bool ok = OpenProcessToken(h, kNtTokenQuery, &tok);
+  CloseHandle(h);
+  if (!ok)
+    return 0;
+  union {
+    struct {
+      unsigned char *sid;
+      uint32_t attributes;
+    } user;  // TOKEN_USER
+    char buf[128];
+  } u;
+  uint32_t len;
+  ok = info(tok, 1 /* TokenUser */, &u, sizeof(u), &len);
+  CloseHandle(tok);
+  if (!ok)
+    return 0;
+  unsigned uid = sid_uid(u.user.sid);
+  g_uidcache[slot].pid = pid;
+  g_uidcache[slot].create = create;
+  g_uidcache[slot].uid = uid;
+  return uid;
+}
+
 static void gen_status(struct pfs_buf *b, uint32_t pid,
                        const struct pfs_proc *p, const struct pidfacts *f) {
   bool self = pid == pfs_self_pid();
-  unsigned uid = self ? (unsigned)getuid() : 0;
-  unsigned gid = self ? (unsigned)getgid() : 0;
+  unsigned uid = self ? (unsigned)getuid() : other_uid(pid, p->create);
+  unsigned gid = self ? (unsigned)getgid() : uid;
   pfs_printf(b, "Name:\t%s\n", p->comm);
   pfs_printf(b, "Umask:\t0022\n");
   pfs_printf(b, "State:\t%c (%s)\n", state_of(pid),
@@ -133,22 +268,57 @@ static void gen_status(struct pfs_buf *b, uint32_t pid,
   pfs_printf(b, "VmHWM:\t%8llu kB\nVmRSS:\t%8llu kB\n",
              (unsigned long long)(f->peak_rss / 1024),
              (unsigned long long)(f->rss / 1024));
-  pfs_printf(b, "VmData:\t       0 kB\nVmStk:\t       0 kB\n"
-                "VmExe:\t       0 kB\nVmLib:\t       0 kB\n"
-                "VmSwap:\t       0 kB\n");
+  // VmData is NT's private commit charge: the heap, anonymous mappings
+  // and the stack pages touched so far, with the program's own text
+  // taken out since cosmo maps that privately too. Only our own stack,
+  // text and DLLs are known; another process gets zeros there
+  uint64_t stk = 0, exe = 0, lib = 0, data = f->private;
+  if (self) {
+    stk = pfs_self_stack();
+    exe = pfs_self_text();
+    lib = self_libs();
+    data = data > exe ? data - exe : 0;
+  }
+  pfs_printf(b,
+             "VmData:\t%8llu kB\nVmStk:\t%8llu kB\n"
+             "VmExe:\t%8llu kB\nVmLib:\t%8llu kB\n"
+             "VmSwap:\t       0 kB\n",
+             (unsigned long long)(data / 1024), (unsigned long long)(stk / 1024),
+             (unsigned long long)(exe / 1024), (unsigned long long)(lib / 1024));
   pfs_printf(b, "Threads:\t%u\n", p->threads);
-  pfs_printf(b, "SigQ:\t0/0\nSigPnd:\t0000000000000000\n"
-                "ShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\n"
-                "SigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\n"
-                "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n"
-                "CapEff:\t0000000000000000\n");
-  pfs_printf(b, "voluntary_ctxt_switches:\t0\n"
-                "nonvoluntary_ctxt_switches:\t0\n");
+  uint64_t blk = 0, ign = 0, cgt = 0;
+  if (self)
+    pfs_self_sigs(&blk, &ign, &cgt);
+  pfs_printf(b,
+             "SigQ:\t0/0\nSigPnd:\t0000000000000000\n"
+             "ShdPnd:\t0000000000000000\nSigBlk:\t%016llx\n"
+             "SigIgn:\t%016llx\nSigCgt:\t%016llx\n"
+             "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n"
+             "CapEff:\t0000000000000000\n",
+             (unsigned long long)blk, (unsigned long long)ign,
+             (unsigned long long)cgt);
+  // NT counts switches, not why they happened
+  pfs_printf(b,
+             "voluntary_ctxt_switches:\t%llu\n"
+             "nonvoluntary_ctxt_switches:\t0\n",
+             (unsigned long long)f->csw);
 }
 
-static void gen_statm(struct pfs_buf *b, const struct pidfacts *f) {
-  pfs_printf(b, "%llu %llu 0 0 0 0 0\n", (unsigned long long)(f->vsize / 4096),
-             (unsigned long long)(f->rss / 4096));
+// size resident shared text lib data dt, in pages; data is what Linux
+// puts there, the data and stack segments together
+static void gen_statm(struct pfs_buf *b, uint32_t pid,
+                      const struct pidfacts *f) {
+  uint64_t exe = 0, stk = 0, data = f->private;
+  if (pid == pfs_self_pid()) {
+    exe = pfs_self_text();
+    stk = pfs_self_stack();
+    data = data > exe ? data - exe : 0;
+  }
+  pfs_printf(b, "%llu %llu 0 %llu 0 %llu 0\n",
+             (unsigned long long)(f->vsize / 4096),
+             (unsigned long long)(f->rss / 4096),
+             (unsigned long long)(exe / 4096),
+             (unsigned long long)((data + stk) / 4096));
 }
 
 // ---------------------------------------------------------------------------
@@ -254,9 +424,9 @@ static void gen_cmdline(struct pfs_buf *b, uint32_t pid) {
 // PROCESS_VM_READ, which the same user's ordinary processes grant and
 // system/protected/other users' ones refuse; those fall back to what a
 // plain read could say before (cwd ENOENT, environ empty, the closest a
-// read comes to the EACCES Linux answers for other users). Only 64-bit
-// targets are read, since a WOW64 process has a 32-bit PEB with other
-// offsets; it reports as absent rather than misread.
+// read comes to the EACCES Linux answers for other users). A WOW64 process
+// has a 32-bit PEB and parameter block, with 4 byte pointers and other
+// offsets; ProcessWow64Information gives that PEB's address.
 
 typedef bool32(__msabi *ReadMemF)(int64_t, uint64_t, void *, uint64_t,
                                   uint64_t *);
@@ -269,24 +439,30 @@ static bool read_mem(int64_t h, uint64_t addr, void *out, size_t n) {
   return read && read(h, addr, out, n, &got) && got == n;
 }
 
-// Opens `pid` for memory reads and returns its process parameters block;
-// 0 with no handle when either is not to be had.
-static uint64_t open_params(uint32_t pid, int64_t *hout) {
+// Opens `pid` for memory reads and returns its process parameters block,
+// setting *is32 for a WOW64 target; 0 with no handle when either is not to
+// be had.
+static uint64_t open_params(uint32_t pid, int64_t *hout, bool *is32) {
   int64_t h =
       OpenProcess(kNtProcessQueryInformation | kNtProcessVmRead, false, pid);
   if (!h)
     return 0;
   struct NtProcessBasicInformation pbi;
-  uint32_t rlen = 0;
+  uint32_t rlen = 0, params32 = 0;
   uint64_t wow64 = 0, params = 0;
-  if (NtQueryInformationProcess(h, kNtProcessBasicInformation, &pbi, sizeof pbi,
-                                &rlen) ||
-      (!NtQueryInformationProcess(h, kNtProcessWow64Information, &wow64,
-                                  sizeof wow64, &rlen) &&
-       wow64) ||
-      !read_mem(h, (uint64_t)(uintptr_t)pbi.PebBaseAddress + 0x20, &params,
-                8) ||
-      !params) {
+  if (!NtQueryInformationProcess(h, kNtProcessWow64Information, &wow64,
+                                 sizeof wow64, &rlen) &&
+      wow64) {
+    *is32 = true;
+    if (read_mem(h, wow64 + 0x10, &params32, 4))
+      params = params32;
+  } else {
+    *is32 = false;
+    if (!NtQueryInformationProcess(h, kNtProcessBasicInformation, &pbi,
+                                   sizeof pbi, &rlen))
+      read_mem(h, (uint64_t)(uintptr_t)pbi.PebBaseAddress + 0x20, &params, 8);
+  }
+  if (!params) {
     CloseHandle(h);
     return 0;
   }
@@ -295,15 +471,18 @@ static uint64_t open_params(uint32_t pid, int64_t *hout) {
 }
 
 // A UNICODE_STRING at `addr` in the target, as chars into w[cap]; -1 if it
-// cannot be read whole.
-static int read_ustring(int64_t h, uint64_t addr, char16_t *w, size_t cap) {
+// cannot be read whole. The 32-bit layout is two counts and a 4 byte pointer.
+static int read_ustring(int64_t h, uint64_t addr, char16_t *w, size_t cap,
+                        bool is32) {
   struct {
     uint16_t len, max;
-    uint32_t pad;
+    uint32_t buf32;
     uint64_t buf;
   } us;
-  if (!read_mem(h, addr, &us, sizeof us))
+  if (!read_mem(h, addr, &us, is32 ? 8 : sizeof us))
     return -1;
+  if (is32)
+    us.buf = us.buf32;
   size_t n = us.len / 2;
   if (!us.buf || n > cap)
     return -1;
@@ -356,11 +535,13 @@ static size_t put_ntpath(char *buf, size_t n, const char16_t *w, size_t len) {
 
 static long other_cwd(uint32_t pid, char *buf, size_t n) {
   int64_t h;
-  uint64_t params = open_params(pid, &h);
+  bool is32;
+  uint64_t params = open_params(pid, &h, &is32);
   if (!params)
     return -1;
   char16_t w[600];
-  int len = read_ustring(h, params + 0x38, w, 600);  // CurrentDirectory.DosPath
+  // CurrentDirectory.DosPath
+  int len = read_ustring(h, params + (is32 ? 0x24 : 0x38), w, 600, is32);
   CloseHandle(h);
   if (len <= 0)
     return -1;
@@ -376,14 +557,16 @@ static void gen_environ(struct pfs_buf *b, uint32_t pid) {
     return;
   }
   int64_t h;
-  uint64_t params = open_params(pid, &h);
+  bool is32;
+  uint64_t params = open_params(pid, &h, &is32);
   if (!params)
     return;
   uint64_t env = 0, size = 0;
-  if (read_mem(h, params + 0x80, &env, 8) && env) {
+  if (read_mem(h, params + (is32 ? 0x48 : 0x80), &env, is32 ? 4 : 8) && env) {
     // EnvironmentSize (Vista+) bounds the block; without it, walk pages
     // until the double NUL or the mapping ends
-    if (!read_mem(h, params + 0x3f0, &size, 8) || size > (1u << 20))
+    if (!read_mem(h, params + (is32 ? 0x290 : 0x3f0), &size, is32 ? 4 : 8) ||
+        size > (1u << 20))
       size = 1u << 20;
 
     static char16_t page[2048];  // guarded by the caller's lock
@@ -473,18 +656,24 @@ static void gen_limits(struct pfs_buf *b) {
 }
 
 // ---------------------------------------------------------------------------
-// maps. Our own address space out of VirtualQuery, image regions attributed
-// to the module whose allocation they are. Served only for ourselves, since
-// backtrace symbolization is the consumer and it reads its own; everyone
-// else keeps the empty file, like environ.
+// maps and smaps. Our own address space out of VirtualQuery, image regions
+// attributed to the module whose allocation they are. Served only for
+// ourselves, since backtrace symbolization and memory profilers read their
+// own; everyone else keeps the empty file, like environ.
 
 typedef int32_t(__msabi *EnumModsF)(int64_t, int64_t *, uint32_t, uint32_t *);
 typedef uint32_t(__msabi *ModNameF)(int64_t, int64_t, char16_t *, uint32_t);
 
-static void gen_maps(struct pfs_buf *b, uint32_t pid) {
-  if (pid != pfs_self_pid())
-    return;
+struct ntregion {
+  uint64_t base, next, off;
+  char perms[5];
+  const char *name;  // a path, "[stack]", or 0
+  uint32_t type;     // MEM_PRIVATE, MEM_MAPPED or MEM_IMAGE
+};
 
+typedef void (*region_fn)(void *ctx, const struct ntregion *r);
+
+static void walk_regions(region_fn fn, void *ctx) {
   static struct {
     uint64_t base;
     char path[512];
@@ -524,47 +713,227 @@ static void gen_maps(struct pfs_buf *b, uint32_t pid) {
     if (mbi.State != 0x1000 /* MEM_COMMIT */)
       continue;
 
+    struct ntregion r = {.base = base, .next = next, .type = mbi.Type};
     uint32_t pr = mbi.Protect & 0xff;
-    char perms[5] = "---p";
+    memcpy(r.perms, "---p", 5);
     if (pr & 0xee)
-      perms[0] = 'r';  // every readable protection
+      r.perms[0] = 'r';  // every readable protection
     if (pr & 0xcc)
-      perms[1] = 'w';  // RW, WRITECOPY and their X kin
+      r.perms[1] = 'w';  // RW, WRITECOPY and their X kin
     if (pr & 0xf0)
-      perms[2] = 'x';  // the EXECUTE_* four
+      r.perms[2] = 'x';  // the EXECUTE_* four
     if (mbi.Type == 0x40000 /* MEM_MAPPED */)
-      perms[3] = 's';
+      r.perms[3] = 's';
 
-    const char *name = 0;
-    uint64_t off = 0;
     if (mbi.Type == 0x1000000 /* MEM_IMAGE */) {
       for (int i = 0; i < nmods; i++) {
         if (mods[i].base == (uint64_t)mbi.AllocationBase) {
-          name = mods[i].path;
-          off = base - mods[i].base;
+          r.name = mods[i].path;
+          r.off = base - mods[i].base;
           break;
         }
       }
     }
-    if (!name && stackmark >= base && stackmark < next)
-      name = "[stack]";
-
-    if (name && name[0] == '/') {
-      uint64_t ino = 0xcbf29ce484222325ull;
-      for (const char *c = name; *c; c++)
-        ino = (ino ^ (uint8_t)*c) * 0x100000001b3ull;
-      pfs_printf(b, "%08llx-%08llx %s %08llx 08:01 %llu %s\n",
-                 (unsigned long long)base, (unsigned long long)next, perms,
-                 (unsigned long long)off, (unsigned long long)(ino & 0xffffff),
-                 name);
-    } else {
-      // the kernel prints a space after the inode even with no
-      // pathname; parsers count on that sixth column existing
-      pfs_printf(b, "%08llx-%08llx %s %08llx 00:00 0 %s\n",
-                 (unsigned long long)base, (unsigned long long)next, perms,
-                 (unsigned long long)off, name ? name : "");
-    }
+    if (!r.name && stackmark >= base && stackmark < next)
+      r.name = "[stack]";
+    fn(ctx, &r);
   }
+}
+
+static void put_maps_line(struct pfs_buf *b, const struct ntregion *r) {
+  if (r->name && r->name[0] == '/') {
+    uint64_t ino = 0xcbf29ce484222325ull;
+    for (const char *c = r->name; *c; c++)
+      ino = (ino ^ (uint8_t)*c) * 0x100000001b3ull;
+    pfs_printf(b, "%08llx-%08llx %s %08llx 08:01 %llu %s\n",
+               (unsigned long long)r->base, (unsigned long long)r->next,
+               r->perms, (unsigned long long)r->off,
+               (unsigned long long)(ino & 0xffffff), r->name);
+  } else {
+    // the kernel prints a space after the inode even with no
+    // pathname; parsers count on that sixth column existing
+    pfs_printf(b, "%08llx-%08llx %s %08llx 00:00 0 %s\n",
+               (unsigned long long)r->base, (unsigned long long)r->next,
+               r->perms, (unsigned long long)r->off, r->name ? r->name : "");
+  }
+}
+
+static void maps_cb(void *ctx, const struct ntregion *r) {
+  put_maps_line(ctx, r);
+}
+
+static void gen_maps(struct pfs_buf *b, uint32_t pid) {
+  if (pid != pfs_self_pid())
+    return;
+  walk_regions(maps_cb, b);
+}
+
+// What the working set says about one region's pages, in bytes, asked in
+// batches of 1024. A resident page is shared when its attributes say so,
+// and then counts toward Pss divided by its share count; a page that is
+// out of the working set and in the pagefile is Swap.
+struct wsum {
+  uint64_t rss, shared, private, pss, swap, locked;
+  uint64_t dirty, anon;  // the parts of the above that are anonymous
+};
+
+static void region_ws(const struct ntregion *r, struct wsum *w) {
+  static struct NtPsapiWorkingSetExInformation ws[1024];  // under pc_lock
+  memset(w, 0, sizeof *w);
+  for (uint64_t addr = r->base; addr < r->next;) {
+    uint64_t n = (r->next - addr) / 4096;
+    if (n > 1024)
+      n = 1024;
+    if (!n)
+      break;
+    for (uint64_t i = 0; i < n; i++)
+      ws[i].VirtualAddress = (void *)(uintptr_t)(addr + i * 4096);
+    if (!K32QueryWorkingSetEx(GetCurrentProcess(), ws,
+                              (uint32_t)(n * sizeof *ws)))
+      return;
+    for (uint64_t i = 0; i < n; i++) {
+      uint64_t a = ws[i].VirtualAttributes;
+      if (a & 1) {
+        w->rss += 4096;
+        unsigned sc = (a >> 1) & 7;
+        if (a >> 15 & 1) {
+          w->shared += 4096;
+          w->pss += 4096 / (sc ? sc : 1);
+        } else {
+          w->private += 4096;
+          w->pss += 4096;
+        }
+        if (a >> 22 & 1)
+          w->locked += 4096;
+      } else if (((a >> 22) & 3) == 2) {
+        w->swap += 4096;
+      }
+    }
+    addr += n * 4096;
+  }
+  // the pages of a private allocation have no file behind them: every
+  // resident one is anonymous and, in Linux's sense, dirty
+  if (r->type == 0x20000 /* MEM_PRIVATE */) {
+    w->dirty = w->rss;
+    w->anon = w->rss;
+  }
+}
+
+static void put_smaps_fields(struct pfs_buf *b, const struct wsum *w,
+                             uint64_t size, bool rollup) {
+  if (!rollup)
+    pfs_printf(b, "%-16s%8llu kB\n%-16s%8llu kB\n%-16s%8llu kB\n", "Size:",
+               (unsigned long long)(size / 1024), "KernelPageSize:", 4ull,
+               "MMUPageSize:", 4ull);
+  const struct {
+    const char *name;
+    uint64_t v;
+  } f[] = {
+      {"Rss:", w->rss},
+      {"Pss:", w->pss},
+      {"Pss_Dirty:", w->dirty ? w->pss : 0},
+      {"Shared_Clean:", w->dirty ? 0 : w->shared},
+      {"Shared_Dirty:", w->dirty ? w->shared : 0},
+      {"Private_Clean:", w->dirty ? 0 : w->private},
+      {"Private_Dirty:", w->dirty ? w->private : 0},
+      {"Referenced:", w->rss},
+      {"Anonymous:", w->anon},
+      {"LazyFree:", 0},
+      {"AnonHugePages:", 0},
+      {"ShmemPmdMapped:", 0},
+      {"FilePmdMapped:", 0},
+      {"Shared_Hugetlb:", 0},
+      {"Private_Hugetlb:", 0},
+      {"Swap:", w->swap},
+      {"SwapPss:", w->swap},
+      {"Locked:", w->locked},
+  };
+  for (size_t i = 0; i < sizeof f / sizeof f[0]; i++)
+    pfs_printf(b, "%-16s%8llu kB\n", f[i].name,
+               (unsigned long long)(f[i].v / 1024));
+}
+
+static void smaps_cb(void *ctx, const struct ntregion *r) {
+  struct pfs_buf *b = ctx;
+  struct wsum w;
+  put_maps_line(b, r);
+  region_ws(r, &w);
+  put_smaps_fields(b, &w, r->next - r->base, false);
+  pfs_printf(b, "THPeligible:    0\nVmFlags: rd%s%s mr mw me%s\n",
+             r->perms[1] == 'w' ? " wr" : "", r->perms[2] == 'x' ? " ex" : "",
+             r->perms[3] == 's' ? " sh ms" : " sd");
+}
+
+static void gen_smaps(struct pfs_buf *b, uint32_t pid) {
+  if (pid != pfs_self_pid())
+    return;
+  walk_regions(smaps_cb, b);
+}
+
+struct rollup {
+  struct wsum sum;
+  uint64_t lo, hi;
+};
+
+static void rollup_cb(void *ctx, const struct ntregion *r) {
+  struct rollup *ru = ctx;
+  struct wsum w;
+  region_ws(r, &w);
+  ru->sum.rss += w.rss;
+  ru->sum.shared += w.shared;
+  ru->sum.private += w.private;
+  ru->sum.pss += w.pss;
+  ru->sum.swap += w.swap;
+  ru->sum.locked += w.locked;
+  ru->sum.dirty += w.dirty;
+  ru->sum.anon += w.anon;
+  if (!ru->lo || r->base < ru->lo)
+    ru->lo = r->base;
+  if (r->next > ru->hi)
+    ru->hi = r->next;
+}
+
+// smaps_rollup: the totals over the whole space. Dirty and clean are
+// split by whether the pages came from private allocations, so the
+// rollup's Shared/Private lines carry both kinds.
+static void gen_smaps_rollup(struct pfs_buf *b, uint32_t pid) {
+  if (pid != pfs_self_pid())
+    return;
+  struct rollup ru = {0};
+  walk_regions(rollup_cb, &ru);
+  pfs_printf(b, "%08llx-%08llx ---p 00000000 00:00 0 [rollup]\n",
+             (unsigned long long)ru.lo, (unsigned long long)ru.hi);
+  const struct {
+    const char *name;
+    uint64_t v;
+  } f[] = {
+      {"Rss:", ru.sum.rss},
+      {"Pss:", ru.sum.pss},
+      {"Pss_Dirty:", ru.sum.anon},
+      {"Pss_Anon:", ru.sum.anon},
+      {"Pss_File:", ru.sum.pss > ru.sum.anon ? ru.sum.pss - ru.sum.anon : 0},
+      {"Pss_Shmem:", 0},
+      {"Shared_Clean:", ru.sum.shared},
+      {"Shared_Dirty:", 0},
+      {"Private_Clean:", ru.sum.private > ru.sum.anon
+                             ? ru.sum.private - ru.sum.anon
+                             : 0},
+      {"Private_Dirty:", ru.sum.anon},
+      {"Referenced:", ru.sum.rss},
+      {"Anonymous:", ru.sum.anon},
+      {"LazyFree:", 0},
+      {"AnonHugePages:", 0},
+      {"ShmemPmdMapped:", 0},
+      {"FilePmdMapped:", 0},
+      {"Shared_Hugetlb:", 0},
+      {"Private_Hugetlb:", 0},
+      {"Swap:", ru.sum.swap},
+      {"SwapPss:", ru.sum.swap},
+      {"Locked:", ru.sum.locked},
+  };
+  for (size_t i = 0; i < sizeof f / sizeof f[0]; i++)
+    pfs_printf(b, "%-16s%8llu kB\n", f[i].name,
+               (unsigned long long)(f[i].v / 1024));
 }
 
 // mountinfo: the same facts as /proc/mounts in the richer per-process
@@ -601,6 +970,10 @@ bool pfs_gen_pid_file(struct pfs_buf *b, uint32_t pid, const char *name) {
     return gen_limits(b), true;
   if (!strcmp(name, "maps"))
     return gen_maps(b, pid), true;
+  if (!strcmp(name, "smaps"))
+    return gen_smaps(b, pid), true;
+  if (!strcmp(name, "smaps_rollup"))
+    return gen_smaps_rollup(b, pid), true;
   if (!strcmp(name, "cgroup"))
     return pfs_printf(b, "0::/\n"), true;
   if (!strcmp(name, "mountinfo"))
@@ -619,7 +992,7 @@ bool pfs_gen_pid_file(struct pfs_buf *b, uint32_t pid, const char *name) {
   if (!strcmp(name, "status"))
     return gen_status(b, pid, p, &f), true;
   if (!strcmp(name, "statm"))
-    return gen_statm(b, &f), true;
+    return gen_statm(b, pid, &f), true;
   if (!strcmp(name, "io"))
     return gen_io(b, &f), true;
   return false;
@@ -638,7 +1011,7 @@ bool pfs_gen_pid_volatile(uint32_t pid, struct pfs_buf out[4],
     *starttime = f.starttime;
   gen_stat(&out[0], pid, p, &f);
   gen_status(&out[1], pid, p, &f);
-  gen_statm(&out[2], &f);
+  gen_statm(&out[2], pid, &f);
   gen_io(&out[3], &f);
   return true;
 }

@@ -210,7 +210,8 @@ ssize_t __procfs_read(struct ProcfsHandle *h, const struct iovec *iov,
 // fixed for a throttle window, so a rewind inside the window that produced
 // the text changes nothing.
 int64_t __procfs_seek(struct ProcfsHandle *h, int64_t off, unsigned whence) {
-  if (off == 0 && whence == SEEK_SET && !pc_busy && !h->dir && !h->link) {
+  if (off == 0 && whence == SEEK_SET && !pc_busy && !h->dir && !h->link &&
+      !h->fixed) {
     bool stale;
     pthread_mutex_lock(&pc_lock);
     stale = !h->gen || h->gen != pc_content_gen(h->vpath);

@@ -141,7 +141,8 @@ bool pc_is_dir_node(const struct node *n) {
     case K_NET_DIR:
       return true;
     case K_PID_SUB:
-      if (!strcmp(n->name, "fd") || !strcmp(n->name, "net"))
+      if (!strcmp(n->name, "fd") || !strcmp(n->name, "net") ||
+          !strcmp(n->name, "fdinfo"))
         return !n->rest[0];
       if (!strcmp(n->name, "task"))
         return !n->rest[0] || !strchr(n->rest, '/');
@@ -192,6 +193,11 @@ bool pc_content_exists(const struct node *n) {
           if (!strcmp(pfs_net_files[i], n->rest))
             return true;
         return false;
+      } else if (!strcmp(n->name, "fdinfo") && n->rest[0] &&
+                 !strchr(n->rest, '/')) {
+        struct pfs_fdinfo fi;
+        return pc_fd_number(n->rest) >= 0 &&
+               pfs_fd_info(n->pid, pc_fd_number(n->rest), &fi);
       }
       if (!file)
         return false;
@@ -206,6 +212,17 @@ bool pc_content_exists(const struct node *n) {
     default:
       return false;
   }
+}
+
+// A descriptor number as fd/ and fdinfo/ spell them: decimal digits
+// only, no sign, no leading zero; -1 for anything else.
+int pc_fd_number(const char *s) {
+  if (!*s || (s[0] == '0' && s[1]) || strlen(s) > 9)
+    return -1;
+  for (const char *c = s; *c; c++)
+    if (*c < '0' || *c > '9')
+      return -1;
+  return atoi(s);
 }
 
 uint64_t pc_fnv64(const void *data, size_t n, uint64_t h) {

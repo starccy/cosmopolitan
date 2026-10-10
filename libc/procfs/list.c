@@ -4,10 +4,6 @@
 // every /proc/<pid>/task on each refresh; the whole answer is built at
 // opendir and walked without a host call per entry.
 
-#define MAX_TIDS 512
-#define MAX_FDS  512
-#define MAX_SOCK 256
-
 static void add_num(struct pc_list *l, uint32_t v) {
   char name[16];
   snprintf(name, sizeof name, "%u", v);
@@ -26,7 +22,7 @@ static void dots(struct pc_list *l) {
 }
 
 // The files of a process directory; a thread's directory has the same
-// files but no task/, net/ or fd/ of its own.
+// files but no task/, net/, fd/ or fdinfo/ of its own.
 static void pid_entries(struct pc_list *l, bool thread) {
   dots(l);
   for (int i = 0; pfs_pid_volatile[i]; i++)
@@ -41,6 +37,7 @@ static void pid_entries(struct pc_list *l, bool thread) {
   pc_list_add(l, "task", DT_DIR);
   pc_list_add(l, "net", DT_DIR);
   pc_list_add(l, "fd", DT_DIR);
+  pc_list_add(l, "fdinfo", DT_DIR);
 }
 
 static void root_entries(struct pc_list *l) {
@@ -86,6 +83,32 @@ static void sys_entries(struct pc_list *l, const char *rest) {
   }
 }
 
+// The descriptors of a process, as fd/ (links) or fdinfo/ (files) names
+// them. On NT another process's directory only knows its sockets, densely
+// numbered from the socket tables.
+static void fd_entries(struct pc_list *l, uint32_t pid, unsigned char type) {
+  dots(l);
+  char name[16];
+  struct pfs_fdent *ents;
+  int nf = pid == pfs_self_pid() ? pfs_self_fds(&ents)
+                                 : pfs_other_fds(pid, &ents);
+  if (nf >= 0) {
+    for (int i = 0; i < nf; i++) {
+      snprintf(name, sizeof name, "%d", ents[i].fd);
+      pc_list_add(l, name, type);
+    }
+    free(ents);
+    return;
+  }
+  uint64_t *inodes;
+  nf = pfs_net_fds_of(pid, &inodes);
+  for (int i = 0; i < nf; i++) {
+    snprintf(name, sizeof name, "%d", i);
+    pc_list_add(l, name, type);
+  }
+  free(inodes);
+}
+
 // -1: not a directory listed here. -2: one, but for a process that is
 // gone. Otherwise fills l.
 static int list_node(const struct node *n, struct pc_list *l) {
@@ -112,12 +135,13 @@ static int list_node(const struct node *n, struct pc_list *l) {
           return -2;
         if (!n->rest[0]) {
           dots(l);
-          static uint64_t tids[MAX_TIDS];  // under pc_lock
-          int nt = pfs_threads_of(n->pid, tids, MAX_TIDS);
+          uint64_t *tids;
+          int nt = pfs_threads_of(n->pid, &tids);
           if (!nt)
             add_num(l, n->pid);
           for (int i = 0; i < nt; i++)
             add_num64(l, tids[i]);
+          free(tids);
           return 0;
         }
         if (!strchr(n->rest, '/')) {
@@ -135,26 +159,13 @@ static int list_node(const struct node *n, struct pc_list *l) {
       if (!strcmp(n->name, "fd") && !n->rest[0]) {
         if (!pfs_proc_find(n->pid))
           return -2;
-        dots(l);
-        char name[16];
-        static struct pfs_fdent ents[MAX_FDS];  // under pc_lock
-        int nf = n->pid == pfs_self_pid()
-                     ? pfs_self_fds(ents, MAX_FDS)
-                     : pfs_other_fds(n->pid, ents, MAX_FDS);
-        if (nf >= 0) {
-          for (int i = 0; i < nf; i++) {
-            snprintf(name, sizeof name, "%d", ents[i].fd);
-            pc_list_add(l, name, DT_LNK);
-          }
-        } else {
-          // NT: only the socket tables see into other processes
-          static uint64_t inodes[MAX_SOCK];
-          nf = pfs_net_fds_of(n->pid, inodes, MAX_SOCK);
-          for (int i = 0; i < nf; i++) {
-            snprintf(name, sizeof name, "%d", i);
-            pc_list_add(l, name, DT_LNK);
-          }
-        }
+        fd_entries(l, n->pid, DT_LNK);
+        return 0;
+      }
+      if (!strcmp(n->name, "fdinfo") && !n->rest[0]) {
+        if (!pfs_proc_find(n->pid))
+          return -2;
+        fd_entries(l, n->pid, DT_REG);
         return 0;
       }
       return -1;

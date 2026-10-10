@@ -7,10 +7,8 @@
 // which is real, and kernel/random/{uuid,boot_id}, which carry the Linux
 // semantics of fresh per read and fixed per boot.
 //
-// Writes are not modeled: a write through the materialized tree lands in a
-// temp file nothing reads back. That is a lie, but the honest alternative
-// (EACCES) needs open() to know write intent for a path this file owns, and
-// no program seen so far does more than warn on a failed sysctl write.
+// Writes are not modeled: opening one of these files for writing fails
+// with EACCES (open.c), the answer an unprivileged process gets on Linux.
 
 const char *const pfs_sys_dirs[] = {"kernel", "kernel/random", "vm", "fs", 0};
 
@@ -72,8 +70,12 @@ bool pfs_gen_sys_file(struct pfs_buf *b, const char *rest) {
     r[8] = (r[8] & 0x3f) | 0x80;
     return emit_uuid(b, r), true;
   }
+  // nt charges commit for every writable page it hands out, so it's a
+  // kernel that never overcommits; allocators that ask (jemalloc,
+  // mimalloc) then reserve first and commit what they touch, rather
+  // than mapping their arenas read-write and charging it all at once
   if (!strcmp(rest, "vm/overcommit_memory"))
-    return pfs_printf(b, "0\n"), true;
+    return pfs_printf(b, IsWindows() ? "2\n" : "0\n"), true;
   if (!strcmp(rest, "fs/file-max"))
     return pfs_printf(b, "1048576\n"), true;
   return false;

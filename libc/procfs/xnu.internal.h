@@ -366,7 +366,11 @@ int pfs_xnu_cpu_ticks(struct xnu_cpu_ticks *out, int cap);
 // The raw KERN_PROCARGS2 block, malloc'd; the caller frees it.
 bool pfs_xnu_procargs(uint32_t pid, char **out, size_t *len);
 
-int pfs_xnu_listfds(uint32_t pid, struct xnu_proc_fdinfo *out, int cap);
+// The descriptor list, malloc'd into *out; the caller frees it.
+int pfs_xnu_listfds(uint32_t pid, struct xnu_proc_fdinfo **out);
+// One descriptor's offset and open flags (Linux-coded) from the kernel's
+// per-descriptor facts; false when pid has no such descriptor.
+bool pfs_xnu_fd_info(uint32_t pid, int fd, struct pfs_fdinfo *out);
 long pfs_xnu_fdpath(uint32_t pid, int fd, char *buf, size_t n);
 // One socket descriptor's identity, normalized for the shared inode hash.
 struct xnu_sock_id {
@@ -375,8 +379,9 @@ struct xnu_sock_id {
   uint8_t laddr[16], raddr[16];
 };
 bool pfs_xnu_fdsock(uint32_t pid, int fd, struct xnu_sock_id *out);
-// Thread ids (64-bit here) of any process the caller may see.
-int pfs_xnu_threads(uint32_t pid, uint64_t *out, int cap);
+// Thread ids (64-bit here) of any process the caller may see, malloc'd
+// into *out; the caller frees it.
+int pfs_xnu_threads(uint32_t pid, uint64_t **out);
 // Another process's working directory; ours comes from getcwd.
 long pfs_xnu_cwd(uint32_t pid, char *buf, size_t n);
 // Whether a path names the ape loader.
@@ -384,8 +389,10 @@ bool pfs_xnu_is_loader(const char *path);
 // The program a loader-run process actually executes, spelled as it was on
 // its command line; -1 when pid does not run under the loader.
 long pfs_xnu_ape_program(uint32_t pid, char *buf, size_t n);
-// Raw sysctl dumps, malloc'd; the caller frees them.
+// Raw sysctl dumps, malloc'd; the caller frees them. rtdump is the
+// routing socket's NET_RT_* family for one address family.
 bool pfs_xnu_iflist2(char **out, size_t *len);
+bool pfs_xnu_rtdump(int af, int kind, int flags, char **out, size_t *len);
 // One address-space region at or after *addr; the depth walks submaps.
 bool pfs_xnu_region(uint64_t *addr, uint64_t *size, uint32_t *depth,
                     struct xnu_vm_region_submap_info_64 *info);
@@ -408,8 +415,18 @@ bool pfs_xnu_gen_pid_file(struct pfs_buf *b, uint32_t pid, const char *name);
 bool pfs_xnu_gen_pid_volatile(uint32_t pid, struct pfs_buf out[4],
                               uint64_t *starttime);
 long pfs_xnu_pid_link(uint32_t pid, const char *name, char *buf, size_t n);
-int pfs_xnu_fds_of(uint32_t pid, struct pfs_fdent *out, int cap);
+int pfs_xnu_fds_of(uint32_t pid, struct pfs_fdent **out);
 int pfs_xnu_ifstats(struct pfs_ifstat *out, int cap);
+
+// ---------------------------------------------------------------------------
+// xnuiokit.c, the IOKit side: disks, the battery and the platform
+// identity, through the IOKit and CoreFoundation frameworks loaded with
+// the loader's dlopen the first time one of these files is read.
+
+bool pfs_xnu_battery(struct pfs_batt *out);
+bool pfs_xnu_dmi(struct pfs_dmi *out);
+void pfs_xnu_diskstats(struct pfs_buf *b);
+void pfs_xnu_partitions(struct pfs_buf *b);
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_PROCFS_XNU_INTERNAL_H_ */

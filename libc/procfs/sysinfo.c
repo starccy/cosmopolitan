@@ -21,8 +21,8 @@
 // closest fact the host has.
 
 const char *const pfs_top_files[] = {
-    "meminfo",     "uptime", "stat",      "loadavg", "cpuinfo", "version",
-    "filesystems", "mounts", "diskstats", "swaps",   "cmdline", 0};
+    "meminfo", "uptime",    "stat",  "loadavg", "cpuinfo",    "version",
+    "filesystems", "mounts", "diskstats", "swaps", "cmdline", "partitions", 0};
 
 static uint64_t ft(struct NtFileTime t) {
   return (uint64_t)t.dwHighDateTime << 32 | t.dwLowDateTime;
@@ -166,6 +166,184 @@ static void cpuid(uint32_t leaf, uint32_t sub, uint32_t o[4]) {
 }
 #endif
 
+#ifdef __x86_64__
+// the flags line of /proc/cpuinfo, named as linux names them, from cpuid.
+// the avx and avx-512 ones are left out when the os doesn't save their
+// registers, which is what linux does too
+struct pfs_x86_flag {
+  uint32_t leaf;
+  uint8_t sub, reg, bit, os;  // reg: 0 eax 1 ebx 2 ecx 3 edx
+  const char name[19];
+};
+enum { OS_NONE, OS_AVX, OS_AVX512 };
+static const struct pfs_x86_flag pfs_x86_flags[] = {
+    {1, 0, 3, 0, 0, "fpu"},
+    {1, 0, 3, 1, 0, "vme"},
+    {1, 0, 3, 2, 0, "de"},
+    {1, 0, 3, 3, 0, "pse"},
+    {1, 0, 3, 4, 0, "tsc"},
+    {1, 0, 3, 5, 0, "msr"},
+    {1, 0, 3, 6, 0, "pae"},
+    {1, 0, 3, 7, 0, "mce"},
+    {1, 0, 3, 8, 0, "cx8"},
+    {1, 0, 3, 9, 0, "apic"},
+    {1, 0, 3, 11, 0, "sep"},
+    {1, 0, 3, 12, 0, "mtrr"},
+    {1, 0, 3, 13, 0, "pge"},
+    {1, 0, 3, 14, 0, "mca"},
+    {1, 0, 3, 15, 0, "cmov"},
+    {1, 0, 3, 16, 0, "pat"},
+    {1, 0, 3, 17, 0, "pse36"},
+    {1, 0, 3, 19, 0, "clflush"},
+    {1, 0, 3, 23, 0, "mmx"},
+    {1, 0, 3, 24, 0, "fxsr"},
+    {1, 0, 3, 25, 0, "sse"},
+    {1, 0, 3, 26, 0, "sse2"},
+    {1, 0, 3, 27, 0, "ss"},
+    {1, 0, 3, 28, 0, "ht"},
+    {1, 0, 3, 29, 0, "tm"},
+    {1, 0, 3, 31, 0, "pbe"},
+    {0x80000001, 0, 3, 11, 0, "syscall"},
+    {0x80000001, 0, 3, 20, 0, "nx"},
+    {0x80000001, 0, 3, 22, 0, "mmxext"},
+    {0x80000001, 0, 3, 25, 0, "fxsr_opt"},
+    {0x80000001, 0, 3, 26, 0, "pdpe1gb"},
+    {0x80000001, 0, 3, 27, 0, "rdtscp"},
+    {0x80000001, 0, 3, 29, 0, "lm"},
+    {1, 0, 2, 0, 0, "pni"},
+    {1, 0, 2, 1, 0, "pclmulqdq"},
+    {1, 0, 2, 2, 0, "dtes64"},
+    {1, 0, 2, 3, 0, "monitor"},
+    {1, 0, 2, 4, 0, "ds_cpl"},
+    {1, 0, 2, 5, 0, "vmx"},
+    {1, 0, 2, 6, 0, "smx"},
+    {1, 0, 2, 7, 0, "est"},
+    {1, 0, 2, 8, 0, "tm2"},
+    {1, 0, 2, 9, 0, "ssse3"},
+    {1, 0, 2, 11, 0, "sdbg"},
+    {1, 0, 2, 12, OS_AVX, "fma"},
+    {1, 0, 2, 13, 0, "cx16"},
+    {1, 0, 2, 14, 0, "xtpr"},
+    {1, 0, 2, 15, 0, "pdcm"},
+    {1, 0, 2, 17, 0, "pcid"},
+    {1, 0, 2, 18, 0, "dca"},
+    {1, 0, 2, 19, 0, "sse4_1"},
+    {1, 0, 2, 20, 0, "sse4_2"},
+    {1, 0, 2, 21, 0, "x2apic"},
+    {1, 0, 2, 22, 0, "movbe"},
+    {1, 0, 2, 23, 0, "popcnt"},
+    {1, 0, 2, 24, 0, "tsc_deadline_timer"},
+    {1, 0, 2, 25, 0, "aes"},
+    {1, 0, 2, 26, 0, "xsave"},
+    {1, 0, 2, 28, OS_AVX, "avx"},
+    {1, 0, 2, 29, OS_AVX, "f16c"},
+    {1, 0, 2, 30, 0, "rdrand"},
+    {1, 0, 2, 31, 0, "hypervisor"},
+    {0x80000001, 0, 2, 0, 0, "lahf_lm"},
+    {0x80000001, 0, 2, 1, 0, "cmp_legacy"},
+    {0x80000001, 0, 2, 2, 0, "svm"},
+    {0x80000001, 0, 2, 3, 0, "extapic"},
+    {0x80000001, 0, 2, 4, 0, "cr8_legacy"},
+    {0x80000001, 0, 2, 5, 0, "abm"},
+    {0x80000001, 0, 2, 6, 0, "sse4a"},
+    {0x80000001, 0, 2, 7, 0, "misalignsse"},
+    {0x80000001, 0, 2, 8, 0, "3dnowprefetch"},
+    {0x80000001, 0, 2, 11, OS_AVX, "xop"},
+    {0x80000001, 0, 2, 16, OS_AVX, "fma4"},
+    {0x80000001, 0, 2, 21, 0, "tbm"},
+    {0x80000001, 0, 2, 22, 0, "topoext"},
+    {7, 0, 1, 0, 0, "fsgsbase"},
+    {7, 0, 1, 1, 0, "tsc_adjust"},
+    {7, 0, 1, 2, 0, "sgx"},
+    {7, 0, 1, 3, 0, "bmi1"},
+    {7, 0, 1, 4, 0, "hle"},
+    {7, 0, 1, 5, OS_AVX, "avx2"},
+    {7, 0, 1, 7, 0, "smep"},
+    {7, 0, 1, 8, 0, "bmi2"},
+    {7, 0, 1, 9, 0, "erms"},
+    {7, 0, 1, 10, 0, "invpcid"},
+    {7, 0, 1, 11, 0, "rtm"},
+    {7, 0, 1, 16, OS_AVX512, "avx512f"},
+    {7, 0, 1, 17, OS_AVX512, "avx512dq"},
+    {7, 0, 1, 18, 0, "rdseed"},
+    {7, 0, 1, 19, 0, "adx"},
+    {7, 0, 1, 20, 0, "smap"},
+    {7, 0, 1, 21, OS_AVX512, "avx512ifma"},
+    {7, 0, 1, 23, 0, "clflushopt"},
+    {7, 0, 1, 24, 0, "clwb"},
+    {7, 0, 1, 26, OS_AVX512, "avx512pf"},
+    {7, 0, 1, 27, OS_AVX512, "avx512er"},
+    {7, 0, 1, 28, OS_AVX512, "avx512cd"},
+    {7, 0, 1, 29, 0, "sha_ni"},
+    {7, 0, 1, 30, OS_AVX512, "avx512bw"},
+    {7, 0, 1, 31, OS_AVX512, "avx512vl"},
+    {7, 0, 2, 1, OS_AVX512, "avx512vbmi"},
+    {7, 0, 2, 2, 0, "umip"},
+    {7, 0, 2, 3, 0, "pku"},
+    {7, 0, 2, 5, 0, "waitpkg"},
+    {7, 0, 2, 6, OS_AVX512, "avx512_vbmi2"},
+    {7, 0, 2, 8, 0, "gfni"},
+    {7, 0, 2, 9, OS_AVX, "vaes"},
+    {7, 0, 2, 10, OS_AVX, "vpclmulqdq"},
+    {7, 0, 2, 11, OS_AVX512, "avx512_vnni"},
+    {7, 0, 2, 12, OS_AVX512, "avx512_bitalg"},
+    {7, 0, 2, 14, OS_AVX512, "avx512_vpopcntdq"},
+    {7, 0, 2, 16, 0, "la57"},
+    {7, 0, 2, 22, 0, "rdpid"},
+    {7, 0, 2, 25, 0, "cldemote"},
+    {7, 0, 2, 27, 0, "movdiri"},
+    {7, 0, 2, 28, 0, "movdir64b"},
+    {7, 0, 3, 2, OS_AVX512, "avx512_4vnniw"},
+    {7, 0, 3, 3, OS_AVX512, "avx512_4fmaps"},
+    {7, 0, 3, 4, 0, "fsrm"},
+    {7, 0, 3, 8, OS_AVX512, "avx512_vp2intersect"},
+    {7, 0, 3, 10, 0, "md_clear"},
+    {7, 0, 3, 14, 0, "serialize"},
+    {7, 0, 3, 16, 0, "tsxldtrk"},
+    {7, 0, 3, 20, 0, "ibt"},
+    {7, 0, 3, 22, 0, "amx_bf16"},
+    {7, 0, 3, 23, OS_AVX512, "avx512_fp16"},
+    {7, 0, 3, 24, 0, "amx_tile"},
+    {7, 0, 3, 25, 0, "amx_int8"},
+    {7, 0, 3, 28, 0, "flush_l1d"},
+    {7, 0, 3, 29, 0, "arch_capabilities"},
+    {7, 1, 0, 4, OS_AVX, "avx_vnni"},
+    {7, 1, 0, 5, OS_AVX512, "avx512_bf16"},
+    {0xd, 1, 0, 0, 0, "xsaveopt"},
+    {0xd, 1, 0, 1, 0, "xsavec"},
+    {0xd, 1, 0, 2, 0, "xgetbv1"},
+    {0xd, 1, 0, 3, 0, "xsaves"},
+};
+
+static void pfs_x86_flags_line(struct pfs_buf *b) {
+  uint32_t r[4], max, maxext, xcr0 = 0;
+  cpuid(0, 0, r);
+  max = r[0];
+  cpuid(0x80000000u, 0, r);
+  maxext = r[0];
+  cpuid(1, 0, r);
+  if (r[2] >> 27 & 1) {  // osxsave
+    uint32_t lo, hi;
+    asm volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    xcr0 = lo;
+  }
+  bool avx = (xcr0 & 6) == 6;
+  bool avx512 = avx && (xcr0 & 0xe0) == 0xe0;
+  pfs_printf(b, "flags\t\t:");
+  for (size_t i = 0; i < ARRAYLEN(pfs_x86_flags); i++) {
+    const struct pfs_x86_flag *f = pfs_x86_flags + i;
+    if (f->leaf >= 0x80000000u ? f->leaf > maxext : f->leaf > max)
+      continue;
+    if ((f->os == OS_AVX && !avx) || (f->os == OS_AVX512 && !avx512))
+      continue;
+    cpuid(f->leaf, f->sub, r);
+    if (r[f->reg] >> f->bit & 1)
+      pfs_printf(b, " %s", f->name);
+  }
+  pfs_printf(b, "\n");
+}
+#endif
+
 static void gen_cpuinfo(struct pfs_buf *b) {
   int n = ncpus();
   uint32_t mhz_cur[64] = {0}, mhz_max[64] = {0};
@@ -227,8 +405,7 @@ static void gen_cpuinfo(struct pfs_buf *b) {
     pfs_printf(b, "physical id\t: %d\nsiblings\t: %d\n", phys, sib);
     pfs_printf(b, "core id\t\t: %d\ncpu cores\t: %d\n", cid, cores);
     pfs_printf(b, "fpu\t\t: yes\nfpu_exception\t: yes\n");
-    pfs_printf(b, "flags\t\t: fpu cx8 sep cmov mmx fxsr sse sse2 ht "
-                  "syscall nx lm sse3 cx16 sse4_1 sse4_2 popcnt\n");
+    pfs_x86_flags_line(b);
     pfs_printf(b, "bogomips\t: 0.00\naddress sizes\t: 48 bits physical, "
                   "48 bits virtual\n\n");
   }
@@ -275,6 +452,75 @@ static void gen_diskstats(struct pfs_buf *b) {
                  (unsigned long long)(p.BytesRead / 512), rd_ms, p.WriteCount,
                  (unsigned long long)(p.BytesWritten / 512), wr_ms,
                  p.QueueDepth, rd_ms + wr_ms, rd_ms + wr_ms);
+    }
+    CloseHandle(h);
+  }
+}
+
+// /proc/partitions: every physical drive, then its partitions, in the
+// sd* naming diskstats uses and the 8:N numbering mountinfo uses for
+// drives. The disk size comes from IOCTL_DISK_GET_DRIVE_GEOMETRY_EX
+// (DiskSize is the i64 at offset 24 of its answer) and the partitions
+// from IOCTL_DISK_GET_DRIVE_LAYOUT_EX, whose entries start at offset 48
+// and are 144 bytes each with the length at 16 and the number at 24;
+// both work with a 0-access open. The 144-byte stride was checked by
+// dumping the raw answer on a real machine.
+static void gen_partitions(struct pfs_buf *b) {
+  pfs_printf(b, "major minor  #blocks  name\n\n");
+  int misses = 0;
+  for (int d = 0; d < 16 && misses < 2; d++) {
+    char16_t path[24] = u"\\\\.\\PhysicalDrive0";
+    path[17] = (char16_t)('0' + d);
+    int64_t h = CreateFile(path, 0, kNtFileShareRead | kNtFileShareWrite, 0,
+                           kNtOpenExisting, 0, 0);
+    if (h == -1) {
+      misses++;
+      continue;
+    }
+    uint32_t got = 0;
+    _Alignas(8) uint8_t geo[1024];
+    if (DeviceIoControl(h, 0x700A0 /* IOCTL_DISK_GET_DRIVE_GEOMETRY_EX */, 0,
+                        0, geo, sizeof geo, &got, 0) &&
+        got >= 32) {
+      int64_t size;
+      memcpy(&size, geo + 24, 8);
+      pfs_printf(b, "%4d  %7d %10llu sd%c\n", 8, d * 16,
+                 (unsigned long long)(size / 1024), 'a' + d);
+    }
+    uint32_t cap = 48 + 144 * 32;
+    for (int tries = 0; tries < 4; tries++) {
+      uint8_t *lay = malloc(cap);
+      if (!lay)
+        break;
+      got = 0;
+      if (DeviceIoControl(h, 0x70050 /* IOCTL_DISK_GET_DRIVE_LAYOUT_EX */, 0,
+                          0, lay, cap, &got, 0) &&
+          got >= 48) {
+        uint32_t style, count;
+        memcpy(&style, lay, 4);
+        memcpy(&count, lay + 4, 4);
+        for (uint32_t i = 0; i < count && 48 + (i + 1) * 144 <= got; i++) {
+          const uint8_t *e = lay + 48 + i * 144;
+          uint32_t estyle, num;
+          int64_t len;
+          memcpy(&estyle, e, 4);
+          memcpy(&len, e + 16, 8);
+          memcpy(&num, e + 24, 4);
+          if (estyle != style)
+            break;  // the stride is wrong on this vintage: say nothing
+          if (len <= 0 || !num)
+            continue;  // an unused MBR slot
+          pfs_printf(b, "%4d  %7d %10llu sd%c%u\n", 8, d * 16 + (int)num,
+                     (unsigned long long)(len / 1024), 'a' + d, num);
+        }
+        free(lay);
+        break;
+      }
+      uint32_t err = GetLastError();
+      free(lay);
+      if (err != 122 && err != 234)  // insufficient buffer, more data
+        break;
+      cap *= 4;
     }
     CloseHandle(h);
   }
@@ -333,6 +579,8 @@ bool pfs_gen_top_file(struct pfs_buf *b, const char *name) {
     return gen_mounts(b), true;
   if (!strcmp(name, "diskstats"))
     return gen_diskstats(b), true;
+  if (!strcmp(name, "partitions"))
+    return gen_partitions(b), true;
   if (!strcmp(name, "cmdline"))
     return gen_cmdline(b), true;
   if (!strcmp(name, "version"))  // the shape of Linux's, the facts uname's

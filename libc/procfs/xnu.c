@@ -25,17 +25,53 @@ static uint64_t ns_jiffies(uint64_t ns) {
 // /proc/<pid>/*
 
 struct facts {
-  bool have_bsd, have_task, have_ru;
+  bool have_bsd, have_task, have_ru, have_vm;
   struct xnu_proc_bsdinfo bi;
   struct xnu_proc_taskinfo ti;
   struct xnu_rusage_info_v2 ru;
+  // our own address space, summed the way Linux sums its VMAs: writable
+  // private mappings that aren't the stack, executable read-only ones,
+  // and pages the compressor or swap holds
+  uint64_t data, exec, swap;
 };
+
+// one pass over our regions, the walk gen_maps makes
+static void self_regions(struct facts *f) {
+  uint64_t pg = (uint64_t)pfs_xnu_pagesize();
+  uint64_t addr = 0;
+  uint32_t depth = 0;
+  for (int guard = 0; guard < 100000; guard++) {
+    uint64_t a = addr, size = 0;
+    struct xnu_vm_region_submap_info_64 info;
+    memset(&info, 0, sizeof info);
+    if (!pfs_xnu_region(&a, &size, &depth, &info))
+      break;
+    if (info.is_submap) {
+      depth++;
+      continue;
+    }
+    bool shared = info.share_mode == 4 /* SM_SHARED */ ||
+                  info.share_mode == 5 /* SM_TRUESHARED */ ||
+                  info.share_mode == 7 /* SM_SHARED_ALIASED */;
+    bool stack = info.user_tag == 30; /* VM_MEMORY_STACK */
+    bool w = info.protection & 2, x = info.protection & 4;
+    if (x && !w)
+      f->exec += size;
+    else if (w && !shared && !stack)
+      f->data += size;
+    f->swap += (uint64_t)info.pages_swapped_out * pg;
+    addr = a + size;
+  }
+  f->have_vm = true;
+}
 
 static void gather(uint32_t pid, struct facts *f) {
   memset(f, 0, sizeof *f);
   f->have_bsd = pfs_xnu_bsdinfo(pid, &f->bi);
   f->have_task = pfs_xnu_taskinfo(pid, &f->ti);
   f->have_ru = pfs_xnu_rusage(pid, &f->ru);
+  if (pid == pfs_self_pid())
+    self_regions(f);
 }
 
 static char state_of(const struct facts *f) {
@@ -112,28 +148,65 @@ static void gen_status(struct pfs_buf *b, uint32_t pid,
   pfs_printf(b, "VmHWM:\t%8llu kB\nVmRSS:\t%8llu kB\n",
              (unsigned long long)(rss / 1024),
              (unsigned long long)(rss / 1024));
-  pfs_printf(b, "VmData:\t       0 kB\nVmStk:\t       0 kB\n"
-                "VmExe:\t       0 kB\nVmLib:\t       0 kB\n"
-                "VmSwap:\t       0 kB\n");
+  // the Vm breakdown is our own only; VmExe is the program's text and
+  // VmLib the rest of what's mapped executable, as Linux splits them
+  uint64_t stk = 0, exe = 0, lib = 0, data = 0, swap = 0;
+  if (f->have_vm) {
+    stk = pfs_self_stack();
+    exe = pfs_self_text();
+    if (exe > f->exec)
+      exe = f->exec;
+    lib = f->exec - exe;
+    data = f->data;
+    swap = f->swap;
+  }
+  pfs_printf(b,
+             "VmData:\t%8llu kB\nVmStk:\t%8llu kB\n"
+             "VmExe:\t%8llu kB\nVmLib:\t%8llu kB\n"
+             "VmSwap:\t%8llu kB\n",
+             (unsigned long long)(data / 1024), (unsigned long long)(stk / 1024),
+             (unsigned long long)(exe / 1024), (unsigned long long)(lib / 1024),
+             (unsigned long long)(swap / 1024));
   pfs_printf(b, "Threads:\t%u\n",
              f->have_task && f->ti.pti_threadnum > 0
                  ? (unsigned)f->ti.pti_threadnum
                  : 1);
-  pfs_printf(b, "SigQ:\t0/0\nSigPnd:\t0000000000000000\n"
-                "ShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\n"
-                "SigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\n"
-                "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n"
-                "CapEff:\t0000000000000000\n");
-  pfs_printf(b, "voluntary_ctxt_switches:\t0\n"
-                "nonvoluntary_ctxt_switches:\t0\n");
+  uint64_t blk = 0, ign = 0, cgt = 0;
+  if (f->have_vm)
+    pfs_self_sigs(&blk, &ign, &cgt);
+  pfs_printf(b,
+             "SigQ:\t0/0\nSigPnd:\t0000000000000000\n"
+             "ShdPnd:\t0000000000000000\nSigBlk:\t%016llx\n"
+             "SigIgn:\t%016llx\nSigCgt:\t%016llx\n"
+             "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n"
+             "CapEff:\t0000000000000000\n",
+             (unsigned long long)blk, (unsigned long long)ign,
+             (unsigned long long)cgt);
+  // XNU counts switches, not why they happened
+  pfs_printf(b,
+             "voluntary_ctxt_switches:\t%llu\n"
+             "nonvoluntary_ctxt_switches:\t0\n",
+             (unsigned long long)(f->have_task && f->ti.pti_csw > 0
+                                      ? (uint64_t)f->ti.pti_csw
+                                      : 0));
 }
 
+// size resident shared text lib data dt, in pages; data is what Linux
+// puts there, the data and stack segments together
 static void gen_statm(struct pfs_buf *b, const struct facts *f) {
   uint64_t pg = (uint64_t)pfs_xnu_pagesize();
+  uint64_t exe = 0, data = 0;
+  if (f->have_vm) {
+    exe = pfs_self_text();
+    if (exe > f->exec)
+      exe = f->exec;
+    data = f->data + pfs_self_stack();
+  }
   pfs_printf(
-      b, "%llu %llu 0 0 0 0 0\n",
+      b, "%llu %llu 0 %llu 0 %llu 0\n",
       (unsigned long long)((f->have_task ? f->ti.pti_virtual_size : 0) / pg),
-      (unsigned long long)((f->have_task ? f->ti.pti_resident_size : 0) / pg));
+      (unsigned long long)((f->have_task ? f->ti.pti_resident_size : 0) / pg),
+      (unsigned long long)(exe / pg), (unsigned long long)(data / pg));
 }
 
 static void gen_io(struct pfs_buf *b, const struct facts *f) {
@@ -261,53 +334,281 @@ static void gen_mountinfo(struct pfs_buf *b) {
   pfs_printf(b, "3 1 0:6 / /sys rw - sysfs sysfs rw\n");
 }
 
-// maps. Our own address space out of the region walk, served only for
-// ourselves like on NT; everyone else keeps the empty file. The sixth
-// column must exist even for anonymous rows, parsers split on it.
-static void gen_maps(struct pfs_buf *b, uint32_t pid) {
-  if (pid != pfs_self_pid())
-    return;
+// maps and smaps. Our own address space out of the region walk, served
+// only for ourselves like on NT; everyone else keeps the empty file. The
+// sixth column must exist even for anonymous rows, parsers split on it.
+
+struct xregion {
+  uint64_t a, size;
+  char perms[5];
+  char path[512];  // empty for anonymous memory
+  uint64_t ino;
+  bool shared;     // mapped shared: the 's' of the perms column
+  bool objshared;  // backed by an object others may map too (a file, a
+                   // copy-on-write parent), whose page counts are theirs
+                   // as much as ours
+  struct xnu_vm_region_submap_info_64 info;
+};
+
+typedef void (*xregion_fn)(void *ctx, const struct xregion *r);
+
+static void walk_regions(xregion_fn fn, void *ctx) {
+  static struct xregion r;  // 600 bytes, under pc_lock
   uint64_t addr = 0;
   uint32_t depth = 0;
   for (int guard = 0; guard < 100000; guard++) {
     uint64_t a = addr, size = 0;
-    struct xnu_vm_region_submap_info_64 info;
-    memset(&info, 0, sizeof info);
-    if (!pfs_xnu_region(&a, &size, &depth, &info))
+    memset(&r.info, 0, sizeof r.info);
+    if (!pfs_xnu_region(&a, &size, &depth, &r.info))
       break;
-    if (info.is_submap) {
+    if (r.info.is_submap) {
       depth++;
       continue;
     }
-    char perms[5] = "---p";
-    if (info.protection & 1)
-      perms[0] = 'r';
-    if (info.protection & 2)
-      perms[1] = 'w';
-    if (info.protection & 4)
-      perms[2] = 'x';
-    if (info.share_mode == 4 /* SM_SHARED */ ||
-        info.share_mode == 5 /* SM_TRUESHARED */ ||
-        info.share_mode == 7 /* SM_SHARED_ALIASED */)
-      perms[3] = 's';
-    char path[512];
-    long pl = pfs_xnu_regionfile(a, path, sizeof path - 1);
+    r.a = a;
+    r.size = size;
+    memcpy(r.perms, "---p", 5);
+    if (r.info.protection & 1)
+      r.perms[0] = 'r';
+    if (r.info.protection & 2)
+      r.perms[1] = 'w';
+    if (r.info.protection & 4)
+      r.perms[2] = 'x';
+    r.shared = r.info.share_mode == 4 /* SM_SHARED */ ||
+               r.info.share_mode == 5 /* SM_TRUESHARED */ ||
+               r.info.share_mode == 7 /* SM_SHARED_ALIASED */;
+    if (r.shared)
+      r.perms[3] = 's';
+    r.objshared = r.shared || r.info.external_pager ||
+                  r.info.share_mode == 3 /* SM_COW */;
+    long pl = pfs_xnu_regionfile(a, r.path, sizeof r.path - 1);
+    r.path[pl > 0 ? pl : 0] = 0;
+    r.ino = 0;
     if (pl > 0) {
-      path[pl] = 0;
       uint64_t ino = 0xcbf29ce484222325ull;
-      for (const char *c = path; *c; c++)
+      for (const char *c = r.path; *c; c++)
         ino = (ino ^ (uint8_t)*c) * 0x100000001b3ull;
-      pfs_printf(b, "%08llx-%08llx %s %08llx 08:01 %llu %s\n",
-                 (unsigned long long)a, (unsigned long long)(a + size), perms,
-                 (unsigned long long)info.offset,
-                 (unsigned long long)(ino & 0xffffff), path);
-    } else {
-      pfs_printf(b, "%08llx-%08llx %s %08llx 00:00 0 \n", (unsigned long long)a,
-                 (unsigned long long)(a + size), perms,
-                 (unsigned long long)info.offset);
+      r.ino = ino & 0xffffff;
     }
+    fn(ctx, &r);
     addr = a + size;
   }
+}
+
+static void put_maps_line(struct pfs_buf *b, const struct xregion *r) {
+  if (r->path[0]) {
+    pfs_printf(b, "%08llx-%08llx %s %08llx 08:01 %llu %s\n",
+               (unsigned long long)r->a, (unsigned long long)(r->a + r->size),
+               r->perms, (unsigned long long)r->info.offset,
+               (unsigned long long)r->ino, r->path);
+  } else {
+    pfs_printf(b, "%08llx-%08llx %s %08llx 00:00 0 \n",
+               (unsigned long long)r->a, (unsigned long long)(r->a + r->size),
+               r->perms, (unsigned long long)r->info.offset);
+  }
+}
+
+static void maps_cb(void *ctx, const struct xregion *r) {
+  put_maps_line(ctx, r);
+}
+
+static void gen_maps(struct pfs_buf *b, uint32_t pid) {
+  if (pid != pfs_self_pid())
+    return;
+  walk_regions(maps_cb, b);
+}
+
+// The per-region page counts the kernel keeps, in bytes: resident,
+// dirtied and swapped pages; a shared region's resident pages count toward
+// Pss divided by its reference count.
+//
+// The kernel's resident count is per object, not per map: a region of the
+// dyld shared cache (mapped copy-on-write off a file) reports every page
+// of the cache that is in memory, whoever faulted it in, so summing it
+// over a process's regions gives a gigabyte where the task holds a few
+// megabytes. The task's own resident size (what status prints as VmRSS)
+// says how much of such objects this task really maps, and the regions
+// backed by them get that spread over them in proportion to their
+// object-level counts; anonymous private memory is counted as is.
+struct wsum {
+  uint64_t rss, pss, shared, private, dirty, anon, swap, locked;
+};
+
+struct shared_scale {
+  uint64_t num, den;  // shared bytes to report, over shared bytes seen
+};
+
+static void scale_cb(void *ctx, const struct xregion *r) {
+  uint64_t *sum = ctx;  // [0] private resident, [1] shared resident
+  uint64_t pg = (uint64_t)pfs_xnu_pagesize();
+  sum[r->objshared ? 1 : 0] += (uint64_t)r->info.pages_resident * pg;
+}
+
+static struct shared_scale shared_scale(void) {
+  uint64_t sum[2] = {0, 0};
+  walk_regions(scale_cb, sum);
+  struct xnu_proc_taskinfo ti;
+  uint64_t task_rss = pfs_xnu_taskinfo(pfs_self_pid(), &ti) ? ti.pti_resident_size : 0;
+  struct shared_scale s = {sum[1], sum[1]};
+  if (!sum[1])
+    return s;
+  s.num = task_rss > sum[0] ? task_rss - sum[0] : 0;
+  if (s.num > sum[1])
+    s.num = sum[1];
+  return s;
+}
+
+static void region_ws(const struct xregion *r, const struct shared_scale *sc,
+                      struct wsum *w) {
+  uint64_t pg = (uint64_t)pfs_xnu_pagesize();
+  memset(w, 0, sizeof *w);
+  w->rss = (uint64_t)r->info.pages_resident * pg;
+  if (r->objshared && sc->den)
+    w->rss = (uint64_t)((unsigned __int128)w->rss * sc->num / sc->den) &
+             ~(pg - 1);
+  w->dirty = (uint64_t)r->info.pages_dirtied * pg;
+  if (w->dirty > w->rss)
+    w->dirty = w->rss;
+  w->swap = (uint64_t)r->info.pages_swapped_out * pg;
+  // pages others map too are shared in Linux's sense whatever the
+  // mapping's own sharing mode
+  if (r->shared || (r->objshared && r->info.ref_count > 1)) {
+    w->shared = w->rss;
+    w->pss = w->rss / (r->info.ref_count > 1 ? r->info.ref_count : 1);
+  } else {
+    w->private = w->rss;
+    w->pss = w->rss;
+    if (!r->path[0])
+      w->anon = w->rss;
+  }
+  if (r->info.user_wired_count)
+    w->locked = r->size;
+}
+
+static void put_smaps_fields(struct pfs_buf *b, const struct wsum *w,
+                             uint64_t size, bool rollup) {
+  if (!rollup)
+    pfs_printf(b, "%-16s%8llu kB\n%-16s%8llu kB\n%-16s%8llu kB\n", "Size:",
+               (unsigned long long)(size / 1024), "KernelPageSize:",
+               (unsigned long long)(pfs_xnu_pagesize() / 1024),
+               "MMUPageSize:", (unsigned long long)(pfs_xnu_pagesize() / 1024));
+  uint64_t clean = w->rss - w->dirty;
+  const struct {
+    const char *name;
+    uint64_t v;
+  } f[] = {
+      {"Rss:", w->rss},
+      {"Pss:", w->pss},
+      {"Pss_Dirty:", w->shared ? 0 : w->dirty},
+      {"Shared_Clean:", w->shared ? clean : 0},
+      {"Shared_Dirty:", w->shared ? w->dirty : 0},
+      {"Private_Clean:", w->shared ? 0 : clean},
+      {"Private_Dirty:", w->shared ? 0 : w->dirty},
+      {"Referenced:", w->rss},
+      {"Anonymous:", w->anon},
+      {"LazyFree:", 0},
+      {"AnonHugePages:", 0},
+      {"ShmemPmdMapped:", 0},
+      {"FilePmdMapped:", 0},
+      {"Shared_Hugetlb:", 0},
+      {"Private_Hugetlb:", 0},
+      {"Swap:", w->swap},
+      {"SwapPss:", w->swap},
+      {"Locked:", w->locked},
+  };
+  for (size_t i = 0; i < sizeof f / sizeof f[0]; i++)
+    pfs_printf(b, "%-16s%8llu kB\n", f[i].name,
+               (unsigned long long)(f[i].v / 1024));
+}
+
+struct smaps_ctx {
+  struct pfs_buf *b;
+  struct shared_scale sc;
+};
+
+static void smaps_cb(void *ctx, const struct xregion *r) {
+  struct smaps_ctx *c = ctx;
+  struct pfs_buf *b = c->b;
+  struct wsum w;
+  put_maps_line(b, r);
+  region_ws(r, &c->sc, &w);
+  put_smaps_fields(b, &w, r->size, false);
+  pfs_printf(b, "THPeligible:    0\nVmFlags: rd%s%s mr mw me%s\n",
+             r->perms[1] == 'w' ? " wr" : "", r->perms[2] == 'x' ? " ex" : "",
+             r->shared ? " sh ms" : " sd");
+}
+
+static void gen_smaps(struct pfs_buf *b, uint32_t pid) {
+  if (pid != pfs_self_pid())
+    return;
+  struct smaps_ctx c = {b, shared_scale()};
+  walk_regions(smaps_cb, &c);
+}
+
+struct rollup {
+  struct wsum sum;
+  struct shared_scale sc;
+  uint64_t sdirty, pdirty, lo, hi;
+};
+
+static void rollup_cb(void *ctx, const struct xregion *r) {
+  struct rollup *ru = ctx;
+  struct wsum w;
+  region_ws(r, &ru->sc, &w);
+  ru->sum.rss += w.rss;
+  ru->sum.pss += w.pss;
+  ru->sum.shared += w.shared;
+  ru->sum.private += w.private;
+  ru->sum.anon += w.anon;
+  ru->sum.swap += w.swap;
+  ru->sum.locked += w.locked;
+  if (r->shared || (r->objshared && r->info.ref_count > 1))
+    ru->sdirty += w.dirty;
+  else
+    ru->pdirty += w.dirty;
+  if (!ru->lo || r->a < ru->lo)
+    ru->lo = r->a;
+  if (r->a + r->size > ru->hi)
+    ru->hi = r->a + r->size;
+}
+
+static void gen_smaps_rollup(struct pfs_buf *b, uint32_t pid) {
+  if (pid != pfs_self_pid())
+    return;
+  struct rollup ru = {0};
+  ru.sc = shared_scale();
+  walk_regions(rollup_cb, &ru);
+  pfs_printf(b, "%08llx-%08llx ---p 00000000 00:00 0 [rollup]\n",
+             (unsigned long long)ru.lo, (unsigned long long)ru.hi);
+  const struct {
+    const char *name;
+    uint64_t v;
+  } f[] = {
+      {"Rss:", ru.sum.rss},
+      {"Pss:", ru.sum.pss},
+      {"Pss_Dirty:", ru.pdirty},
+      {"Pss_Anon:", ru.sum.anon},
+      {"Pss_File:", ru.sum.pss > ru.sum.anon ? ru.sum.pss - ru.sum.anon : 0},
+      {"Pss_Shmem:", 0},
+      {"Shared_Clean:", ru.sum.shared - ru.sdirty},
+      {"Shared_Dirty:", ru.sdirty},
+      {"Private_Clean:", ru.sum.private - ru.pdirty},
+      {"Private_Dirty:", ru.pdirty},
+      {"Referenced:", ru.sum.rss},
+      {"Anonymous:", ru.sum.anon},
+      {"LazyFree:", 0},
+      {"AnonHugePages:", 0},
+      {"ShmemPmdMapped:", 0},
+      {"FilePmdMapped:", 0},
+      {"Shared_Hugetlb:", 0},
+      {"Private_Hugetlb:", 0},
+      {"Swap:", ru.sum.swap},
+      {"SwapPss:", ru.sum.swap},
+      {"Locked:", ru.sum.locked},
+  };
+  for (size_t i = 0; i < sizeof f / sizeof f[0]; i++)
+    pfs_printf(b, "%-16s%8llu kB\n", f[i].name,
+               (unsigned long long)(f[i].v / 1024));
 }
 
 bool pfs_xnu_gen_pid_file(struct pfs_buf *b, uint32_t pid, const char *name) {
@@ -325,6 +626,10 @@ bool pfs_xnu_gen_pid_file(struct pfs_buf *b, uint32_t pid, const char *name) {
     return gen_limits(b), true;
   if (!strcmp(name, "maps"))
     return gen_maps(b, pid), true;
+  if (!strcmp(name, "smaps"))
+    return gen_smaps(b, pid), true;
+  if (!strcmp(name, "smaps_rollup"))
+    return gen_smaps_rollup(b, pid), true;
   if (!strcmp(name, "cgroup"))
     return pfs_printf(b, "0::/\n"), true;
   if (!strcmp(name, "mountinfo"))
@@ -534,6 +839,68 @@ static void gen_loadavg(struct pfs_buf *b) {
              la.ldavg[2] / fs, nproc > 0 ? nproc : 1, (int)pfs_self_pid());
 }
 
+// the Features line of /proc/cpuinfo, with linux's hwcap names, from the
+// hw.optional.arm.FEAT_* sysctls
+static const struct {
+  const char *sysctl;
+  const char *name;
+} pfs_xnu_hwcaps[] = {
+    {"hw.optional.arm.FEAT_AES", "aes"},
+    {"hw.optional.arm.FEAT_PMULL", "pmull"},
+    {"hw.optional.arm.FEAT_SHA1", "sha1"},
+    {"hw.optional.arm.FEAT_SHA256", "sha2"},
+    {"hw.optional.arm.FEAT_CRC32", "crc32"},
+    {"hw.optional.arm.FEAT_LSE", "atomics"},
+    {"hw.optional.arm.FEAT_FP16", "fphp"},
+    {"hw.optional.arm.FEAT_FP16", "asimdhp"},
+    {"hw.optional.arm.FEAT_RDM", "asimdrdm"},
+    {"hw.optional.arm.FEAT_JSCVT", "jscvt"},
+    {"hw.optional.arm.FEAT_FCMA", "fcma"},
+    {"hw.optional.arm.FEAT_LRCPC", "lrcpc"},
+    {"hw.optional.arm.FEAT_DPB", "dcpop"},
+    {"hw.optional.arm.FEAT_SHA3", "sha3"},
+    {"hw.optional.arm.FEAT_DotProd", "asimddp"},
+    {"hw.optional.arm.FEAT_SHA512", "sha512"},
+    {"hw.optional.arm.FEAT_SVE", "sve"},
+    {"hw.optional.arm.FEAT_FHM", "asimdfhm"},
+    {"hw.optional.arm.FEAT_DIT", "dit"},
+    {"hw.optional.arm.FEAT_LSE2", "uscat"},
+    {"hw.optional.arm.FEAT_LRCPC2", "ilrcpc"},
+    {"hw.optional.arm.FEAT_FlagM", "flagm"},
+    {"hw.optional.arm.FEAT_SSBS", "ssbs"},
+    {"hw.optional.arm.FEAT_SB", "sb"},
+    {"hw.optional.arm.FEAT_PAuth", "paca"},
+    {"hw.optional.arm.FEAT_PAuth", "pacg"},
+    {"hw.optional.arm.FEAT_DPB2", "dcpodp"},
+    {"hw.optional.arm.FEAT_FlagM2", "flagm2"},
+    {"hw.optional.arm.FEAT_FRINTTS", "frint"},
+    {"hw.optional.arm.FEAT_I8MM", "i8mm"},
+    {"hw.optional.arm.FEAT_BF16", "bf16"},
+    {"hw.optional.arm.FEAT_BTI", "bti"},
+    {"hw.optional.arm.FEAT_ECV", "ecv"},
+    {"hw.optional.arm.FEAT_AFP", "afp"},
+    {"hw.optional.arm.FEAT_RPRES", "rpres"},
+    {"hw.optional.arm.FEAT_MTE2", "mte"},
+    {"hw.optional.arm.FEAT_MTE3", "mte3"},
+    {"hw.optional.arm.FEAT_SME", "sme"},
+    {"hw.optional.arm.FEAT_EBF16", "ebf16"},
+    {"hw.optional.arm.FEAT_WFxT", "wfxt"},
+    {"hw.optional.arm.FEAT_SME2", "sme2"},
+    {"hw.optional.arm.FEAT_CSSC", "cssc"},
+    {"hw.optional.arm.FEAT_HBC", "hbc"},
+};
+
+static void pfs_xnu_features(struct pfs_buf *b) {
+  pfs_printf(b, "Features\t: fp asimd");
+  for (size_t i = 0; i < ARRAYLEN(pfs_xnu_hwcaps); i++) {
+    int v = 0;
+    size_t l = sizeof v;
+    if (!pfs_xnu_sysctl(pfs_xnu_hwcaps[i].sysctl, &v, &l) && v)
+      pfs_printf(b, " %s", pfs_xnu_hwcaps[i].name);
+  }
+  pfs_printf(b, "\n");
+}
+
 static void gen_cpuinfo(struct pfs_buf *b) {
   int n = 0;
   size_t l = sizeof n;
@@ -548,7 +915,7 @@ static void gen_cpuinfo(struct pfs_buf *b) {
     pfs_printf(b, "processor\t: %d\n", c);
     pfs_printf(b, "model name\t: %s\n", brand);
     pfs_printf(b, "BogoMIPS\t: 0.00\n");
-    pfs_printf(b, "Features\t: fp asimd\n");
+    pfs_xnu_features(b);
     pfs_printf(b, "CPU implementer\t: 0x61\n");  // Apple
     pfs_printf(b, "CPU architecture: 8\n\n");
   }
@@ -583,7 +950,9 @@ bool pfs_xnu_gen_top_file(struct pfs_buf *b, const char *name) {
   if (!strcmp(name, "mounts"))
     return gen_mounts(b), true;
   if (!strcmp(name, "diskstats"))
-    return true;  // empty, no per-disk source yet
+    return pfs_xnu_diskstats(b), true;
+  if (!strcmp(name, "partitions"))
+    return pfs_xnu_partitions(b), true;
   if (!strcmp(name, "cmdline"))
     return gen_cmdline_top(b), true;
   if (!strcmp(name, "version"))
@@ -626,11 +995,10 @@ static void put_addr(struct pfs_buf *b, bool v6, const uint8_t *a,
   }
 }
 
-static void net_table(struct pfs_buf *b, const char *name) {
-  bool tcp = name[0] == 't';
-  bool v6 = strchr(name, '6') != 0;
-  pfs_printf(b, "  sl  local_address rem_address   st tx_queue rx_queue "
-                "tr tm->when retrnsmt   uid  timeout inode\n");
+// Every socket of one protocol's pcb list, with its Linux state.
+typedef void (*pcb_fn)(void *ctx, const struct xnu_xinpcb64 *inp, int state);
+
+static void pcb_walk(bool tcp, pcb_fn fn, void *ctx) {
   char *raw;
   size_t len;
   if (!pfs_xnu_pcblist(
@@ -648,7 +1016,6 @@ static void net_table(struct pfs_buf *b, const char *name) {
     return;
   }
   p += gen->xig_len;
-  int sl = 0;
   while (p + sizeof(struct xnu_xinpgen) <= end) {
     uint32_t rlen;
     memcpy(&rlen, p, 4);  // xt_len and the low half of xi_len lead both
@@ -668,9 +1035,25 @@ static void net_table(struct pfs_buf *b, const char *name) {
       inp = (const void *)p;
     }
     p += rlen;
+    fn(ctx, inp, state);
+  }
+  free(raw);
+}
+
+struct table_ctx {
+  struct pfs_buf *b;
+  bool tcp, v6;
+  int sl;
+};
+
+static void table_row(void *ctx, const struct xnu_xinpcb64 *inp, int state) {
+  struct table_ctx *t = ctx;
+  struct pfs_buf *b = t->b;
+  bool tcp = t->tcp, v6 = t->v6;
+  {
     bool row6 = (inp->inp_vflag & 2) != 0;  // INP_IPV6
     if (row6 != v6)
-      continue;
+      return;
     uint16_t lport = __builtin_bswap16(inp->inp_lport);
     uint16_t rport = __builtin_bswap16(inp->inp_fport);
     uint8_t laddr[16] = {0}, raddr[16] = {0};
@@ -683,7 +1066,7 @@ static void net_table(struct pfs_buf *b, const char *name) {
     }
     uint64_t inode =
         pfs_net_inode(tcp ? 0 : 1, v6 ? 6 : 4, 0, lport, rport, laddr, raddr);
-    pfs_printf(b, "%4d: ", sl++);
+    pfs_printf(b, "%4d: ", t->sl++);
     put_addr(b, v6, laddr, lport);
     pfs_put(b, " ", 1);
     put_addr(b, v6, raddr, rport);
@@ -693,7 +1076,331 @@ static void net_table(struct pfs_buf *b, const char *name) {
                state, inp->xi_socket.so_snd.sb_cc, inp->xi_socket.so_rcv.sb_cc,
                inp->xi_socket.so_uid, (unsigned long long)inode);
   }
+}
+
+static void net_table(struct pfs_buf *b, const char *name) {
+  struct table_ctx t = {b, name[0] == 't', strchr(name, '6') != 0, 0};
+  pfs_printf(b, "  sl  local_address rem_address   st tx_queue rx_queue "
+                "tr tm->when retrnsmt   uid  timeout inode\n");
+  pcb_walk(t.tcp, table_row, &t);
+}
+
+static void count_estab(void *ctx, const struct xnu_xinpcb64 *inp, int state) {
+  (void)inp;
+  if (state == 1)
+    (*(int *)ctx)++;
+}
+
+// ---------------------------------------------------------------------------
+// /proc/net/route and arp out of the routing socket's dump: rt_msghdr
+// records (92 bytes: index at 4, flags at 8, addrs at 12, the 56-byte
+// metrics at 36 with the hop count at 44) each followed by the sockaddrs
+// its addrs bits name, every one rounded up to 4 bytes and a length of 0
+// taking 4. A netmask sockaddr is cut short after its last nonzero byte.
+// Offsets checked against the SDK's <net/route.h> on macOS 26.
+
+#define XNU_RTM_HDR     92
+#define XNU_RTA_DST     0x1
+#define XNU_RTA_GATEWAY 0x2
+#define XNU_RTA_NETMASK 0x4
+#define XNU_RTF_UP      0x1
+#define XNU_RTF_GATEWAY 0x2
+#define XNU_RTF_HOST    0x4
+#define XNU_RTF_STATIC  0x800
+#define XNU_RTF_LLINFO  0x400
+#define XNU_RTF_CLONED  0x20000
+#define XNU_RTF_BCAST   0x400000
+#define XNU_RTF_MCAST   0x800000
+#define XNU_AF_INET     2
+#define XNU_AF_LINK     18
+#define XNU_NET_RT_DUMP 1
+#define XNU_NET_RT_FLAGS 2
+
+struct rtrec {
+  uint16_t index;
+  int32_t flags, addrs;
+  uint32_t hopcount;
+  const uint8_t *sa[8];  // by RTA bit, 0 when absent
+};
+
+static bool rt_parse(const uint8_t *p, size_t m, struct rtrec *r) {
+  memset(r, 0, sizeof *r);
+  if (m < XNU_RTM_HDR)
+    return false;
+  memcpy(&r->index, p + 4, 2);
+  memcpy(&r->flags, p + 8, 4);
+  memcpy(&r->addrs, p + 12, 4);
+  memcpy(&r->hopcount, p + 44, 4);
+  const uint8_t *sa = p + XNU_RTM_HDR, *end = p + m;
+  for (int bit = 0; bit < 8 && sa < end; bit++) {
+    if (!(r->addrs & 1 << bit))
+      continue;
+    r->sa[bit] = sa;
+    size_t len = sa[0] ? (sa[0] + 3) & ~3u : 4;
+    sa += len;
+  }
+  return true;
+}
+
+// an AF_INET sockaddr's address as the network-order word Linux prints;
+// a shortened netmask reads as zeros past its length
+static uint32_t sa_inet(const uint8_t *sa) {
+  uint8_t a[4] = {0};
+  if (!sa)
+    return 0;
+  size_t len = sa[0];
+  for (size_t i = 4; i < 8 && i < len; i++)
+    a[i - 4] = sa[i];
+  uint32_t w;
+  memcpy(&w, a, 4);
+  return w;
+}
+
+static void xnu_if_name_of(uint32_t index, char *out, size_t n) {
+  struct pfs_ifstat ifs[32];
+  int k = pfs_xnu_ifstats(ifs, 32);
+  for (int i = 0; i < k; i++) {
+    if (ifs[i].index == index) {
+      snprintf(out, n, "%s", ifs[i].name);
+      return;
+    }
+  }
+  snprintf(out, n, "if%u", index);
+}
+
+// the kernel pads every line of this file to 127 columns
+static void pad_line(struct pfs_buf *b, size_t from) {
+  size_t len = b->n - from;
+  while (len++ < 127)
+    pfs_put(b, " ", 1);
+  pfs_put(b, "\n", 1);
+}
+
+// Cloned host routes, neighbor entries and the multicast and broadcast
+// rows are what BSD keeps in its table and Linux keeps elsewhere.
+static void net_route(struct pfs_buf *b) {
+  size_t from = b->n;
+  pfs_printf(b, "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\t"
+                "Mask\t\tMTU\tWindow\tIRTT");
+  pad_line(b, from);
+  char *raw;
+  size_t len;
+  if (!pfs_xnu_rtdump(XNU_AF_INET, XNU_NET_RT_DUMP, 0, &raw, &len))
+    return;
+  const uint8_t *p = (const uint8_t *)raw, *end = p + len;
+  while (p + XNU_RTM_HDR <= end) {
+    uint16_t m;
+    memcpy(&m, p, 2);
+    if (m < XNU_RTM_HDR || m > end - p)
+      break;
+    struct rtrec r;
+    rt_parse(p, m, &r);
+    p += m;
+    if (!(r.flags & XNU_RTF_UP) ||
+        (r.flags & (XNU_RTF_LLINFO | XNU_RTF_CLONED | XNU_RTF_BCAST |
+                    XNU_RTF_MCAST)))
+      continue;
+    const uint8_t *dst = r.sa[0], *gw = r.sa[1], *mask = r.sa[2];
+    if (!dst || dst[1] != XNU_AF_INET)
+      continue;
+    uint32_t gateway = 0;
+    unsigned flags = 1;
+    if (r.flags & XNU_RTF_GATEWAY) {
+      flags |= 2;
+      if (gw && gw[1] == XNU_AF_INET)
+        gateway = sa_inet(gw);
+    }
+    uint32_t netmask = mask ? sa_inet(mask) : 0;
+    if (r.flags & XNU_RTF_HOST) {
+      flags |= 4;
+      netmask = 0xffffffffu;
+    }
+    char name[16];
+    xnu_if_name_of(r.index, name, sizeof name);
+    from = b->n;
+    pfs_printf(b, "%s\t%08X\t%08X\t%04X\t0\t0\t%u\t%08X\t0\t0\t0", name,
+               sa_inet(dst), gateway, flags, r.hopcount, netmask);
+    pad_line(b, from);
+  }
   free(raw);
+}
+
+static void net_arp(struct pfs_buf *b) {
+  pfs_printf(b, "IP address       HW type     Flags       HW address       "
+                "     Mask     Device\n");
+  char *raw;
+  size_t len;
+  if (!pfs_xnu_rtdump(XNU_AF_INET, XNU_NET_RT_FLAGS, XNU_RTF_LLINFO, &raw,
+                      &len))
+    return;
+  const uint8_t *p = (const uint8_t *)raw, *end = p + len;
+  while (p + XNU_RTM_HDR <= end) {
+    uint16_t m;
+    memcpy(&m, p, 2);
+    if (m < XNU_RTM_HDR || m > end - p)
+      break;
+    struct rtrec r;
+    rt_parse(p, m, &r);
+    p += m;
+    const uint8_t *dst = r.sa[0], *gw = r.sa[1];
+    if (!dst || dst[1] != XNU_AF_INET || !gw || gw[1] != XNU_AF_LINK)
+      continue;
+    const uint8_t *ip = dst + 4;
+    if ((ip[0] & 0xf0) == 0xe0)
+      continue;
+    uint8_t nlen = gw[5], alen = gw[6];
+    const uint8_t *mac = gw + 8 + nlen;
+    if (alen == 6 && mac[0] == 0xff && mac[1] == 0xff && mac[2] == 0xff &&
+        mac[3] == 0xff && mac[4] == 0xff && mac[5] == 0xff)
+      continue;
+    unsigned flags = alen ? 0x2 : 0;
+    if (r.flags & XNU_RTF_STATIC)
+      flags |= 0x4;
+    char ipstr[16], hw[18], name[16];
+    snprintf(ipstr, sizeof ipstr, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    snprintf(hw, sizeof hw, "%02x:%02x:%02x:%02x:%02x:%02x",
+             alen > 0 ? mac[0] : 0, alen > 1 ? mac[1] : 0, alen > 2 ? mac[2] : 0,
+             alen > 3 ? mac[3] : 0, alen > 4 ? mac[4] : 0,
+             alen > 5 ? mac[5] : 0);
+    uint16_t ifindex;
+    memcpy(&ifindex, gw + 2, 2);
+    xnu_if_name_of(ifindex ? ifindex : r.index, name, sizeof name);
+    pfs_printf(b, "%-16s 0x%-10x0x%-10x%s     *        %s\n", ipstr, 1, flags,
+               hw, name);
+  }
+  free(raw);
+}
+
+// /proc/net/snmp out of the protocol counter blocks. The structures are
+// private to xnu (bsd/netinet/{ip,udp,icmp}_var.h); only fields appended
+// over the years, so the leading u32s read here are stable, and the
+// sizes the sysctls answer were checked against the headers. TCP's block
+// reads as zeros on current macOS, as the host's own netstat shows, so
+// the established count comes from the pcb list instead.
+static uint32_t stat_u32(const uint32_t *v, size_t n, size_t i) {
+  return i < n ? v[i] : 0;
+}
+
+static void net_snmp(struct pfs_buf *b) {
+  static uint32_t ip[64], tcp[256], udp[32], icmp[128];  // under pc_lock
+  size_t lip = sizeof ip, ltcp = sizeof tcp, ludp = sizeof udp,
+         licmp = sizeof icmp;
+  memset(ip, 0, sizeof ip);
+  memset(tcp, 0, sizeof tcp);
+  memset(udp, 0, sizeof udp);
+  memset(icmp, 0, sizeof icmp);
+  if (pfs_xnu_sysctl("net.inet.ip.stats", ip, &lip))
+    lip = 0;
+  if (pfs_xnu_sysctl("net.inet.tcp.stats", tcp, &ltcp))
+    ltcp = 0;
+  if (pfs_xnu_sysctl("net.inet.udp.stats", udp, &ludp))
+    ludp = 0;
+  if (pfs_xnu_sysctl("net.inet.icmp.stats", icmp, &licmp))
+    licmp = 0;
+  size_t nip = lip / 4, ntcp = ltcp / 4, nudp = ludp / 4, nicmp = licmp / 4;
+#define IP(i)   stat_u32(ip, nip, i)
+#define TCP(i)  stat_u32(tcp, ntcp, i)
+#define UDP(i)  stat_u32(udp, nudp, i)
+#define ICMP(i) stat_u32(icmp, nicmp, i)
+  int fwd = 0, ttl = 64;
+  size_t l = sizeof fwd;
+  pfs_xnu_sysctl("net.inet.ip.forwarding", &fwd, &l);
+  l = sizeof ttl;
+  pfs_xnu_sysctl("net.inet.ip.ttl", &ttl, &l);
+
+  // ipstat: total badsum tooshort toosmall badhlen badlen fragments
+  // fragdropped fragtimeout forward fastforward cantforward redirectsent
+  // noproto delivered localout odropped reassembled fragmented ofragments
+  // cantfrag badoptions noroute badvers rawout toolong notmember nogif
+  // badaddr
+  pfs_printf(b, "Ip: Forwarding DefaultTTL InReceives InHdrErrors "
+                "InAddrErrors ForwDatagrams InUnknownProtos InDiscards "
+                "InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout "
+                "ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates "
+                "OutTransmits\n");
+  pfs_printf(b, "Ip: %d %d %u %u %u %u %u 0 %u %u %u %u %u %u %u %u %u %u %u "
+                "%u\n",
+             fwd ? 1 : 2, ttl, IP(0),
+             IP(1) + IP(2) + IP(3) + IP(4) + IP(5) + IP(23) + IP(25),
+             IP(11) + IP(28), IP(9), IP(13), IP(14), IP(15), IP(16), IP(22),
+             IP(8), IP(6), IP(17), IP(7) + IP(8), IP(18), IP(20), IP(19),
+             IP(15) + IP(9));
+
+  // icmpstat: error oldshort oldicmp outhist[41] badcode tooshort checksum
+  // badlen reflect inhist[41] ...
+  uint32_t inmsgs = 0, outmsgs = 0;
+  for (int t = 0; t <= 40; t++) {
+    inmsgs += ICMP(49 + t);
+    outmsgs += ICMP(3 + t);
+  }
+  uint32_t inerr = ICMP(44) + ICMP(45) + ICMP(46) + ICMP(47);
+  pfs_printf(b, "Icmp: InMsgs InErrors InCsumErrors InDestUnreachs "
+                "InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos "
+                "InEchoReps InTimestamps InTimestampReps InAddrMasks "
+                "InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal "
+                "OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs "
+                "OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps "
+                "OutTimestampReps OutAddrMasks OutAddrMaskReps\n");
+  pfs_printf(b, "Icmp: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u 0 0 0 %u "
+                "%u %u %u %u %u %u %u %u %u %u\n",
+             inmsgs + inerr, inerr, ICMP(46), ICMP(49 + 3), ICMP(49 + 11),
+             ICMP(49 + 12), ICMP(49 + 4), ICMP(49 + 5), ICMP(49 + 8),
+             ICMP(49 + 0), ICMP(49 + 13), ICMP(49 + 14), ICMP(49 + 17),
+             ICMP(49 + 18), outmsgs, ICMP(3 + 3), ICMP(3 + 11), ICMP(3 + 12),
+             ICMP(3 + 4), ICMP(3 + 5), ICMP(3 + 8), ICMP(3 + 0), ICMP(3 + 13),
+             ICMP(3 + 14), ICMP(3 + 17), ICMP(3 + 18));
+  bool any = false;
+  for (int t = 0; t <= 40; t++)
+    any |= ICMP(49 + t) || ICMP(3 + t);
+  if (any) {
+    pfs_printf(b, "IcmpMsg:");
+    for (int t = 0; t <= 40; t++) {
+      if (ICMP(49 + t))
+        pfs_printf(b, " InType%d", t);
+      if (ICMP(3 + t))
+        pfs_printf(b, " OutType%d", t);
+    }
+    pfs_printf(b, "\nIcmpMsg:");
+    for (int t = 0; t <= 40; t++) {
+      if (ICMP(49 + t))
+        pfs_printf(b, " %u", ICMP(49 + t));
+      if (ICMP(3 + t))
+        pfs_printf(b, " %u", ICMP(3 + t));
+    }
+    pfs_printf(b, "\n");
+  }
+
+  // tcpstat: connattempt accepts connects drops conndrops closed segstimed
+  // rttupdated delack timeoutdrop rexmttimeo persisttimeo keeptimeo
+  // keepprobe keepdrops sndtotal sndpack sndbyte sndrexmitpack
+  // sndrexmitbyte sndacks sndprobe sndurg sndwinup sndctrl rcvtotal
+  // rcvpack rcvbyte rcvbadsum rcvbadoff rcvmemdrop rcvshort ...
+  int estab = 0;
+  pcb_walk(true, count_estab, &estab);
+  pfs_printf(b, "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens "
+                "PassiveOpens AttemptFails EstabResets CurrEstab InSegs "
+                "OutSegs RetransSegs InErrs OutRsts InCsumErrors\n");
+  pfs_printf(b, "Tcp: 1 200 120000 -1 %u %u %u %u %d %u %u %u %u 0 %u\n",
+             TCP(0), TCP(1), TCP(4), TCP(3), estab, TCP(25), TCP(15), TCP(18),
+             TCP(28) + TCP(29) + TCP(31), TCP(28));
+
+  // udpstat: ipackets hdrops badsum badlen noport noportbcast fullsock
+  // pcbcachemiss pcbhashmiss opackets ...
+  uint32_t inerrs = UDP(1) + UDP(2) + UDP(3) + UDP(6);
+  uint32_t noports = UDP(4) + UDP(5);
+  uint32_t delivered = UDP(0) > inerrs + noports ? UDP(0) - inerrs - noports
+                                                 : 0;
+  pfs_printf(b, "Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors "
+                "SndbufErrors InCsumErrors IgnoredMulti MemErrors\n");
+  pfs_printf(b, "Udp: %u %u %u %u %u 0 %u 0 0\n", delivered, noports, inerrs,
+             UDP(9), UDP(6), UDP(2));
+  pfs_printf(b, "UdpLite: InDatagrams NoPorts InErrors OutDatagrams "
+                "RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti "
+                "MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n");
+#undef IP
+#undef TCP
+#undef UDP
+#undef ICMP
 }
 
 #define XNU_RTM_IFINFO2 0x12
@@ -725,6 +1432,7 @@ int pfs_xnu_ifstats(struct pfs_ifstat *out, int cap) {
           struct pfs_ifstat *o = &cache[ncache];
           memset(o, 0, sizeof *o);
           snprintf(o->name, sizeof o->name, "if%u", m->ifm_index);
+          o->index = m->ifm_index;
           if (m->ifm_addrs & XNU_RTA_IFP) {
             const struct xnu_sockaddr_dl *dl = (const void *)(p + sizeof *m);
             size_t nl = dl->sdl_nlen;
@@ -798,6 +1506,12 @@ bool pfs_xnu_gen_net_file(struct pfs_buf *b, const char *name) {
            true;
   if (!strcmp(name, "dev"))
     return net_dev(b), true;
+  if (!strcmp(name, "route"))
+    return net_route(b), true;
+  if (!strcmp(name, "arp"))
+    return net_arp(b), true;
+  if (!strcmp(name, "snmp"))
+    return net_snmp(b), true;
   return false;
 }
 
@@ -866,13 +1580,21 @@ static void other_socket_text(uint32_t pid, int fd, char *out, size_t n) {
            (unsigned long long)((uint64_t)pid << 20 | (uint32_t)fd));
 }
 
-int pfs_xnu_fds_of(uint32_t pid, struct pfs_fdent *out, int cap) {
-  static _Thread_local struct xnu_proc_fdinfo fds[1024];
-  int nfd = pfs_xnu_listfds(pid, fds, 1024);
+int pfs_xnu_fds_of(uint32_t pid, struct pfs_fdent **out) {
+  *out = 0;
+  struct xnu_proc_fdinfo *fds;
+  int nfd = pfs_xnu_listfds(pid, &fds);
+  if (nfd <= 0)
+    return 0;
+  struct pfs_fdent *ents = malloc(nfd * sizeof *ents);
+  if (!ents) {
+    free(fds);
+    return 0;
+  }
   bool self = pid == pfs_self_pid();
   int n = 0;
-  for (int i = 0; i < nfd && n < cap; i++) {
-    struct pfs_fdent *e = &out[n];
+  for (int i = 0; i < nfd; i++) {
+    struct pfs_fdent *e = &ents[n];
     long r;
     switch (fds[i].proc_fdtype) {
       case XNU_FDTYPE_VNODE:
@@ -905,5 +1627,7 @@ int pfs_xnu_fds_of(uint32_t pid, struct pfs_fdent *out, int cap) {
     e->fd = fds[i].proc_fd;
     n++;
   }
+  free(fds);
+  *out = ents;
   return n;
 }

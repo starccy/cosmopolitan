@@ -89,6 +89,9 @@ static int stat_sys(const char *vpath, struct stat *st) {
 }
 
 int __procfs_stat(int dirfd, const char *path, struct stat *st, int flags) {
+  int rc;
+  if ((rc = pc_userdirs_stat(dirfd, path, st)) != -2)
+    return rc;
   char vpath[PATH_MAX];
   int r = pc_resolve(dirfd, path, vpath, sizeof vpath);
   if (r == 0)
@@ -105,6 +108,9 @@ int __procfs_stat(int dirfd, const char *path, struct stat *st, int flags) {
 // Everything readable, directories searchable, nothing writable, absent
 // things absent.
 int __procfs_access(int dirfd, const char *path, int amode) {
+  int rc;
+  if ((rc = pc_userdirs_access(dirfd, path, amode)) != -2)
+    return rc;
   char vpath[PATH_MAX];
   int r = pc_resolve(dirfd, path, vpath, sizeof vpath);
   if (r == 0)

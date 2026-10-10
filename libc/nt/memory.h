@@ -65,6 +65,7 @@ bool32 FlushViewOfFile(const void *lpBaseAddress,
 void *VirtualAlloc(void *opt_lpAddress, uint64_t dwSize,
                    uint32_t flAllocationType, uint32_t flProtect);
 bool32 VirtualFree(void *lpAddress, uint64_t dwSize, uint32_t dwFreeType);
+bool32 K32QueryWorkingSetEx(int64_t hProcess, void *pv, uint32_t cb);
 bool32 VirtualProtect(void *lpAddress, uint64_t dwSize, uint32_t flNewProtect,
                       uint32_t *lpflOldProtect) paramsnonnull();
 bool32 VirtualLock(const void *lpAddress, size_t dwSize);

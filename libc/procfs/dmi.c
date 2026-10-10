@@ -1,5 +1,6 @@
 #include "libc/nt/thunk/msabi.h"
 #include "libc/procfs/internal.h"
+#include "libc/procfs/xnu.internal.h"
 
 // The DMI/SMBIOS facts behind /sys/class/dmi/id (and its real home,
 // /sys/devices/virtual/dmi/id): vendor, product, board, chassis and BIOS
@@ -39,6 +40,8 @@ static void take(char *out, size_t cap, const uint8_t *s, const uint8_t *end,
 }
 
 bool pfs_dmi(struct pfs_dmi *out) {
+  if (IsXnuSilicon())
+    return pfs_xnu_dmi(out);
   if (!IsWindows())
     return false;
   static struct pfs_dmi cached;

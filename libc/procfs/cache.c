@@ -179,6 +179,10 @@ bool pc_gen_node(const struct node *n, struct pfs_buf *b) {
       } else if (!strcmp(n->name, "net")) {
         if (!strchr(n->rest, '/') && pfs_proc_find(n->pid))
           return pfs_gen_net_file(b, n->rest);
+      } else if (!strcmp(n->name, "fdinfo")) {
+        int fd = pc_fd_number(n->rest);
+        if (fd >= 0 && pfs_proc_find(n->pid))
+          return pfs_gen_fdinfo(b, n->pid, fd);
       }
       return false;
     default:
