@@ -49,11 +49,6 @@ void *cosmo_dladddir(const char *) libcesque;
 int cosmo_dlremovedir(void *) libcesque;
 size_t cosmo_dlfwrite(const void *, size_t, size_t, void *) libcesque;
 
-struct CosmoDlexport {
-  const char *name;
-  void *addr;
-};
-
 #define COSMO_DLEXPORT_FUNC   0  /* a function of this program */
 #define COSMO_DLEXPORT_DATA   1  /* a variable, `size` bytes of it */
 #define COSMO_DLEXPORT_VARARG 2  /* a variadic function, `va` takes over */
@@ -69,7 +64,7 @@ struct CosmoDlexport {
                                     own as COSMO_DLEXPORT_FUNC when a
                                     parameter is a float or a struct */
 
-struct CosmoDlexport2 {
+struct CosmoDlexport {
   const char *name;
   void *addr;
   size_t size;  /* DATA: bytes. VARARG: how many parameters are fixed */
@@ -79,8 +74,6 @@ struct CosmoDlexport2 {
 
 void *cosmo_dlexport(const char *, const struct CosmoDlexport *,
                      size_t) libcesque;
-void *cosmo_dlexport2(const char *, const struct CosmoDlexport2 *,
-                      size_t) libcesque;
 intptr_t cosmo_dlhandle(int) libcesque;
 int cosmo_dlfd(intptr_t, int) libcesque;
 void *cosmo_hostlink(const char *) libcesque;

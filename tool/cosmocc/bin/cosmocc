@@ -708,7 +708,7 @@ fi
 
 # -rdynamic has no dynamic symbol table to put symbols in, since an ape
 # binary is statically linked. instead the names and addresses go in a
-# table the program carries, which libc hands to cosmo_dlexport2() the
+# table the program carries, which libc hands to cosmo_dlexport() the
 # first time something is dlopen'd, so a host plugin finds them
 if [ $EXPORT_DYNAMIC = 1 ]; then
   EXPORT_C=$(mktemper .c) || Exit
@@ -759,11 +759,11 @@ if [ $EXPORT_DYNAMIC = 1 ]; then
           pats[++npat] = "^" line "$"
         }
       }
-      print "// made by cosmocc -rdynamic, see cosmo_dlexport2()"
+      print "// made by cosmocc -rdynamic, see cosmo_dlexport()"
       print "#include <dlfcn.h>"
       print "// pulls the exporter out of libcosmo.a, since libc only"
       print "// has a weak reference to the hook that reads this table"
-      print "void *const __ape_exports_link = (void *)cosmo_dlexport2;"
+      print "void *const __ape_exports_link = (void *)cosmo_dlexport;"
     }
     $1 !~ /^[0-9]+:$/ || NF < 8 {
       next
@@ -812,7 +812,7 @@ if [ $EXPORT_DYNAMIC = 1 ]; then
       }
     }
     END {
-      print "const struct CosmoDlexport2 __ape_exports[] = {"
+      print "const struct CosmoDlexport __ape_exports[] = {"
       for (i = 1; i <= n; ++i)
         printf("    {\"%s\", (void *)%s, %s, %s, (void *)%s},\n", order[i],
                (order[i] in native) ? native[order[i]] : order[i],

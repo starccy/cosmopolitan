@@ -148,7 +148,7 @@ static uint32_t elf_hash(const char *s) {
 
 // a COSMO_DLEXPORT_DATA symbol becomes an absolute address, which is
 // what a copy relocation would have left; a function gets a trampoline
-static char *make_elf(const char *soname, const struct CosmoDlexport2 *syms,
+static char *make_elf(const char *soname, const struct CosmoDlexport *syms,
                       size_t n, size_t *out_size) {
   long pagesz = 65536;
   size_t nfunc = 0;
@@ -265,8 +265,8 @@ Fail:
 // PE
 
 static int cmp_names(const void *a, const void *b) {
-  const struct CosmoDlexport2 *x = *(const struct CosmoDlexport2 **)a;
-  const struct CosmoDlexport2 *y = *(const struct CosmoDlexport2 **)b;
+  const struct CosmoDlexport *x = *(const struct CosmoDlexport **)a;
+  const struct CosmoDlexport *y = *(const struct CosmoDlexport **)b;
   return strcmp(x->name, y->name);
 }
 
@@ -295,10 +295,10 @@ static uint64_t pe_pick_base(uintptr_t lo, uintptr_t hi, size_t size) {
   return 0;
 }
 
-static char *make_pe(const char *dllname, const struct CosmoDlexport2 *syms,
+static char *make_pe(const char *dllname, const struct CosmoDlexport *syms,
                      size_t n, size_t *out_size) {
   enum { FILEALIGN = 0x200, SECTALIGN = 0x1000 };
-  const struct CosmoDlexport2 **sorted;
+  const struct CosmoDlexport **sorted;
   char *p = 0;
   long *names = 0;
   struct Buf t = {0}, x = {0};
@@ -697,7 +697,7 @@ static int cmp_strs(const void *a, const void *b) {
 }
 
 static char *make_macho(const char *install_name,
-                        const struct CosmoDlexport2 *syms, size_t n,
+                        const struct CosmoDlexport *syms, size_t n,
                         size_t *out_size) {
   enum { PAGE = 16384 };
   size_t code = 0;
@@ -732,7 +732,7 @@ static char *make_macho(const char *install_name,
     names[i][0] = '_';
     strcpy(names[i] + 1, syms[i].name);
   }
-  struct CosmoDlexport2 *order = calloc(n + 1, sizeof(*order));
+  struct CosmoDlexport *order = calloc(n + 1, sizeof(*order));
   if (!order)
     goto Fail;
   for (size_t i = 0; i < n; ++i)
@@ -744,7 +744,7 @@ static char *make_macho(const char *install_name,
         char *t = names[i];
         names[i] = names[j];
         names[j] = t;
-        struct CosmoDlexport2 u = order[i];
+        struct CosmoDlexport u = order[i];
         order[i] = order[j];
         order[j] = u;
       }
@@ -1094,32 +1094,15 @@ const char *__dlexport_library(const char *name) {
   return res;
 }
 
-/**
- * Exports functions of this program to host libraries, by name.
- *
- * This builds and loads a host shared library called `name` whose only
- * contents are the functions in `syms`, each forwarding to its `addr`.
- * Load it before a library that looks those names up: a Lua C module
- * wants the lua_* functions from its host, a plugin wants its host's
- * API. On Linux and macOS the functions become visible to libraries
- * loaded afterwards (`RTLD_GLOBAL`), and `name` also satisfies their
- * dependencies on a library by that name. On Windows, where a DLL
- * imports from a named DLL, `name` should be exactly the DLL name the
- * library imports from, e.g. `"lua54.dll"`.
- *
- * Each `addr` is called with the host's calling convention, which on
- * Windows is Microsoft's x64 one, not SysV. Only functions can be
- * exported.
- *
- * @return handle for cosmo_dlsym() and cosmo_dlclose(), or NULL w/
- *     cosmo_dlerror()
- */
 // every function made known so far, for dlsym(RTLD_DEFAULT), and the
 // host-convention versions of the native ones
 static struct {
   pthread_mutex_t lock;
   size_t n, cap;
-  struct CosmoDlexport *p;
+  struct dlexport_name {
+    const char *name;
+    void *addr;
+  } *p;
   size_t nnative, capnative;
   void **native;
 } dlexport_known = {PTHREAD_MUTEX_INITIALIZER};
@@ -1136,7 +1119,7 @@ static void dlexport_remember_native(void *addr) {
   dlexport_known.native[dlexport_known.nnative++] = addr;
 }
 
-static void dlexport_remember(const struct CosmoDlexport2 *syms, size_t n) {
+static void dlexport_remember(const struct CosmoDlexport *syms, size_t n) {
   pthread_mutex_lock(&dlexport_known.lock);
   for (size_t i = 0; i < n; ++i) {
     size_t j;
@@ -1147,8 +1130,7 @@ static void dlexport_remember(const struct CosmoDlexport2 *syms, size_t n) {
       continue;
     if (dlexport_known.n == dlexport_known.cap) {
       size_t cap = dlexport_known.cap ? dlexport_known.cap * 2 : 16;
-      struct CosmoDlexport *p =
-          realloc(dlexport_known.p, cap * sizeof(*p));
+      struct dlexport_name *p = realloc(dlexport_known.p, cap * sizeof(*p));
       if (!p)
         break;
       dlexport_known.p = p;
@@ -1163,7 +1145,7 @@ static void dlexport_remember(const struct CosmoDlexport2 *syms, size_t n) {
       dlexport_remember_native(syms[i].addr);
       addr = syms[i].va;
     }
-    dlexport_known.p[dlexport_known.n++] = (struct CosmoDlexport){name, addr};
+    dlexport_known.p[dlexport_known.n++] = (struct dlexport_name){name, addr};
   }
   pthread_mutex_unlock(&dlexport_known.lock);
 }
@@ -1182,7 +1164,7 @@ bool __dlexport_native(const void *func) {
 }
 
 // the table cosmocc -rdynamic puts in the program, empty otherwise
-extern const struct CosmoDlexport2 __ape_exports[] __attribute__((__weak__));
+extern const struct CosmoDlexport __ape_exports[] __attribute__((__weak__));
 extern const unsigned long __ape_exports_count __attribute__((__weak__));
 extern const char *const __ape_export_names[] __attribute__((__weak__));
 
@@ -1202,7 +1184,7 @@ void *__dlexport_find(const char *name) {
   pthread_mutex_unlock(&dlexport_known.lock);
   if (!res && __ape_exports) {
     for (size_t i = 0; i < __ape_exports_count; ++i) {
-      const struct CosmoDlexport2 *e = __ape_exports + i;
+      const struct CosmoDlexport *e = __ape_exports + i;
       if (!strcmp(e->name, name)) {
         res = e->kind == COSMO_DLEXPORT_NATIVE && e->va ? e->va : e->addr;
         break;
@@ -1212,13 +1194,13 @@ void *__dlexport_find(const char *name) {
   return res;
 }
 
-static void *dlexport_impl(const char *name, const struct CosmoDlexport2 *syms,
+static void *dlexport_impl(const char *name, const struct CosmoDlexport *syms,
                            size_t n) {
   char dylib[PATH_MAX];
   char *lib, *path = 0;
   size_t size, i, j, m;
   void *res = 0;
-  struct CosmoDlexport2 *uniq;
+  struct CosmoDlexport *uniq;
   dlexport_said = false;
   if (!name || !*name || strchr(name, '/')) {
     __dlerror_set("cosmo_dlexport: the name must be a bare file name");
@@ -1305,28 +1287,22 @@ static void *dlexport_impl(const char *name, const struct CosmoDlexport2 *syms,
   return res;
 }
 
-void *cosmo_dlexport(const char *name, const struct CosmoDlexport *syms,
-                     size_t n) {
-  void *res;
-  struct CosmoDlexport2 *two;
-  if (!(two = calloc(n + 1, sizeof(*two)))) {
-    __dlerror_set("cosmo_dlexport: out of memory");
-    return 0;
-  }
-  for (size_t i = 0; i < n; ++i) {
-    two[i].name = syms[i].name;
-    two[i].addr = syms[i].addr;
-    two[i].kind = COSMO_DLEXPORT_FUNC;
-  }
-  res = dlexport_impl(name, two, n);
-  free(two);
-  return res;
-}
-
 /**
  * Exports functions and variables of this program to host libraries.
  *
- * This is cosmo_dlexport() with a kind per symbol. A
+ * This builds and loads a host shared library called `name` whose only
+ * contents are the `syms`, each forwarding to its `addr`. Load it before
+ * a library that looks those names up: a Lua C module wants the lua_*
+ * functions from its host, a plugin wants its host's API. On Linux and
+ * macOS the symbols become visible to libraries loaded afterwards
+ * (`RTLD_GLOBAL`), and `name` also satisfies their dependencies on a
+ * library by that name. On Windows, where a DLL imports from a named
+ * DLL, `name` should be exactly the DLL name the library imports from,
+ * e.g. `"lua54.dll"`.
+ *
+ * `kind` says what a symbol is, see the COSMO_DLEXPORT_* constants. A
+ * `COSMO_DLEXPORT_FUNC` is called with the host's calling convention,
+ * which on Windows is Microsoft's x64 one, not SysV. A
  * `COSMO_DLEXPORT_DATA` symbol is the variable at `addr`, `size` bytes
  * of it, which a library loaded afterwards binds to as if it had a copy
  * relocation, so both sides share the one variable. It must be a static
@@ -1336,8 +1312,8 @@ void *cosmo_dlexport(const char *name, const struct CosmoDlexport *syms,
  * @return handle for cosmo_dlsym() and cosmo_dlclose(), or NULL w/
  *     cosmo_dlerror()
  */
-void *cosmo_dlexport2(const char *name, const struct CosmoDlexport2 *syms,
-                      size_t n) {
+void *cosmo_dlexport(const char *name, const struct CosmoDlexport *syms,
+                     size_t n) {
   return dlexport_impl(name, syms, n);
 }
 

@@ -142,7 +142,7 @@ static void hostlink_data_before(struct HostLinkLib *lib) {
     n += d->lib == lib;
   if (!n)
     return;
-  struct CosmoDlexport2 *syms = malloc(n * sizeof(*syms));
+  struct CosmoDlexport *syms = malloc(n * sizeof(*syms));
   if (syms) {
     for (d = hostlink_data; d; d = d->next)
       if (d->lib == lib) {
@@ -155,7 +155,7 @@ static void hostlink_data_before(struct HostLinkLib *lib) {
       }
     char name[128];
     ksnprintf(name, sizeof(name), "hostlink-data-%s", lib->name);
-    if (!cosmo_dlexport2(name, syms, n))
+    if (!cosmo_dlexport(name, syms, n))
       kprintf("%s: -l%s's variables won't be shared: %s\n",
               program_invocation_name, lib->name, cosmo_dlerror());
   }
