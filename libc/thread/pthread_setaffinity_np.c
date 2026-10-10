@@ -20,6 +20,7 @@
 #include "libc/calls/sched-sysv.internal.h"
 #include "libc/calls/struct/cpuset.h"
 #include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/cosmo.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/atomic.h"
@@ -41,13 +42,33 @@ static dontinline textwindows int sys_pthread_setaffinity_nt(
   }
 }
 
+// XNU can't pin threads to CPUs. A mask that allows every CPU asks for
+// nothing and is accepted, so what getaffinity reports can be set back
+static int sys_setaffinity_xnu(const cpu_set_t *bitset) {
+  bool any = false, all = true;
+  int n = cosmo_cpu_count();
+  for (int i = 0; i < n && i < CPU_SETSIZE; ++i) {
+    if (CPU_ISSET(i, bitset)) {
+      any = true;
+    } else {
+      all = false;
+    }
+  }
+  if (!any)
+    return einval();
+  if (!all)
+    return enosys();
+  return 0;
+}
+
 /**
  * Asks kernel to only schedule thread on particular CPUs.
  *
  * @param size is bytes in bitset, which should be `sizeof(cpu_set_t)`
  * @return 0 on success, or errno on error
  * @raise EINVAL if `size` or `bitset` is invalid
- * @raise ENOSYS if not Linux, FreeBSD, NetBSD, or Windows
+ * @raise ENOSYS if not Linux, FreeBSD, NetBSD, or Windows, except that on
+ *     MacOS a mask holding every online CPU is accepted as a no-op
  * @see sched_setaffinity() for processes
  */
 errno_t pthread_setaffinity_np(pthread_t thread, size_t size,
@@ -69,6 +90,8 @@ errno_t pthread_setaffinity_np(pthread_t thread, size_t size,
     rc = einval();
   } else if (IsWindows()) {
     rc = sys_pthread_setaffinity_nt(pt, size, bitset);
+  } else if (IsXnu()) {
+    rc = sys_setaffinity_xnu(bitset);
   } else if (IsFreebsd()) {
     rc = sys_sched_setaffinity_freebsd(CPU_LEVEL_WHICH, CPU_WHICH_TID, tid, 32,
                                        bitset);

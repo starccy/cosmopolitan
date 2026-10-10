@@ -45,6 +45,8 @@ NtStatus NtCreateProcess(int64_t *out_ProcessHandle, uint32_t dwDesiredAccess,
                          void *opt_SectionHandle, void *opt_DebugPort,
                          void *opt_ExceptionPort);
 NtStatus NtTerminateProcess(int64_t opt_ProcessHandle, int32_t ExitStatus);
+NtStatus NtSuspendProcess(int64_t ProcessHandle);
+NtStatus NtResumeProcess(int64_t ProcessHandle);
 
 NtStatus NtQueryInformationProcess(int64_t ProcessHandle,
                                    int ProcessInformationClass,

@@ -127,6 +127,6 @@ int sigtimedwait(const sigset_t *set, siginfo_t *opt_info,
   END_CANCELATION_POINT;
   STRACE("sigtimedwait(%s, [%s], %s) → %s% m", DescribeSigset(0, set),
          DescribeSiginfo(rc, opt_info), DescribeTimespec(0, opt_timeout),
-         strsignal(rc));
+         __strsignal_name(rc));
   return rc;
 }

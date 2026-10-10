@@ -21,9 +21,12 @@
 #include "libc/sysv/consts/sig.h"
 
 /**
- * Returns string describing signal code.
+ * Returns name of signal code, e.g. "SIGINT".
+ *
+ * This is what crash reports and strace want. Use strsignal() for the
+ * text a program shows its user.
  */
-__privileged char *strsignal(int sig) {
+__privileged char *__strsignal_name(int sig) {
   static const char kSignalNames[33][10] = {
       [0] = "0",                  // 0
       [SIGHUP] = "SIGHUP",        // 1
@@ -62,4 +65,53 @@ __privileged char *strsignal(int sig) {
   if (0 <= sig && sig <= 32)
     return (char *)kSignalNames[sig];
   return "SIG???";
+}
+
+/**
+ * Returns string describing signal code, e.g. "Interrupt".
+ *
+ * The wording is the one glibc uses, which musl and the bsds follow,
+ * since programs print this to their users.
+ */
+__privileged char *strsignal(int sig) {
+  static const char kSignalTexts[33][26] = {
+      [0] = "Unknown signal",
+      [SIGHUP] = "Hangup",
+      [SIGINT] = "Interrupt",
+      [SIGQUIT] = "Quit",
+      [SIGILL] = "Illegal instruction",
+      [SIGTRAP] = "Trace/breakpoint trap",
+      [SIGABRT] = "Aborted",
+      [SIGBUS] = "Bus error",
+      [SIGFPE] = "Floating point exception",
+      [SIGKILL] = "Killed",
+      [SIGUSR1] = "User defined signal 1",
+      [SIGSEGV] = "Segmentation fault",
+      [SIGUSR2] = "User defined signal 2",
+      [SIGPIPE] = "Broken pipe",
+      [SIGALRM] = "Alarm clock",
+      [SIGTERM] = "Terminated",
+      [16] = "Stack fault",
+      [SIGCHLD] = "Child exited",
+      [SIGCONT] = "Continued",
+      [SIGSTOP] = "Stopped (signal)",
+      [SIGTSTP] = "Stopped",
+      [SIGTTIN] = "Stopped (tty input)",
+      [SIGTTOU] = "Stopped (tty output)",
+      [SIGURG] = "Urgent I/O condition",
+      [SIGXCPU] = "CPU time limit exceeded",
+      [SIGXFSZ] = "File size limit exceeded",
+      [SIGVTALRM] = "Virtual timer expired",
+      [SIGPROF] = "Profiling timer expired",
+      [SIGWINCH] = "Window changed",
+      [29] = "I/O possible",
+      [30] = "Power failure",
+      [SIGSYS] = "Bad system call",
+      [SIGTHR] = "Thread signal",
+  };
+  if (0 < sig && sig <= 32)
+    return (char *)kSignalTexts[sig];
+  if (32 < sig && sig < NSIG)
+    return "Real-time signal";
+  return "Unknown signal";
 }

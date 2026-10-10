@@ -34,6 +34,9 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/limits.h"
+#include "libc/calls/state.internal.h"
+#include "libc/proc/posix_spawn.internal.h"
 
 /**
  * Replaces current process with program.
@@ -149,10 +152,17 @@ int execve(const char *prog, char *const argv[], char *const envp[]) {
           strace_enabled(+1);
         }
       }
-    } else if (!IsWindows()) {
-      rc = sys_execve(prog, argv, envp);
     } else {
-      rc = sys_execve_nt(prog, argv, envp);
+      // posix_spawn() has already done this for a child it vforked
+      char mapped[PATH_MAX];
+      if (!__vforked && _weaken(__host_execmap) && prog && prog[0] == '/' &&
+          _weaken(__host_execmap)(prog, mapped, sizeof(mapped)))
+        prog = mapped;
+      if (!IsWindows()) {
+        rc = sys_execve(prog, argv, envp);
+      } else {
+        rc = sys_execve_nt(prog, argv, envp);
+      }
     }
   }
   STRACE("execve(%#s) failed %d% m", prog, rc);

@@ -74,8 +74,8 @@ vfork:
 #endif
 	pop	%rbp
 #endif
-	mov	%fs:0x30,%r9		// get thread information block
-	mov	0x3c(%r9),%r8d		// avoid question of @vforksafe errno
+	call	__get_tls_r9		// get thread information block
+	mov	0x34(%r9),%r8d		// avoid question of @vforksafe errno
 	pop	%rsi			// saves return address in a register
 	mov	__NR_vfork(%rip),%eax
 #if SupportsBsd()
@@ -90,7 +90,7 @@ vfork:
 	push	%rsi			// note it happens twice in same page
 	cmp	$-4095,%eax
 	jae	systemfive_errno
-	mov	%r8d,0x3c(%r9)		// restore errno
+	mov	%r8d,0x34(%r9)		// restore errno
 1:	test	%eax,%eax
 	jnz	.Lpar
 .Lchi:	orb	$TIB_FLAG_VFORKED,0x40(%r9)
@@ -137,7 +137,10 @@ vfork:
 //	} else {
 //	  __get_tls()->tib_flags &= ~TIB_FLAG_VFORKED;
 //	}
-	sub	x1,x28,#1024		// sizeof(CosmoTib)
+	str	x30,[sp,#-16]!
+	bl	__get_tls_x1		// see libc/sysv/tlsasm.S
+	ldr	x30,[sp],#16
+	sub	x1,x1,#1024		// sizeof(CosmoTib)
 	ldr	x2,[x1,64]
 	cbnz	x0,2f
 	orr	x2,x2,#TIB_FLAG_VFORKED

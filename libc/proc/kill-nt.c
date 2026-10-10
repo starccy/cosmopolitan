@@ -26,6 +26,7 @@
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/dll.h"
 #include "libc/intrin/strace.h"
+#include "libc/macros.h"
 #include "libc/mem/alloca.h"
 #include "libc/nt/console.h"
 #include "libc/nt/enum/creationdisposition.h"
@@ -35,10 +36,12 @@
 #include "libc/nt/files.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/process.h"
+#include "libc/nt/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/proc/proc.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/sysv/pib.h"
 #if SupportsWindows()
 
 // Sets `sig` pending in the signal file of `pid`, if a process is there
@@ -65,34 +68,35 @@ textwindows int sys_kill_nt(int pid, int sig) {
   if (!(0 <= sig && sig <= 64))
     return einval();
 
-  // XXX: NT doesn't really have process groups. For instance the
-  //      CreateProcess() flag for starting a process group actually
-  //      just does an "ignore ctrl-c" internally.
-  if (pid < -1)
-    pid = -pid;
-
   // no support for kill all yet
   if (pid == -1)
     return einval();
 
+  // a process group is what the process table says it is: our direct
+  // children that setpgid() put in it, and ourselves when it's ours.
+  // each member then goes the single process way below, so a native
+  // one is suspended by a stop signal rather than terminated
+  if (pid <= 0) {
+    int pgid = pid ? -pid : __get_pib()->pgid;
+    int n, pids[64];
+    bool self = pgid == __get_pib()->pgid;
+    n = __proc_group_pids(pgid, pids, ARRAYLEN(pids));
+    if (!n && !self)
+      return esrch();
+    if (!sig)
+      return 0;  // ability check passes
+    BLOCK_SIGNALS;
+    for (int i = 0; i < n; ++i)
+      sys_kill_nt(pids[i], sig);
+    ALLOW_SIGNALS;
+    if (self)
+      return raise(sig);
+    return 0;
+  }
+
   // just call raise() if we're targeting self
-  if (pid <= 0 || pid == getpid()) {
+  if (pid == getpid()) {
     if (sig) {
-      if (pid <= 0) {
-        // if pid is 0 or -1 then kill the processes beneath us too.
-        // this isn't entirely right but it's closer to being right.
-        // having this behavior is helpful for servers like redbean.
-        struct Dll *e;
-        BLOCK_SIGNALS;
-        __proc_lock();
-        for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
-          struct Proc *pr = PROC_CONTAINER(e);
-          if (sig == 9 || !sys_kill_nt_post(pr->pid, sig))
-            TerminateProcess(pr->hProcess, sig);
-        }
-        __proc_unlock();
-        ALLOW_SIGNALS;
-      }
       return raise(sig);
     } else {
       return 0;  // ability check passes
@@ -109,19 +113,38 @@ textwindows int sys_kill_nt(int pid, int sig) {
   //
   // a file some process owns means a cosmo process that can be trusted
   // to deliver its signal, unless it's a nine exterminations
-  if (pid > 0 && sig != 9 && sys_kill_nt_post(pid, sig))
+  if (pid > 0 && sig != 9 && sys_kill_nt_post(pid, sig)) {
+    if (sig == SIGCONT && handle)
+      __proc_continued(pid);
     return 0;
+  }
 
   if (!handle) {
-    if (!(handle = OpenProcess(kNtProcessTerminate, false, pid)))
+    if (!(handle = OpenProcess(kNtProcessTerminate | kNtProcessSuspendResume,
+                               false, pid)) &&
+        !(handle = OpenProcess(kNtProcessTerminate, false, pid)))
       return esrch();
     closeme = handle;
   }
 
+  // a process that takes no signals gets their default action, and for
+  // the stop signals that's stopping, which NT can do to a whole process.
+  // a child of ours is suspended once however many stops it's sent
+  bool stop = sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN ||
+              sig == SIGTTOU;
+  if (stop || sig == SIGCONT) {
+    int rc = 0;
+    if (closeme || __proc_native_stop(pid, stop ? sig : 0))
+      if ((stop ? NtSuspendProcess(handle) : NtResumeProcess(handle)))
+        rc = eperm();
+    if (closeme)
+      CloseHandle(closeme);
+    return rc;
+  }
+
   // the process exists and takes no signals, so the null signal is
   // done, and so is any signal whose default action is to be ignored
-  if (!sig || sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH ||
-      sig == SIGCONT) {
+  if (!sig || sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH) {
     if (closeme)
       CloseHandle(closeme);
     return 0;

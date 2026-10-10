@@ -22,8 +22,10 @@ struct CosmoPib {
   int ppid_win32;  // use sys_getppid_nt_win32()
   int dwCreationFlags;
   int dwPriorityClass;
+  int pgid;  // process group, carried through execve() as _COSMO_PGID
   intptr_t hStopEvent;
   intptr_t hStopChurn;
+  intptr_t hPidHold;  // process whose win32 pid is ours, after execve()
   struct CursorRefs refedcursors;
   struct Proc *proc;
   atomic_ulong *sigpending;

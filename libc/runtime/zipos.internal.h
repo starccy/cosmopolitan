@@ -49,6 +49,7 @@ struct Zipos *__zipos_get(void) pureconst;
 bool __zipos_initializing(void);
 size_t __zipos_normpath(char *, const char *, size_t);
 const char *__zipos_remap(const char *, char *, size_t);
+bool __zipos_remap_active(void);
 const char *__zipos_atpath(int *, const char *, char *, size_t);
 ssize_t __zipos_find(struct Zipos *, struct ZiposUri *);
 ssize_t __zipos_scan(struct Zipos *, struct ZiposUri *);

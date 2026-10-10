@@ -117,12 +117,26 @@ textwindows static int __proc_reap_zombie(struct Proc *pr, int *wstatus,
   return pr->pid;
 }
 
-// options are waitid's: WUNTRACED (WSTOPPED) and WEXITED pick the events,
-// WNOWAIT leaves the process in place
+// options are waitid's: WUNTRACED (WSTOPPED), WCONTINUED and WEXITED pick
+// the events, WNOWAIT leaves the process in place
 textwindows static int __proc_check(int pid, int *wstatus, int options,
                                     struct rusage *opt_out_rusage) {
   struct Dll *e;
   bool peek = !!(options & WNOWAIT);
+  if (options & WCONTINUED) {
+    for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
+      struct Proc *pr = PROC_CONTAINER(e);
+      if (pr->continued && (pid == -1 || pid == pr->pid)) {
+        if (wstatus)
+          *wstatus = 0xffff;
+        if (opt_out_rusage)
+          *opt_out_rusage = (struct rusage){0};
+        if (!peek)
+          pr->continued = false;
+        return pr->pid;
+      }
+    }
+  }
   if (options & WUNTRACED) {
     for (e = dll_first(__proc.stopped); e; e = dll_next(__proc.stopped, e)) {
       struct Proc *pr = STOP_PROC_CONTAINER(e);
@@ -333,9 +347,9 @@ textwindows static void __proc_raise_sigchld(int ws) {
 
 textwindows int sys_wait4_nt(int pid, int *opt_out_wstatus, int options,
                              struct rusage *opt_out_rusage) {
-  // no support for WCONTINUED yet; the resume event is just not reported
-  options &= ~WCONTINUED;
-  if (options & ~(WNOHANG | WUNTRACED))
+  // a continue is reported when one is pending, but it wakes no blocked
+  // wait; the SIGCHLD that comes with it is what callers act on
+  if (options & ~(WNOHANG | WUNTRACED | WCONTINUED))
     return einval();
   // XXX: NT doesn't really have process groups. For instance the
   //      CreateProcess() flag for starting a process group actually
@@ -372,9 +386,9 @@ textwindows int sys_waitid_nt(int idtype, int id, int *wstatus,
     default:
       return einval();
   }
-  // a continue is never noticed here, so a wait for one alone could not
-  // return; an exit is reported instead, the way wait4 does it
-  options &= ~WCONTINUED;
+  // a pending continue is reported, but a continue wakes no blocked wait,
+  // so a wait for continues alone also returns on an exit, the way wait4
+  // does it
   if (!(options & (WEXITED | WSTOPPED)))
     options |= WEXITED;
   sigset_t m = __sig_block();

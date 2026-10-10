@@ -21,6 +21,7 @@
 #include "libc/limits.h"
 #include "libc/mem/alloca.h"
 #include "libc/mem/mem.h"
+#include "libc/proc/xdgopen.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/stack.h"
 #include "libc/str/str.h"
@@ -50,8 +51,11 @@ int execvpe(const char *prog, char *const argv[], char *const *envp) {
   }
 
   // resolve path of executable
+  struct XdgOpen xdg;
   if (!(exe = commandv(prog, pathbuf, sizeof(pathbuf)))) {
-    return -1;
+    if (!(exe = __xdg_open(prog, argv, pathbuf, sizeof(pathbuf), &xdg)))
+      return -1;
+    argv = xdg.argv;
   }
 
   // change argv[0] to resolved path if it's ambiguous

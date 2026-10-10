@@ -23,12 +23,16 @@
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/pib.h"
 #include "libc/nt/console.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
 #define TIOCGPGRP_linux 0x0000540f
 #define TIOCGPGRP_bsd   0x40047477
+
+// the group tcsetpgrp() gave the terminal to, 0 for our own
+int __fgpgrp;
 
 /**
  * Returns which process group controls terminal.
@@ -46,7 +50,7 @@ int tcgetpgrp(int fd) {
   } else if (IsBsd()) {
     rc = sys_ioctl(fd, TIOCGPGRP_bsd, &pgrp);
   } else if (sys_isatty(fd)) {
-    pgrp = rc = getpid();
+    pgrp = rc = __fgpgrp ? __fgpgrp : __get_pib()->pgid;
   } else {
     rc = -1;  // ebadf, enotty
   }

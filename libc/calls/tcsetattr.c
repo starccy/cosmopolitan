@@ -51,6 +51,11 @@ static int tcsetattr_impl(int fd, int opt, const struct termios *tio) {
   if (fd < 0)
     return einval();
 
+  // the linux path turns this into TCSETS + opt, so an option we don't
+  // know would ask the kernel for some unrelated ioctl
+  if (opt != TCSANOW && opt != TCSADRAIN && opt != TCSAFLUSH)
+    return einval();
+
   if (__isfdkind(fd, kFdZip))
     return enotty();
 

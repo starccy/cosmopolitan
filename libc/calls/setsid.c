@@ -43,6 +43,7 @@ int setsid(void) {
     // process that will not be killed when the console window closes
     __get_pib()->dwCreationFlags |= kNtCreateNoWindow | kNtDetachedProcess;
     rc = getpid();
+    __get_pib()->pgid = rc;
   }
   STRACE("setsid() → %d% m", rc);
   return rc;

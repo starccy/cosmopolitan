@@ -256,8 +256,18 @@ textwindows int __sig_stop(int sig) {
       unassert(ResumeThread(_pthread_syshand(pt)) != -1u);
   }
 
-  // we've come back to life
-  atomic_fetch_and(__get_pib()->sigpending, ~(1ull << (sig - 1)));
+  // we've come back to life, and a stop signal that was still pending
+  // somewhere is discarded by the continue, as posix says
+  sigset_t stops = 1ull << (SIGSTOP - 1) | 1ull << (SIGTSTP - 1) |
+                   1ull << (SIGTTIN - 1) | 1ull << (SIGTTOU - 1);
+  atomic_fetch_and(__get_pib()->sigpending, ~stops);
+  for (struct Dll *e = dll_first(_pthread_list); e;
+       e = dll_next(_pthread_list, e)) {
+    struct PosixThread *pt = POSIXTHREAD_CONTAINER(e);
+    if (pt->tib->tib_flags & TIB_FLAG_VFORKED)
+      continue;
+    atomic_fetch_and(&pt->tib->tib_sigpending, ~stops);
+  }
   atomic_store(&__sig.stopped, false);
   __sig_unlock();
   _pthread_unlock();
@@ -338,7 +348,9 @@ textwindows static int __sig_start(int sig, unsigned *rva, unsigned *flags) {
   for (;;) {
     if (sig == SIGKILL)
       __sig_terminate(sig);
-    if (__sig_is_stop_signal(sig))
+    // only SIGSTOP stops regardless; the tty stop signals can be ignored
+    // or caught, and stop below when they're left at their default
+    if (sig == SIGSTOP)
       if (!(sig = __sig_stop(sig)))
         return 0;
     if (__sig_ignored(sig)) {
@@ -632,7 +644,7 @@ textwindows static void __sig_generate_impl(int sig, int sic) {
   struct PosixThread *pt, *mark = 0;
   if (sig == SIGKILL)
     __sig_terminate(sig);
-  if (__sig_is_stop_signal(sig))
+  if (sig == SIGSTOP)
     if (!(sig = __sig_stop(sig)))
       return;
   if (__sig_ignored(sig)) {
@@ -708,7 +720,7 @@ textwindows wontreturn static void __sig_death(int sig, const char *thing) {
   hStderr = __imp_GetStdHandle(kNtStdErrorHandle);
   p = __sig_stpcpy(s, "Terminating on ");
   p = __sig_stpcpy(p, thing);
-  p = __sig_stpcpy(p, strsignal(sig));
+  p = __sig_stpcpy(p, __strsignal_name(sig));
   p = __sig_stpcpy(p,
                    ". Pass --strace and/or ShowCrashReports() for details.\n");
   __imp_WriteFile(hStderr, s, p - s, 0, 0);
@@ -782,8 +794,18 @@ textwindows static void __sig_unmaskable(struct SignalFrame *sf) {
 //                      and felt how awful goodness is
 __msabi HAIRY static unsigned __sig_crash(struct NtExceptionPointers *ep) {
 
+  // a touch of memory that's reserved for us but not committed yet is
+  // no crash: commit it and carry on (see __nt_commit_on_fault)
+  if (ep->ExceptionRecord->ExceptionCode == kNtStatusAccessViolation &&
+      __nt_commit_on_fault(
+          (void *)ep->ExceptionRecord->ExceptionInformation[1],
+          ep->ExceptionRecord->ExceptionInformation[0]))
+    return kNtExceptionContinueExecution;
+
   // translate the win32 exception code into unix's si_signo and si_code
   int sic, sig = __sig_crash_sig(ep->ExceptionRecord->ExceptionCode, &sic);
+  if (!sig)
+    return kNtExceptionContinueSearch;
 
   // advances the instruction pointer, to skip over debugger breakpoints
   // this makes windows consistent with how unix kernels are implemented
@@ -998,12 +1020,20 @@ static unsigned long ParseUint64(const char *str) {
 }
 
 // fork() calls this too
-__attribute__((__constructor__(10))) textstartup void __sig_init(void) {
+textstartup void __sig_init(void) {
   if (!IsWindows())
     return;
   AddVectoredExceptionHandler(true, (void *)__sig_crash);
   SetConsoleCtrlHandler((void *)__sig_console, true);
   CreateThread(0, STKSZ, __sig_worker, 0, kNtStackSizeParamIsAReservation, 0);
+}
+
+// the priority lives here because gcc drops it from a function that
+// was declared first (sig.internal.h), and __sig_init() then ran after
+// every unprioritized constructor, jemalloc's among them
+__attribute__((__constructor__(10))) textstartup static void __sig_init_ctor(
+    void) {
+  __sig_init();
 }
 
 // not called by forked child

@@ -37,6 +37,8 @@
 #include "libc/nt/runtime.h"
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/sig.h"
+#include "libc/str/str.h"
+#include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #include "libc/thread/tls.h"
@@ -70,6 +72,8 @@ textwindows static ssize_t sys_write_nt_impl(int fd, void *data, size_t size,
     default:
       return ebadf();
   }
+  if (f->flags & _O_PATH)
+    return ebadf();
 
   // determine win32 handle for writing
   int64_t handle = f->handle;
@@ -77,6 +81,23 @@ textwindows static ssize_t sys_write_nt_impl(int fd, void *data, size_t size,
     handle = _weaken(GetConsoleOutputHandle)();
   if (f->pty && _weaken(__pty_write_handle))
     handle = _weaken(__pty_write_handle)(f);
+
+  // a cursor position query is answered here rather than by the host,
+  // after what comes before it is written, see read-nt.c
+  const char *dsr;
+  if (isconsole && _weaken(AnswerCursorPositionQuery) &&
+      (dsr = memmem(data, size, "\e[6n", 4))) {
+    size_t i = dsr - (const char *)data;
+    ssize_t rc = i ? sys_write_nt_impl(fd, data, i, offset, waitmask) : 0;
+    if (rc != (ssize_t)i)
+      return rc;
+    _weaken(AnswerCursorPositionQuery)();
+    if (size == i + 4)
+      return size;
+    rc = sys_write_nt_impl(fd, (char *)data + i + 4, size - i - 4,
+                           offset, waitmask);
+    return rc == -1 ? (ssize_t)(i + 4) : (ssize_t)(i + 4 + rc);
+  }
 
   // intercept ansi tty configuration sequences
   if (isconsole && _weaken(GetConsoleOutputHandle))

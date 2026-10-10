@@ -277,18 +277,22 @@ relegated void __oncrash(int sig, siginfo_t *si, void *arg) {
   __restore_tty();
   ShowCrashReport(err, sig, si, arg);
 
-  // ensure execution doesn't resume for anything but SIGTRAP / SIGQUIT
+  // ensure execution doesn't resume for anything but SIGTRAP / SIGQUIT.
+  // the report is all we had to add, so hand the signal back to the
+  // default action, which kills us. a fault fires again the moment we
+  // return to the instruction; one that was sent has to be sent again,
+  // which is what si_code <= 0 tells us. either way the process dies of
+  // the signal rather than of an exit status, so the parent's waitpid()
+  // says WIFSIGNALED the way it does on a host libc.
   if (arg && sig != SIGTRAP && sig != SIGQUIT) {
-    if (!IsXnu()) {
-      sigaddset(&((ucontext_t *)arg)->uc_sigmask, sig);
-    } else {
-      sigdelset(&((ucontext_t *)arg)->uc_sigmask, sig);
-      struct sigaction sa;
-      sigemptyset(&sa.sa_mask);
-      sa.sa_handler = SIG_DFL;
-      sa.sa_flags = 0;
-      sigaction(sig, &sa, 0);
-    }
+    struct sigaction sa;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = SIG_DFL;
+    sa.sa_flags = 0;
+    sigaction(sig, &sa, 0);
+    sigdelset(&((ucontext_t *)arg)->uc_sigmask, sig);
+    if (si && si->si_code <= 0)
+      raise(sig);
   }
 
   SpinUnlock(&lock);

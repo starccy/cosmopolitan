@@ -20,6 +20,7 @@
 #include "libc/errno.h"
 #include "libc/limits.h"
 #include "libc/proc/posix_spawn.h"
+#include "libc/proc/xdgopen.h"
 
 /**
  * Spawns process the POSIX way w/ PATH search.
@@ -33,7 +34,12 @@ int posix_spawnp(int *pid, const char *path,
                  const posix_spawnattr_t *attrp, char *const argv[],
                  char *const envp[]) {
   char pathbuf[PATH_MAX];
-  if (!(path = commandv(path, pathbuf, sizeof(pathbuf))))
-    return errno;
+  struct XdgOpen xdg;
+  const char *prog = path;
+  if (!(path = commandv(prog, pathbuf, sizeof(pathbuf)))) {
+    if (!(path = __xdg_open(prog, argv, pathbuf, sizeof(pathbuf), &xdg)))
+      return errno;
+    argv = xdg.argv;
+  }
   return posix_spawn(pid, path, file_actions, attrp, argv, envp);
 }

@@ -41,6 +41,7 @@
 #include "libc/intrin/weaken.h"
 #include "libc/macros.h"
 #include "libc/nt/console.h"
+#include "libc/nt/struct/consolescreenbufferinfo.h"
 #include "libc/nt/createfile.h"
 #include "libc/nt/enum/accessmask.h"
 #include "libc/nt/enum/consolemodeflags.h"
@@ -137,6 +138,7 @@ struct Keystrokes {
   bool altscreen;     // DECSET 47, 1047, 1049
   bool no_altscroll;  // DECSET 1007, on by default like xterm
   bool bracketed;     // DECSET 2004
+  bool anymouse;      // DECSET 1003, motion reported with no button down
   unsigned char cmd_state;
   unsigned cmd_x;
   unsigned cmd_params[8];
@@ -246,6 +248,7 @@ textwindows int64_t GetConsoleOutputHandle(void) {
 textwindows static bool IsMouseModeCommand(int x) {
   return x == 1000 ||  // SET_VT200_MOUSE
          x == 1002 ||  // SET_BTN_EVENT_MOUSE
+         x == 1003 ||  // SET_ANY_EVENT_MOUSE
          x == 1006 ||  // SET_SGR_EXT_MODE_MOUSE
          x == 1015;    // SET_URXVT_EXT_MODE_MOUSE
 }
@@ -445,11 +448,15 @@ textwindows static int ProcessMouseEvent(const struct NtInputRecord *r,
         }
       }
     }
-  } else if ((bs || currentbs) && (__ttyconf.magic & kTtyXtMouse)) {
+  } else if ((bs || currentbs ||
+              (__keystroke.anymouse && (ev & kNtMouseMoved))) &&
+             (__ttyconf.magic & kTtyXtMouse)) {
     if (bs && (ev & kNtMouseMoved) && currentbs)
       e |= 32;  // dragging
     if ((bs | currentbs) & kNtRightmostButtonPressed)
       e |= 2;  // right
+    if (!bs && !currentbs)
+      e = 32 + 3;  // moving with no button down
   OutputXtermMouseEvent:
     *p++ = 033;
     *p++ = '[';
@@ -787,6 +794,9 @@ textwindows static void ApplyPrivateMode(unsigned x, bool on) {
     case 2004:
       __keystroke.bracketed = on;
       break;
+    case 1003:
+      __keystroke.anymouse = on;
+      __attribute__((__fallthrough__));
     default:
       if (IsMouseModeCommand(x)) {
         if (on) {
@@ -852,6 +862,31 @@ textwindows void InterceptTerminalCommands(const char *data, size_t size) {
     sys_console_sync_nt();
 }
 
+// Answers a DSR cursor position query (ESC [ 6 n) that write() took out
+// of console output. Left to the host, the reply takes two different
+// routes: conhost answers into the input buffer, while under ConPTY the
+// terminal answers and conhost parses its "ESC [ 1 ; n R" as F3 with
+// modifiers when the cursor is on the first row. Typing the reply into
+// the input buffer as plain characters reads the same everywhere.
+textwindows void AnswerCursorPositionQuery(void) {
+  struct NtConsoleScreenBufferInfo info;
+  if (!GetConsoleScreenBufferInfo(GetConsoleOutputHandle(), &info))
+    return;
+  char s[32];
+  int n = ksnprintf(s, sizeof(s), "\e[%d;%dR",
+                    info.dwCursorPosition.Y - info.srWindow.Top + 1,
+                    info.dwCursorPosition.X - info.srWindow.Left + 1);
+  struct NtInputRecord r[32];
+  for (int i = 0; i < n; ++i)
+    r[i] = (struct NtInputRecord){
+        .EventType = kNtKeyEvent,
+        .Event.KeyEvent = {.bKeyDown = true,
+                           .wRepeatCount = 1,
+                           .uChar.UnicodeChar = s[i]}};
+  uint32_t wrote;
+  WriteConsoleInput(GetConsoleInputHandle(), r, n, &wrote);
+}
+
 // whether the bytes end inside an escape sequence: a lone ESC, a CSI
 // without its final byte, an SS3 without its one following byte, or an
 // OSC not yet closed by BEL
@@ -889,10 +924,13 @@ textwindows static bool DigestConsoleInput(char *data, size_t size, int *rc) {
     return true;
   }
 
-  // copy keystroke(s) into user buffer
+  // copy keystroke(s) into user buffer. raw mode hands out everything
+  // queued, as a tty does, keeping room for the paste markers when the
+  // program asked for them
   int toto = 0;
-  char *start = data;
   struct Dll *e;
+  if ((__ttyconf.magic & kTtyUncanon) && __keystroke.bracketed && size > 12)
+    size -= 12;
   while (size && (e = dll_first(__keystroke.list))) {
     struct Keystroke *k = KEYSTROKE_CONTAINER(e);
     uint32_t got = MIN(size, k->buflen);
@@ -909,11 +947,6 @@ textwindows static bool DigestConsoleInput(char *data, size_t size, int *rc) {
     } else {
       FreeKeystroke(&__keystroke.list, e);
     }
-    // a terminal sending vt input delivers an escape sequence as one
-    // key event per byte, so keep going while the sequence is unfinished
-    if ((__ttyconf.magic & kTtyUncanon) && toto >= __ttyconf.vmin &&
-        !EndsInsideEscape(start, toto))
-      break;
   }
 
   // return result
@@ -1082,55 +1115,44 @@ textwindows static ssize_t CoalesceEscape(char *data, size_t size, ssize_t rc,
 }
 
 // conhost drops the \e[200~ and \e[201~ markers a terminal wraps a paste
-// in, so when the program asked for them they're put back. In raw mode
-// each read hands out one key, so the rest of a paste is still queued,
-// and a queue holding more plain text right after a plain-text key is
-// something typing doesn't produce. That text is gathered without
-// blocking and, if it holds a line break, returned inside the markers.
-// Gathering stops at a control sequence, which follows the closing one.
-textwindows static bool IsPasteText(const char *b, size_t n, bool *got_break,
-                                    bool *got_text) {
-  for (size_t i = 0; i < n; ++i) {
-    unsigned char c = b[i];
-    if (c == '\r' || c == '\n') {
-      *got_break = true;
-    } else if (c == '\t' || (c >= 0x20 && c != 0x7f)) {
-      *got_text = true;
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
-
+// in, so when the program asked for them they're put back. A read hands
+// out what's queued, and plain text with a line break in it that was
+// queued up before one read is something typing doesn't produce. What
+// the terminal is still typing out is gathered without blocking, and
+// the leading run of plain text is returned inside the markers; a
+// control sequence ends that run, as the closing marker would
 textwindows static ssize_t WrapPaste(char *b, size_t cap, ssize_t n) {
-  bool got_break = false, got_text = false;
-  if (!__keystroke.bracketed || cap < (size_t)n + 12 ||
-      !IsPasteText(b, n, &got_break, &got_text))
+  if (!__keystroke.bracketed || cap < (size_t)n + 12)
     return n;
-  ssize_t text_end = n;
-  while ((size_t)text_end + 12 < cap && CountConsoleInputBytes() > 0) {
+  while ((size_t)n + 12 < cap && CountConsoleInputBytes() > 0) {
     int more;
     LockKeystrokes();
-    bool done = DigestConsoleInput(b + text_end, cap - 12 - text_end, &more);
+    bool done = DigestConsoleInput(b + n, cap - n, &more);
     UnlockKeystrokes();
     if (!done || more <= 0)
       break;
-    if (!IsPasteText(b + text_end, more, &got_break, &got_text)) {
-      text_end += more;
+    n += more;
+  }
+  bool got_break = false, got_text = false;
+  ssize_t p = 0;
+  for (; p < n; ++p) {
+    unsigned char c = b[p];
+    if (c == '\r' || c == '\n') {
+      got_break = true;
+    } else if (c == '\t' || (c >= 0x20 && c != 0x7f)) {
+      got_text = true;
+    } else {
       break;
     }
-    text_end += more;
-    n = text_end;
   }
   // a lone enter, one line, or key repeat is typing
-  if (n < 3 || !got_break || !got_text)
-    return text_end;
-  memmove(b + 6, b, text_end);
+  if (p < 3 || !got_break || !got_text)
+    return n;
+  memmove(b + 6, b, n);
   memcpy(b, "\033[200~", 6);
-  memmove(b + 6 + n + 6, b + 6 + n, text_end - n);
-  memcpy(b + 6 + n, "\033[201~", 6);
-  return text_end + 12;
+  memmove(b + 6 + p + 6, b + 6 + p, n - p);
+  memcpy(b + 6 + p, "\033[201~", 6);
+  return n + 12;
 }
 
 textwindows static ssize_t ReadFromConsole(struct Fd *f, void *data,
@@ -1163,7 +1185,7 @@ textwindows static ssize_t ReadBuffer(int fd, void *data, size_t size,
   // switch to terminal polyfill if reading from win32 console
   struct Fd *f = __get_pib()->fds.p + fd;
 
-  if ((f->flags & O_ACCMODE) == O_WRONLY)
+  if ((f->flags & O_ACCMODE) == O_WRONLY || (f->flags & _O_PATH))
     return ebadf();
 
   if (f->kind == kFdDevNull)
@@ -1244,9 +1266,16 @@ textwindows static ssize_t ReadIovecs(int fd, const struct iovec *iov,
 
 textwindows ssize_t sys_read_nt(int fd, const struct iovec *iov, size_t iovlen,
                                 int64_t opt_offset) {
-  ssize_t rc;
+  ssize_t rc = -3;
   sigset_t m = __sig_block();
-  rc = ReadIovecs(fd, iov, iovlen, opt_offset, m);
+  struct Fd *f = __get_pib()->fds.p + fd;
+  if (opt_offset == -1 && f->kind == kFdFile && (f->mode & 0170000) == 0140000 &&
+      _weaken(__scm_msgpipe_read_nt))
+    // a SOCK_DGRAM or SOCK_SEQPACKET socketpair, where a message may carry
+    // descriptors, see libc/sock/scmrights-nt.c
+    rc = _weaken(__scm_msgpipe_read_nt)(fd, iov, iovlen, m);
+  if (rc == -3)
+    rc = ReadIovecs(fd, iov, iovlen, opt_offset, m);
   __sig_unblock(m);
   if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
     _weaken(__epoll_rearm_in)(fd);

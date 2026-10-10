@@ -202,6 +202,16 @@ const char *__zipos_remap(const char *path, char *buf, size_t bufsz) {
 }
 
 /**
+ * Returns true if the manifest maps any path into the zip store.
+ */
+bool __zipos_remap_active(void) {
+  if (atomic_load_explicit(&g_remap.state, memory_order_acquire) != kLoaded)
+    if (__vforked || __zipos_initializing() || !Load())
+      return false;
+  return g_remap.count > 0;
+}
+
+/**
  * Resolves the path a lookup against `*dirfd` names, for the zip store.
  *
  * An absolute path goes through the remap table. A relative path against

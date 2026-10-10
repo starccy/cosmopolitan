@@ -23,6 +23,9 @@
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
+#include "libc/proc/proc.h"
+#include "libc/sysv/pib.h"
 #include "libc/nt/console.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
@@ -46,6 +49,12 @@ int tcsetpgrp(int fd, int pgrp) {
     rc = enotty();
   } else if (IsWindows() || IsMetal()) {
     if (sys_isatty(fd)) {
+      __fgpgrp = pgrp;
+      // the terminal belongs to another group now, so ^Z typed on the
+      // console is theirs: a thread of ours watches for it meanwhile
+      if (IsWindows() && __isfdkind(fd, kFdConsole) &&
+          _weaken(__jobctl_foreground))
+        _weaken(__jobctl_foreground)(pgrp == __get_pib()->pgid ? 0 : pgrp);
       rc = 0;
     } else {
       rc = -1;  // ebadf, enotty

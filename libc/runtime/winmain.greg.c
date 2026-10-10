@@ -32,8 +32,13 @@
 #include "libc/nexgen32e/rdtsc.h"
 #include "libc/nt/accounting.h"
 #include "libc/nt/console.h"
+#include "libc/nt/createfile.h"
+#include "libc/nt/dll.h"
+#include "libc/nt/enum/accessmask.h"
+#include "libc/nt/enum/filesharemode.h"
 #include "libc/nt/enum/consolemodeflags.h"
 #include "libc/nt/enum/creationdisposition.h"
+#include "libc/nt/enum/exceptionhandleractions.h"
 #include "libc/nt/enum/filemapflags.h"
 #include "libc/nt/enum/memflags.h"
 #include "libc/nt/enum/pageflags.h"
@@ -69,6 +74,8 @@ __static_yoink("__rlimit_init");
 
 // clang-format off
 __msabi extern typeof(AddVectoredExceptionHandler) *const __imp_AddVectoredExceptionHandler;
+__msabi extern typeof(AttachConsole) *const __imp_AttachConsole;
+__msabi extern typeof(CreateFile) *const __imp_CreateFileW;
 __msabi extern typeof(DuplicateHandle) *const __imp_DuplicateHandle;
 __msabi extern typeof(FreeEnvironmentStrings) *const __imp_FreeEnvironmentStringsW;
 __msabi extern typeof(GetCommandLine) *const __imp_GetCommandLineW;
@@ -80,6 +87,7 @@ __msabi extern typeof(GetEnvironmentStrings) *const __imp_GetEnvironmentStringsW
 __msabi extern typeof(GetEnvironmentVariable) *const __imp_GetEnvironmentVariableW;
 __msabi extern typeof(SleepEx) *const __imp_SleepEx;
 __msabi extern typeof(GetFileAttributes) *const __imp_GetFileAttributesW;
+__msabi extern typeof(GetModuleHandleW) *const __imp_GetModuleHandleW;
 __msabi extern typeof(GetStdHandle) *const __imp_GetStdHandle;
 __msabi extern typeof(GetSystemInfo) *const __imp_GetSystemInfo;
 __msabi extern typeof(GetSystemInfo) *const __imp_GetSystemInfo;
@@ -103,6 +111,7 @@ void __stack_call(int, char **, char **, long (*)[2],
 
 bool __winmain_isfork;
 intptr_t __winmain_jmpbuf[5];
+uintptr_t __winmain_ntstack[3];
 struct CosmoTib *__winmain_tib;
 extern atomic_ulong __fake_process_signals;
 
@@ -155,6 +164,42 @@ abi static bool32 IsWslChimera(void) {
          path[4] == 'l';
 }
 
+// a program built for the GUI subsystem starts without a console. one
+// started from a shell joins the shell's console, so what it prints is
+// seen there; one started from the desktop has no parent console and
+// stays without. a standard handle that was handed to it, a redirection
+// or a pipe, is kept. the subsystem is read from the image's own header,
+// which may have been set after linking. returns whether a console was
+// joined
+abi static bool32 AttachParentConsole(void) {
+  const char *base = (const char *)__imp_GetModuleHandleW(0);
+  if (!base)
+    return false;
+  uint32_t pe = READ32LE(base + 0x3c);
+  if (READ16LE(base + pe + 24 + 68) != kNtImageSubsystemWindowsGui)
+    return false;
+  bool32 missing = false;
+  for (long i = 0; i < 3; ++i) {
+    intptr_t h = __imp_GetStdHandle(kNtStdio[i]);
+    if (!h || h == -1)
+      missing = true;
+  }
+  if (!missing || !__imp_AttachConsole(kNtAttachParentProcess))
+    return false;
+  for (long i = 0; i < 3; ++i) {
+    intptr_t h = __imp_GetStdHandle(kNtStdio[i]);
+    if (h && h != -1)
+      continue;
+    h = __imp_CreateFileW(i ? u"CONOUT$" : u"CONIN$",
+                          kNtGenericRead | kNtGenericWrite,
+                          kNtFileShareRead | kNtFileShareWrite, 0,
+                          kNtOpenExisting, 0, 0);
+    if (h != -1)
+      __imp_SetStdHandle(kNtStdio[i], h);
+  }
+  return true;
+}
+
 // this ensures close(1) won't accidentally close(2) for example
 abi static void DeduplicateStdioHandles(void) {
   for (long i = 0; i < 3; ++i) {
@@ -179,6 +224,8 @@ abi static bool32 HasEnvironmentVariable(const char16_t *name) {
 // if the program links sigaction() then __sig_crash() replaces this
 abi static unsigned OnEarlyWinCrash(struct NtExceptionPointers *ep) {
   int code, sig = __sig_crash_sig(ep->ExceptionRecord->ExceptionCode, &code);
+  if (!sig)
+    return kNtExceptionContinueSearch;
   __imp_TerminateProcess(-1, sig);
   __builtin_unreachable();
 }
@@ -188,10 +235,11 @@ abi static unsigned OnEarlyWinCrash(struct NtExceptionPointers *ep) {
 abi wontreturn static void WinInit(const char16_t *cmdline) {
   __oldstack = (intptr_t)__builtin_frame_address(0);
 
+  bool32 joined = AttachParentConsole();
   __imp_SetConsoleOutputCP(kNtCpUtf8);
 
   // make console into utf-8 ansi/xterm style tty
-  if ((intptr_t)v_ntsubsystem == kNtImageSubsystemWindowsCui) {
+  if ((intptr_t)v_ntsubsystem == kNtImageSubsystemWindowsCui || joined) {
     __imp_SetConsoleCP(kNtCpUtf8);
     for (int i = 0; i <= 2; ++i) {
       uint32_t m;
@@ -290,6 +338,11 @@ abi wontreturn static void WinInit(const char16_t *cmdline) {
   __envp = &wa->envp[0];
 
   // handover control to cosmopolitan runtime
+  __get_stack_win32(__winmain_ntstack);
+  uintptr_t stack[3] = {(uintptr_t)stackaddr + GetGuardSize(),
+                        (uintptr_t)stackaddr + stacksize,
+                        (uintptr_t)stackaddr + GetGuardSize()};
+  __set_stack_win32(stack);
   __stack_call(count, wa->argv, wa->envp, wa->auxv, cosmo, wa);
 }
 
@@ -369,6 +422,9 @@ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
 
   if (!(pib->pid = WinGetPid(u"_COSMO_PID")))
     pib->pid = __imp_GetCurrentProcessId();
+  pib->hPidHold = WinGetPid(u"_COSMO_PID_HOLD");
+  if (!(pib->pgid = WinGetPid(u"_COSMO_PGID")))
+    pib->pgid = pib->pid;
   if (!(pib->sigpending = __sig_own_process(pib->pid)))
     pib->sigpending = &__fake_process_signals;
   if (!WinMainCwd(pib))

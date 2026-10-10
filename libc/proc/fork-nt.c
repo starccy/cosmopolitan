@@ -49,6 +49,7 @@
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/processinformation.h"
+#include "libc/nt/struct/psapiworkingsetexinformation.h"
 #include "libc/nt/struct/startupinfo.h"
 #include "libc/nt/thread.h"
 #include "libc/nt/thunk/msabi.h"
@@ -76,12 +77,69 @@ __msabi extern typeof(TerminateProcess) *const __imp_TerminateProcess;
 __msabi extern typeof(TlsAlloc) *const __imp_TlsAlloc;
 __msabi extern typeof(VirtualProtectEx) *const __imp_VirtualProtectEx;
 
+// Pages of a VirtualAlloc() allocation the parent never touched hold
+// nothing: not valid, and the working set says they are nowhere, neither
+// on a list in memory nor in the pagefile. The child has them committed
+// and zero already, so they are not copied. Pages trimmed out of the
+// working set and pages behind PAGE_NOACCESS are not valid either but
+// have a location, and are copied. When the query fails everything is.
+#define FORK_WS_BATCH 1024
+
+static textwindows bool sys_fork_nt_untouched(uint64_t attr) {
+  return !(attr & 1) && !((attr >> 22) & 3);
+}
+
+static textwindows bool sys_fork_nt_copy_pages(
+    int64_t proc, char *addr, size_t size,
+    struct NtPsapiWorkingSetExInformation *ws) {
+  char *p = addr, *end = addr + size;
+  while (p < end) {
+    size_t n = (end - p + __pagesize - 1) / __pagesize;
+    if (n > FORK_WS_BATCH)
+      n = FORK_WS_BATCH;
+    size_t len = end - p;
+    if (len > n * __pagesize)
+      len = n * __pagesize;
+    bool queried = false;
+    if (ws) {
+      for (size_t i = 0; i < n; ++i)
+        ws[i].VirtualAddress = p + i * __pagesize;
+      queried = !!K32QueryWorkingSetEx(GetCurrentProcess(), ws, n * sizeof(*ws));
+    }
+    if (!queried) {
+      if (!WriteProcessMemory(proc, p, p, len, 0))
+        return false;
+    } else {
+      size_t i = 0;
+      while (i < n) {
+        while (i < n && sys_fork_nt_untouched(ws[i].VirtualAttributes))
+          ++i;
+        size_t j = i;
+        while (j < n && !sys_fork_nt_untouched(ws[j].VirtualAttributes))
+          ++j;
+        if (j > i) {
+          char *a = p + i * __pagesize;
+          size_t m = (j - i) * __pagesize;
+          if (m > (size_t)(end - a))
+            m = end - a;
+          if (!WriteProcessMemory(proc, a, a, m, 0))
+            return false;
+        }
+        i = j;
+      }
+    }
+    p += len;
+  }
+  return true;
+}
+
 // A PROT_NONE mapping (MAP_NOCOMMIT) is address space the parent commits
 // piecewise through mprotect(). It's reserved whole in the child, and each
 // committed run is committed, copied, and given the parent's protection,
 // so the cost follows committed bytes rather than reserved ones.
-static textwindows bool sys_fork_nt_copy_reservation(int64_t proc, char *addr,
-                                                     size_t size) {
+static textwindows bool sys_fork_nt_copy_reservation(
+    int64_t proc, char *addr, size_t size,
+    struct NtPsapiWorkingSetExInformation *ws) {
   if (!VirtualAllocEx(proc, addr, size, kNtMemReserve, kNtPageNoaccess))
     return false;
   struct NtMemoryBasicInformation mbi;
@@ -103,7 +161,7 @@ static textwindows bool sys_fork_nt_copy_reservation(int64_t proc, char *addr,
         return false;
       if (reprotect && !VirtualProtect(p, n, kNtPageReadwrite, &old))
         return false;
-      bool ok = !!WriteProcessMemory(proc, p, p, n, 0);
+      bool ok = sys_fork_nt_copy_pages(proc, p, n, ws);
       if (reprotect)
         ok = !!VirtualProtect(p, n, old, &old) && ok;
       if (!ok)
@@ -157,6 +215,10 @@ textwindows static void sys_fork_nt_child(void) {
   // forget posix advisory locks
   if (_weaken(__flocks_wipe))
     _weaken(__flocks_wipe)();
+
+  // the console watcher thread stayed in the parent
+  if (_weaken(__jobctl_wipe))
+    _weaken(__jobctl_wipe)();
 
   // resurrect shared memory mappings
   struct Map *next;
@@ -290,6 +352,8 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
 
   // let's go
   bool ok = true;
+  struct NtPsapiWorkingSetExInformation *ws =
+      sys_fork_nt_malloc(FORK_WS_BATCH * sizeof(*ws));
 
   // copy memory manager maps
   for (struct MapSlab *slab =
@@ -316,16 +380,18 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
       continue;  // we don't need to copy executable .rodata
     if (__maps_isalloc(map)) {
       size_t allocsize = map->size;
+      int allocflags = map->flags;
       for (struct Map *m2 = __maps_next(map); m2; m2 = __maps_next(m2)) {
         if (!__maps_isalloc(m2) && map->addr + allocsize == m2->addr) {
           allocsize += m2->size;
+          allocflags |= m2->flags;
         } else {
           break;
         }
       }
-      if (map->flags & MAP_NOCOMMIT) {
+      if (allocflags & MAP_NOCOMMIT) {
         ok = ok && sys_fork_nt_copy_reservation(procinfo.hProcess, map->addr,
-                                                allocsize);
+                                                allocsize, ws);
         skip_until = map->addr + allocsize;
         continue;
       }
@@ -373,8 +439,13 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
         copyaddr = from;
       }
     }
-    ok = ok && !!WriteProcessMemory(procinfo.hProcess, copyaddr, copyaddr,
-                                    copysize, 0);
+    if (__maps_head(map)->hand == MAPS_VIRTUAL) {
+      ok = ok && sys_fork_nt_copy_pages(procinfo.hProcess, copyaddr, copysize, ws);
+    } else {
+      // a copy-on-write file view: an untouched page is the file's
+      ok = ok && !!WriteProcessMemory(procinfo.hProcess, copyaddr, copyaddr,
+                                      copysize, 0);
+    }
     if (map->prot != alloc_prot) {
       uint32_t child_old_protect;
       ok = ok &&
@@ -385,6 +456,9 @@ textwindows static int sys_fork_nt_parent(int *child_pid_out,
       ok = ok && !!VirtualProtect(map->addr, map->size, parent_old_protect,
                                   &parent_old_protect);
   }
+
+  if (ws)
+    sys_fork_nt_free(ws);
 
   // set process loose
   ok = ok && ResumeThread(procinfo.hThread) != -1u;
@@ -412,16 +486,20 @@ textwindows int sys_fork_nt(void) {
   int rc;
   static int child_pid;
   static intptr_t hStopEvent;
+  static uintptr_t stack[3];
   if (!(hStopEvent = CreateEvent(&kNtIsInheritable, 1, 0, 0)))  // manual reset
     return enomem();
   child_pid = 0;
   __winmain_isfork = true;
   __winmain_tib = __get_tls_win32();
+  __get_stack_win32(stack);
   if (!__builtin_setjmp(__winmain_jmpbuf)) {
     rc = sys_fork_nt_parent(&child_pid, hStopEvent);
     if (rc == -1 && child_pid)
       DeleteFile(__sig_process_path(alloca(256), child_pid));
   } else {
+    __get_stack_win32(__winmain_tib->tib_ntstack);
+    __set_stack_win32(stack);
     sys_fork_nt_child();
     __get_pib()->pid = child_pid;
     __get_pib()->sigpending = __sig_own_process(child_pid);

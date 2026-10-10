@@ -23,6 +23,7 @@
 #include "libc/calls/struct/sigset.h"
 #include "libc/errno.h"
 #include "libc/limits.h"
+#include "libc/proc/xdgopen.h"
 #include "libc/runtime/runtime.h"
 #include "libc/stdio/stdio.h"
 #include "libc/sysv/consts/sig.h"
@@ -52,8 +53,12 @@ int systemvpe(const char *prog, char *const argv[], char *const envp[]) {
   int pid, wstatus;
   char pathbuf[PATH_MAX + 1];
   sigset_t chldmask, savemask;
-  if (!(exe = commandv(prog, pathbuf, sizeof(pathbuf))))
-    return -1;
+  struct XdgOpen xdg;
+  if (!(exe = commandv(prog, pathbuf, sizeof(pathbuf)))) {
+    if (!(exe = __xdg_open(prog, argv, pathbuf, sizeof(pathbuf), &xdg)))
+      return -1;
+    argv = xdg.argv;
+  }
   sigemptyset(&chldmask);
   sigaddset(&chldmask, SIGINT);
   sigaddset(&chldmask, SIGQUIT);

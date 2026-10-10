@@ -71,6 +71,10 @@ __msabi extern typeof(WaitForMultipleObjects)
     *const __imp_WaitForMultipleObjects;
 
 struct Procs __proc;
+
+// tcsetpgrp() reaches the console watcher through a weak reference, so
+// it's pulled in here, where the process table it needs lives
+__static_yoink("__jobctl_foreground");
 alignas(64) static pthread_mutex_t __proc_lock_obj = PTHREAD_MUTEX_INITIALIZER;
 
 textwindows static void __proc_stats(int64_t h, struct rusage *ru) {
@@ -111,6 +115,7 @@ textwindows static int __proc_checkstop(struct Proc *pr) {
         }
         UnmapViewOfFile(pSigs);
         if (stopsig) {
+          pr->stopped = true;
           pr->status = PROC_STOPPED;
           pr->dwExitCode = stopsig << 8 | 0x7f;
           dll_make_first(&__proc.stopped, &pr->stopelem);
@@ -500,6 +505,8 @@ textwindows struct Proc *__proc_new(void) {
  * The handle and pid must be filled in before calling this.
  */
 textwindows void __proc_add(struct Proc *proc) {
+  if (!proc->pgid)
+    proc->pgid = __get_pib()->pgid;
   dll_make_first(&__proc.list, &proc->elem);
   SetEvent(__proc.hLifeChurn);
 }
@@ -519,6 +526,137 @@ textwindows void __proc_killed(int pid, int sig) {
     }
   }
   __proc_unlock();
+  ALLOW_SIGNALS;
+}
+
+// marks a stopped child as running again and leaves the continue for
+// waitpid(WCONTINUED). a stop nobody has collected yet is dropped, as
+// linux does. no event is set for it: the stop events are shared with
+// the child, and one left set would spin every waiter. SIGCHLD is what
+// tells the parent, as it is what shells wait for
+textwindows static void __proc_resumed(struct Proc *pr) {
+  pr->stopped = false;
+  pr->continued = true;
+  if (pr->status == PROC_STOPPED) {
+    dll_remove(&__proc.stopped, &pr->stopelem);
+    if (dll_is_empty(__proc.stopped))
+      ResetEvent(__proc.hasstopped);
+    ResetEvent(pr->hStopEvent);
+    pr->status = PROC_ALIVE;
+  }
+}
+
+// a native child takes no signals, so kill() suspends or resumes it and
+// records here what a cosmo child's own stop would have shown the
+// tracker. `sig` is the stop signal, or 0 to continue. returns whether
+// the state changed, which is when kill() should suspend or resume, so
+// repeated stops don't pile up suspend counts
+textwindows bool __proc_native_stop(int pid, int sig) {
+  int sic = 0;
+  bool changed = false;
+  struct Dll *e;
+  BLOCK_SIGNALS;
+  __proc_lock();
+  for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
+    struct Proc *pr = PROC_CONTAINER(e);
+    if (pid != pr->pid)
+      continue;
+    if (sig && !pr->stopped && pr->status == PROC_ALIVE) {
+      changed = pr->stopped = true;
+      pr->continued = false;
+      pr->status = PROC_STOPPED;
+      pr->dwExitCode = sig << 8 | 0x7f;
+      dll_make_first(&__proc.stopped, &pr->stopelem);
+      SetEvent(__proc.hasstopped);
+      SetEvent(pr->hStopEvent);
+      if (!pr->stopwaiters && !__proc.stopwaiters &&
+          !(__get_pib()->sighandflags[SIGCHLD - 1] & SA_NOCLDSTOP))
+        sic = CLD_STOPPED;
+    } else if (!sig && pr->stopped) {
+      changed = true;
+      __proc_resumed(pr);
+      if (!(__get_pib()->sighandflags[SIGCHLD - 1] & SA_NOCLDSTOP))
+        sic = CLD_CONTINUED;
+    }
+    break;
+  }
+  __proc_unlock();
+  if (sic)
+    __sig_generate(SIGCHLD, sic);
+  ALLOW_SIGNALS;
+  return changed;
+}
+
+// the process group of a direct child, as setpgid() told us
+textwindows int __proc_setpgid(int pid, int pgid) {
+  struct Dll *e;
+  int rc = -1;
+  BLOCK_SIGNALS;
+  __proc_lock();
+  for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
+    struct Proc *pr = PROC_CONTAINER(e);
+    if (pid == pr->pid) {
+      pr->pgid = pgid ? pgid : pid;
+      rc = 0;
+      break;
+    }
+  }
+  __proc_unlock();
+  ALLOW_SIGNALS;
+  return rc;
+}
+
+// -1 when `pid` isn't a direct child
+textwindows int __proc_getpgid(int pid) {
+  struct Dll *e;
+  int rc = -1;
+  BLOCK_SIGNALS;
+  __proc_lock();
+  for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
+    struct Proc *pr = PROC_CONTAINER(e);
+    if (pid == pr->pid) {
+      rc = pr->pgid;
+      break;
+    }
+  }
+  __proc_unlock();
+  ALLOW_SIGNALS;
+  return rc;
+}
+
+// the living direct children in process group `pgid`, at most `cap`
+textwindows int __proc_group_pids(int pgid, int *pids, int cap) {
+  struct Dll *e;
+  int n = 0;
+  BLOCK_SIGNALS;
+  __proc_lock();
+  for (e = dll_first(__proc.list); e && n < cap; e = dll_next(__proc.list, e)) {
+    struct Proc *pr = PROC_CONTAINER(e);
+    if (pr->pgid == pgid || pr->pid == pgid)
+      pids[n++] = pr->pid;
+  }
+  __proc_unlock();
+  ALLOW_SIGNALS;
+  return n;
+}
+
+// kill() sent SIGCONT to a cosmo child through its signal file
+textwindows void __proc_continued(int pid) {
+  bool changed = false;
+  struct Dll *e;
+  BLOCK_SIGNALS;
+  __proc_lock();
+  for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
+    struct Proc *pr = PROC_CONTAINER(e);
+    if (pid == pr->pid) {
+      if ((changed = pr->stopped))
+        __proc_resumed(pr);
+      break;
+    }
+  }
+  __proc_unlock();
+  if (changed && !(__get_pib()->sighandflags[SIGCHLD - 1] & SA_NOCLDSTOP))
+    __sig_generate(SIGCHLD, CLD_CONTINUED);
   ALLOW_SIGNALS;
 }
 

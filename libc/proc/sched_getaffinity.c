@@ -27,6 +27,7 @@
 #include "libc/nt/runtime.h"
 #include "libc/proc/proc.h"
 #include "libc/str/str.h"
+#include "libc/str/str.h"
 #include "libc/sysv/errfuns.h"
 
 static dontinline textwindows int sys_sched_getaffinity_nt(int pid, size_t size,
@@ -65,11 +66,9 @@ static int sys_sched_getaffinity_xnu(cpu_set_t *bitset) {
  * @raise ENOSYS if not Linux, FreeBSD, NetBSD, MacOS, or Windows
  * @see pthread_getaffinity_np() for threads
  */
-int sched_getaffinity(int pid, size_t size, cpu_set_t *bitset) {
+static int sched_getaffinity_impl(int pid, size_t size, cpu_set_t *bitset) {
   int rc;
-  if (size != sizeof(cpu_set_t)) {
-    rc = einval();
-  } else if (IsWindows()) {
+  if (IsWindows()) {
     rc = sys_sched_getaffinity_nt(pid, size, bitset);
   } else if (IsXnu()) {
     rc = sys_sched_getaffinity_xnu(bitset);
@@ -94,6 +93,30 @@ int sched_getaffinity(int pid, size_t size, cpu_set_t *bitset) {
       bzero((char *)bitset + rc, size - rc);
     }
     rc = 0;
+  }
+  return rc;
+}
+
+int sched_getaffinity(int pid, size_t size, cpu_set_t *bitset) {
+  int rc;
+  cpu_set_t cpuset;
+  if (!size || (size & (sizeof(long) - 1))) {
+    rc = einval();
+  } else if (size >= sizeof(cpu_set_t)) {
+    rc = sched_getaffinity_impl(pid, sizeof(cpuset), bitset);
+    if (!rc && size > sizeof(cpuset))
+      bzero((char *)bitset + sizeof(cpuset), size - sizeof(cpuset));
+  } else if (!(rc = sched_getaffinity_impl(pid, sizeof(cpuset), &cpuset))) {
+    // CPU_ALLOC_SIZE() hands out only as many words as the cpu count
+    // needs. a set that small is fine while nothing is set above it,
+    // which is what the kernel says by raising EINVAL when it isn't
+    const char *tail = (const char *)&cpuset + size;
+    size_t n = sizeof(cpuset) - size;
+    for (size_t i = 0; i < n; ++i)
+      if (tail[i])
+        rc = einval();
+    if (!rc)
+      memcpy(bitset, &cpuset, size);
   }
   STRACE("sched_getaffinity(%d, %'zu, %p) → %d% m", pid, size, bitset, rc);
   return rc;

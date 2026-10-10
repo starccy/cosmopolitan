@@ -112,6 +112,7 @@ wint_t btowc(int) libcesque;
 
 int getsubopt(char **, char *const *, char **) libcesque paramsnonnull();
 char *strsignal(int) returnsnonnull libcesque;
+char *__strsignal_name(int) returnsnonnull libcesque;
 char *strerror(int) returnsnonnull dontthrow dontcallback;
 errno_t strerror_r(int, char *, size_t) libcesque;
 int __xpg_strerror_r(int, char *, size_t) libcesque;

@@ -39,10 +39,9 @@
  * On Windows, the only signal that's guaranteed to work on non-cosmocc
  * processes is SIGKILL.
  *
- * On Windows, the concept of a process group isn't fully implemented.
- * Saying `kill(0, sig)` will deliver `sig` to all direct descendent
- * processes. Saying `kill(-pid, sig)` will be the same as saying
- * `kill(pid, sig)`.
+ * On Windows, a process group is what setpgid() recorded, so `kill(0,
+ * sig)` and `kill(-pgid, sig)` reach the direct children in that group
+ * and the caller itself when the group is its own.
  *
  * @param pid can be:
  *      >0 signals one process by id

@@ -20,6 +20,7 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/pib.h"
 
 /**
  * Returns process group id of calling process.
@@ -31,7 +32,7 @@ int getpgrp(void) {
   if (!IsWindows()) {
     rc = sys_getpgid(0);
   } else {
-    rc = getpid();
+    rc = __get_pib()->pgid;
   }
   STRACE("%s() → %d% m", "getpgrp", rc);
   return rc;

@@ -20,6 +20,27 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
+#include "libc/proc/proc.h"
+#include "libc/sysv/errfuns.h"
+#include "libc/sysv/pib.h"
+#include "libc/thread/tls.h"
+
+// a process group is bookkeeping here: our own lives in the pib and goes
+// through execve(), a child's is kept in its process table entry
+static int sys_setpgid_nt(int pid, int pgid) {
+  struct CosmoPib *pib = __get_pib();
+  if (!pid || pid == pib->pid) {
+    pib->pgid = pgid ? pgid : pib->pid;
+    // a vfork()'d child's table entry is its own to update
+    if (__get_tls_win32()->tib_vfork && pib->proc)
+      pib->proc->pgid = pib->pgid;
+    return 0;
+  }
+  if (_weaken(__proc_setpgid) && !_weaken(__proc_setpgid)(pid, pgid))
+    return 0;
+  return esrch();
+}
 
 /**
  * Changes process group for process.
@@ -33,6 +54,8 @@ int setpgid(int pid, int pgid) {
   int rc;
   if (!IsWindows() && !IsMetal()) {
     rc = sys_setpgid(pid, pgid);
+  } else if (IsWindows()) {
+    rc = sys_setpgid_nt(pid, pgid);
   } else {
     rc = 0;
   }

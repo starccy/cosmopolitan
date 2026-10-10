@@ -28,5 +28,5 @@ int killpg(int pgrp, int sig) {
     return einval();
   if (pgrp == 1 || pgrp < 0)
     return esrch();
-  return kill(IsWindows() ? pgrp : -pgrp, sig);
+  return kill(-pgrp, sig);
 }

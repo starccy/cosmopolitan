@@ -186,6 +186,7 @@ textwindows void __undescribe_fds(char *fdSpecEnvVariable, long hCreatorProcess,
 // 2. generate array that'll tell CreateProcess() what to inherit
 textwindows char *__describe_fds(const struct Fd *fds, size_t fdslen,
                                  long *opt_inout_lpExtraHandles,
+                                 size_t extracount,
                                  struct NtStartupInfo *lpStartupInfo,
                                  long hCreatorProcess,
                                  long **out_lpExplicitHandles,
@@ -201,14 +202,14 @@ textwindows char *__describe_fds(const struct Fd *fds, size_t fdslen,
   if (AppendString(&envstr, FDS_VAR))
     goto OnError;
 
-  // misc handles to inherit
-  if (opt_inout_lpExtraHandles) {
-    while (*opt_inout_lpExtraHandles) {
-      if (AppendHandle(&handles, *opt_inout_lpExtraHandles, hCreatorProcess,
-                       &handle))
-        goto OnError;
-      *opt_inout_lpExtraHandles++ = handle;
-    }
+  // misc handles to inherit, zero entries are skipped
+  for (size_t i = 0; i < extracount; ++i) {
+    if (!opt_inout_lpExtraHandles[i])
+      continue;
+    if (AppendHandle(&handles, opt_inout_lpExtraHandles[i], hCreatorProcess,
+                     &handle))
+      goto OnError;
+    opt_inout_lpExtraHandles[i] = handle;
   }
 
   // serialize file descriptors

@@ -756,7 +756,7 @@ ABI static size_t kformat(char *b, size_t n, const char *fmt, va_list va) {
 
         case 'G':
           x = va_arg(va, int);
-          s = strsignal(x);
+          s = __strsignal_name(x);
           goto FormatString;
 
         case 't': {

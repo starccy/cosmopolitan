@@ -41,5 +41,7 @@ struct _posix_faction {
 int __posix_spawn_add_file_action(posix_spawn_file_actions_t *,
                                   struct _posix_faction);
 
+const char *__host_execmap(const char *, char *, size_t);
+
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_STDIO_SPAWNA_INTERNAL_H_ */

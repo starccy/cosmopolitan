@@ -67,7 +67,7 @@ const char *_DescribeSigset(char buf[N], int rc, const sigset_t *ss) {
       } else {
         gotsome = true;
       }
-      s = strsignal(sig);
+      s = __strsignal_name(sig);
       if (s[0] == 'S' && s[1] == 'I' && s[2] == 'G')
         s += 3;
       append("%s", s);

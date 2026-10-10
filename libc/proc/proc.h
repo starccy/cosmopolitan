@@ -17,11 +17,14 @@ COSMOPOLITAN_C_START_
 
 struct Proc {
   int pid;
+  int pgid;
   int status;
   int waiters;
   int stopwaiters;
   uint32_t dwExitCode;
   bool isvfork;
+  bool stopped;    // last known to be stopped, by itself or by our kill()
+  bool continued;  // a continue waitpid(WCONTINUED) hasn't reported yet
   int killsig;
   intptr_t hProcess;
   intptr_t hProcess2;
@@ -54,6 +57,8 @@ extern struct Procs __proc;
 void __proc_lock(void);
 void __proc_unlock(void);
 void __proc_killed(int, int);
+bool __proc_native_stop(int, int);
+void __proc_continued(int);
 int64_t __proc_handle(int);
 int64_t __proc_search(int);
 struct Proc *__proc_new(void);
@@ -62,6 +67,11 @@ void __proc_wipe_and_reset(void);
 intptr_t __proc_worker_handle(void);
 int __proc_harvest(struct Proc *, bool);
 int sys_wait4_nt(int, int *, int, struct rusage *);
+int __proc_setpgid(int, int);
+int __proc_getpgid(int);
+int __proc_group_pids(int, int *, int);
+void __jobctl_foreground(int);
+void __jobctl_wipe(void);
 int sys_waitid_nt(int, int, int *, int);
 
 COSMOPOLITAN_C_END_

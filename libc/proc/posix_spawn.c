@@ -38,6 +38,8 @@
 #include "libc/thread/posixthread.internal.h"
 #include "libc/thread/thread.h"
 #include "libc/thread/tls.h"
+#include "libc/intrin/weaken.h"
+#include "libc/limits.h"
 
 static atomic_bool has_vfork;  // i.e. not qemu/wsl/xnu/openbsd
 
@@ -177,6 +179,12 @@ errno_t posix_spawn(int *pid, const char *path,
   int child, res, cs, e = errno;
   volatile int can_clobber = 1234;
   short flags = attrp && *attrp ? (*attrp)->flags : 0;
+  // a program in the zip store runs from a copy on the host filesystem,
+  // made here since the child mustn't allocate or take locks
+  char mapped[PATH_MAX];
+  if (_weaken(__host_execmap) && path && path[0] == '/' &&
+      _weaken(__host_execmap)(path, mapped, sizeof(mapped)))
+    path = mapped;
   sigfillset(&blockall);
   sigprocmask(SIG_SETMASK, &blockall, &oldmask);
   pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
