@@ -88,6 +88,8 @@ void __print_maps(size_t limit) {
           break;
       }
     }
+    if (map->flags & MAP_HOLE)
+      kprintf(" hole");
     if (map->iscow)
       kprintf(" cow");
     if (map->readonlyfile)

@@ -409,16 +409,35 @@ textstartup void __maps_init(void) {
   __maps_unlock();
 }
 
+// thread that holds the lock, or 0, so the fault handler in mmap.c can
+// tell a fault by the holder (which must not wait) from anyone else's
+static _Atomic(int) __maps_owner;
+
 void __maps_lock(void) {
   if (__tls_enabled) {
     MAPS_ASSERT(!__maps_held());
     pthread_mutex_lock(&__maps_lock_obj);
+    atomic_store_explicit(&__maps_owner, __get_tls()->tib_ptid,
+                          memory_order_relaxed);
   }
+}
+
+// takes the lock for the fault handler: false if this thread already
+// holds it, since waiting would then never end
+bool __maps_lock_unless_mine(void) {
+  if (!__tls_enabled)
+    return true;
+  if (atomic_load_explicit(&__maps_owner, memory_order_relaxed) ==
+      __get_tls()->tib_ptid)
+    return false;
+  __maps_lock();
+  return true;
 }
 
 void __maps_unlock(void) {
   if (__tls_enabled) {
     MAPS_ASSERT(__maps_held());
+    atomic_store_explicit(&__maps_owner, 0, memory_order_relaxed);
     pthread_mutex_unlock(&__maps_lock_obj);
     MAPS_ASSERT(!__maps_held());
   }

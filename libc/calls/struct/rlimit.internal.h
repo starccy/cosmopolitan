@@ -9,6 +9,7 @@ int sys_setrlimit(int, const struct rlimit *);
 int sys_setrlimit_nt(int, const struct rlimit *);
 
 size_t __rlimit_stack_get(void);
+size_t __thread_stack_default(void);
 
 const char *_DescribeRlimit(char[64], int, const struct rlimit *);
 #define DescribeRlimit(rc, rl) _DescribeRlimit(alloca(64), rc, rl)

@@ -38,7 +38,11 @@ sigset_t __sig_block(void) {
     else
       return 0;
   } else {
-    sigset_t res, neu = -1;
+    // a fault can't wait, and xnu retries the faulting instruction for
+    // ever instead of killing the process when its signal is blocked
+    sigset_t res, neu = ~(1ull << (SIGILL - 1) | 1ull << (SIGTRAP - 1) |
+                          1ull << (SIGBUS - 1) | 1ull << (SIGFPE - 1) |
+                          1ull << (SIGSEGV - 1) | 1ull << (SIGSYS - 1));
     sys_sigprocmask(SIG_SETMASK, &neu, &res);
     return res;
   }

@@ -12,5 +12,8 @@
 #if defined(_GNU_SOURCE)
 #include "libc/sysv/consts/mfd.h"
 #include "libc/sysv/consts/mremap.h"
+COSMOPOLITAN_C_START_
+void *mremap(void *, size_t, size_t, int, ...) libcesque;
+COSMOPOLITAN_C_END_
 #endif
 #endif

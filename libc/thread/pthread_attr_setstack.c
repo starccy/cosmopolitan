@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/struct/rlimit.internal.h"
 #include "libc/errno.h"
 #include "libc/runtime/stack.h"
 #include "libc/thread/thread.h"
@@ -49,7 +50,7 @@ errno_t pthread_attr_setstack(pthread_attr_t *attr, void *stackaddr,
                               size_t stacksize) {
   if (!stackaddr) {
     attr->__stackaddr = 0;
-    attr->__stacksize = GetStackSize();
+    attr->__stacksize = __thread_stack_default();
     return 0;
   }
   if (stacksize < PTHREAD_STACK_MIN)

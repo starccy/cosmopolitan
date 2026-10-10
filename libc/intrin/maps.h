@@ -33,9 +33,12 @@ COSMOPOLITAN_C_START_
    MAP_FILE memory, then it's assumed to be part of the executable image */
 #define MAP_NOFORK   0x10000000
 #define MAP_NOCOMMIT 0x20000000  // nt: address space only, see mmap.c
+#define MAP_HOLE     0x40000000  // nt: munmap()'d part of an allocation
 
 /* if true, mmap(0) will auto-assign sparse addresses which helps mremap */
-#define MMAP_IS_SPARSE (IsXnu() || IsFreebsd() || IsOpenbsd() || IsWindows())
+#define MMAP_IS_SPARSE \
+  (IsXnu() || IsFreebsd() || IsOpenbsd() || IsWindows() || \
+   (IsLinux() && IsAarch64()))
 
 #define MAP_TREE_CONTAINER(e) TREE_CONTAINER(struct Map, tree, e)
 
@@ -112,7 +115,12 @@ void __maps_wipe(void);
 void __maps_lock(void);
 void __maps_check(void);
 void __maps_unlock(void);
+bool __maps_lock_unless_mine(void);
+bool __nt_commit_on_fault(void *, int);
+bool __nt_commit_range(void *, size_t);
 void *__maps_randaddr(void);
+int __prot2ntview(int, int, int);
+int __ntview2prot(int);
 void __maps_add(struct Map *);
 void __maps_free(struct Map *);
 void __maps_insert(struct Map *);
@@ -180,6 +188,13 @@ static inline struct Map *__maps_last(void) {
 
 static inline bool __maps_isalloc(struct Map *map) {
   return map->hand != MAPS_SUBREGION;
+}
+
+/* returns the first fragment of the allocation that map belongs to */
+static inline struct Map *__maps_head(struct Map *map) {
+  while (!__maps_isalloc(map))
+    map = __maps_prev(map);
+  return map;
 }
 
 COSMOPOLITAN_C_END_

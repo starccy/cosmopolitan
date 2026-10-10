@@ -156,6 +156,17 @@ static __vex void *__memmove(void *dst, const void *src, size_t n) {
         return d;
 
 #if defined(__x86_64__) && !defined(__chibicc__)
+      // forward copies of a few kilobytes and up go at full speed with
+      // rep movsb on cpus with fast strings, which is what glibc does,
+      // except when the destination trails the source by under a cache
+      // line, where it drops to a crawl
+      if (n >= 2048 && (n < kHalfCache3 || !kHalfCache3) &&
+          (d < s ? s - d >= 64 : d >= s + n) && X86_HAVE(ERMS)) {
+        asm("rep movsb"
+            : "+D"(d), "+S"(s), "+c"(n), "=m"(*(char(*)[n])dst)
+            : "m"(*(char(*)[n])src));
+        return dst;
+      }
       if (n < kHalfCache3 || !kHalfCache3) {
         if (d > s) {
           do {

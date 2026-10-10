@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/struct/rlimit.internal.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/stack.h"
 #include "libc/sysv/consts/auxv.h"
@@ -39,7 +40,7 @@
  */
 errno_t pthread_attr_init(pthread_attr_t *attr) {
   *attr = (pthread_attr_t){
-      .__stacksize = GetStackSize(),
+      .__stacksize = __thread_stack_default(),
       .__guardsize = GetGuardSize(),
   };
   return 0;

@@ -23,11 +23,21 @@
 #define ALLOCATED ((struct Chunk *)-23l)
 #define HAVE_RSEQ (!IsTiny() && SupportsLinux() && __get_rseq()->cpu_id >= 0)
 
+// a chunk on a freelist knows how many chunks the list holds from it
+// down, so the head's count is the list's length. it's written before
+// the chunk is published, which is the one store a restartable
+// sequence may commit; a counter next to the list head would be
+// updated after that store, and a restart in between would push the
+// chunk twice
 struct Chunk {
   struct Chunk *next;
   unsigned char flindex;
+  unsigned char pad_[3];
+  unsigned count;
   alignas(MALLOC_ALIGNMENT) char memory[];
 };
+
+static_assert(offsetof(struct Chunk, count) == 12);
 
 struct Slab {
   struct Slab *next;
@@ -37,6 +47,17 @@ struct Slab {
 static struct {
   alignas(CACHELINE) struct Chunk *freelist[8];
 } chunks[CPU_SETSIZE];
+
+// chunks handed over, for any cpu whose freelist runs dry to take back
+// before it maps another slab; without this the hoarding cpu's list grew
+// until the slab limit, 64 bytes per message sent between two threads
+#define HOARD_MAX  512
+#define HOARD_MOVE 256
+static struct {
+  MLOCK_T lock;
+  struct Chunk *list[8];
+  _Atomic(size_t) n[8];
+} pool;
 
 alignas(CACHELINE) static struct {
   _Atomic(struct Slab *) slabs;
@@ -67,7 +88,9 @@ static const unsigned char kPickSize[CHUNK_MAX + 1] = {
     7,
 };
 
-static inline void push_chunk(struct Chunk *chunk, unsigned char flindex) {
+// returns how many chunks this cpu's list of that size then holds
+static inline unsigned push_chunk(struct Chunk *chunk, unsigned char flindex) {
+  unsigned count;
 #ifdef __x86_64__
   asm volatile(".pushsection .rodata.rseq,\"a\",@progbits\n"
                "	.balign	32\n"
@@ -77,19 +100,26 @@ static inline void push_chunk(struct Chunk *chunk, unsigned char flindex) {
                "	.quad	302f-301f\n"          // rseq_cs::post_commit_offset
                "	.quad	303f\n"               // rseq_cs::abort_ip
                "	.popsection\n"                //
-               "301:	movq	$300b,8(%2)\n"        // rseq->rseq_cs
-               "	mov	(%2),%%ecx\n"         // rseq->cpu_id_start
+               "301:	movq	$300b,8(%[rs])\n"     // rseq->rseq_cs
+               "	mov	(%[rs]),%%ecx\n"      // rseq->cpu_id_start
                "	shl	$6,%%ecx\n"           //
-               "	mov	(%0,%%rcx),%%rdx\n"   // rdx = freelist
-               "	mov	%%rdx,(%1)\n"         // chunk->next = rdx
-               "	mov	%1,(%0,%%rcx)\n"      // freelist = chunk
+               "	mov	(%[fl],%%rcx),%%rdx\n" // rdx = freelist
+               "	mov	%%rdx,(%[ch])\n"      // chunk->next = rdx
+               "	xor	%k[cnt],%k[cnt]\n"    // count = 0
+               "	test	%%rdx,%%rdx\n"        //
+               "	jz	1f\n"                 //
+               "	mov	12(%%rdx),%k[cnt]\n"  // count = freelist->count
+               "1:	inc	%k[cnt]\n"            //
+               "	mov	%k[cnt],12(%[ch])\n"  // chunk->count = count
+               "	mov	%[ch],(%[fl],%%rcx)\n" // freelist = chunk
                "302:	.pushsection .text.unlikely,\"ax\",@progbits\n"
                "	.byte	0x0f,0xb9,0x4d\n"
                "	.long	0x53053053\n"
                "303:	jmp	301b\n"               // restart on abort
                "	.popsection"
-               : /* no outputs */
-               : "r"(&chunks[0].freelist[flindex]), "r"(chunk), "r"(__get_rseq())
+               : [cnt] "=&r"(count)
+               : [fl] "r"(&chunks[0].freelist[flindex]), [ch] "r"(chunk),
+                 [rs] "r"(__get_rseq())
                : "rcx", "rdx", "memory");
 #elifdef __aarch64__
   asm volatile(".pushsection .rodata.rseq,\"a\",@progbits\n"
@@ -102,22 +132,29 @@ static inline void push_chunk(struct Chunk *chunk, unsigned char flindex) {
                "	.popsection\n"                //
                "301:	adrp	x4, 300b\n"           // load address of rseq_cs
                "	add	x4, x4, :lo12:300b\n" //
-               "	str	x4, [%1, #8]\n"       // rseq->rseq_cs
-               "	ldr	w4, [%1]\n"           // rseq->cpu_id_start
+               "	str	x4, [%[rs], #8]\n"    // rseq->rseq_cs
+               "	ldr	w4, [%[rs]]\n"        // rseq->cpu_id_start
                "	lsl	w4, w4, #6\n"         //
-               "	ldr	x5, [%2, x4]\n"       // x5 = freelist
-               "	str	x5, [%0]\n"           // chunk->next = x5
-               "	str	%0, [%2, x4]\n"       // freelist = chunk
+               "	ldr	x5, [%[fl], x4]\n"    // x5 = freelist
+               "	str	x5, [%[ch]]\n"        // chunk->next = x5
+               "	mov	%w[cnt], #0\n"        // count = 0
+               "	cbz	x5, 1f\n"             //
+               "	ldr	%w[cnt], [x5, #12]\n" // count = freelist->count
+               "1:	add	%w[cnt], %w[cnt], #1\n" //
+               "	str	%w[cnt], [%[ch], #12]\n" // chunk->count = count
+               "	str	%[ch], [%[fl], x4]\n" // freelist = chunk
                "302:	.pushsection .text.unlikely,\"ax\",@progbits\n"
                "	.long	0xd428bc00\n"
                "303:	adrp	x5, 301b\n"           // load page address of 301b
                "	add	x5, x5, :lo12:301b\n" // add low 12 bits
                "	br	x5\n"                 // branch to 301b via register
                "	.popsection"
-               : /* no outputs */
-               : "r"(chunk), "r"(__get_rseq()), "r"(&chunks[0].freelist[flindex])
+               : [cnt] "=&r"(count)
+               : [fl] "r"(&chunks[0].freelist[flindex]), [ch] "r"(chunk),
+                 [rs] "r"(__get_rseq())
                : "x4", "x5", "memory");
 #endif
+  return count;
 }
 
 static inline struct Chunk *pop_chunk(unsigned char flindex) {
@@ -178,6 +215,64 @@ static inline struct Chunk *pop_chunk(unsigned char flindex) {
   return chunk;
 }
 
+// moves some of this cpu's chunks of a size to the pool
+static void hand_over(unsigned flindex) {
+  struct Chunk *head = 0, *tail = 0;
+  size_t n = 0;
+  while (n < HOARD_MOVE) {
+    struct Chunk *chunk = pop_chunk(flindex);
+    if (!chunk)
+      break;
+    chunk->next = head;
+    if (!tail)
+      tail = chunk;
+    head = chunk;
+    ++n;
+  }
+  if (!n)
+    return;
+  ACQUIRE_LOCK(&pool.lock);
+  tail->next = pool.list[flindex];
+  pool.list[flindex] = head;
+  atomic_store_explicit(&pool.n[flindex],
+                        atomic_load_explicit(&pool.n[flindex], memory_order_relaxed) + n,
+                        memory_order_relaxed);
+  RELEASE_LOCK(&pool.lock);
+}
+
+// puts some of the pool's chunks of a size on this cpu's freelist; false
+// when the pool has none
+static bool take_back(unsigned flindex) {
+  if (!atomic_load_explicit(&pool.n[flindex], memory_order_relaxed))
+    return false;
+  struct Chunk *head;
+  size_t n = 0;
+  ACQUIRE_LOCK(&pool.lock);
+  head = pool.list[flindex];
+  struct Chunk *chunk = head, *last = 0;
+  while (chunk && n < HOARD_MOVE) {
+    last = chunk;
+    chunk = chunk->next;
+    ++n;
+  }
+  if (last) {
+    pool.list[flindex] = chunk;
+    last->next = 0;
+    atomic_store_explicit(&pool.n[flindex],
+                          atomic_load_explicit(&pool.n[flindex], memory_order_relaxed) - n,
+                          memory_order_relaxed);
+  }
+  RELEASE_LOCK(&pool.lock);
+  if (!n)
+    return false;
+  struct Chunk *next;
+  for (chunk = head; chunk; chunk = next) {
+    next = chunk->next;
+    push_chunk(chunk, flindex);
+  }
+  return true;
+}
+
 static bool is_slab_used(struct Slab *slab) {
   char *p = slab->memory;
   char *e = slab->memory + SLAB_SIZE - sizeof(struct Slab);
@@ -214,18 +309,36 @@ static int trim_slabs(void) {
   for (struct Slab *slab = freed; slab; slab = slab->next)
     __maps_unmark(slab, SLAB_SIZE);
 
-  // remove chunks that are dangerous
+  // remove chunks that are dangerous, and recount what's left
   for (int i = 0; i < CPU_SETSIZE; ++i) {
     for (int j = 0; j < 8; ++j) {
+      unsigned left = 0;
       struct Chunk **prev = &chunks[i].freelist[j];
       for (struct Chunk *chunk = *prev; chunk; chunk = *prev) {
         if (kisdangerous(chunk)) {
           *prev = chunk->next;
         } else {
           prev = &chunk->next;
+          ++left;
         }
       }
+      for (struct Chunk *chunk = chunks[i].freelist[j]; chunk;
+           chunk = chunk->next)
+        chunk->count = left--;
     }
+  }
+  for (int j = 0; j < 8; ++j) {
+    size_t left = 0;
+    struct Chunk **prev = &pool.list[j];
+    for (struct Chunk *chunk = *prev; chunk; chunk = *prev) {
+      if (kisdangerous(chunk)) {
+        *prev = chunk->next;
+      } else {
+        prev = &chunk->next;
+        ++left;
+      }
+    }
+    atomic_store_explicit(&pool.n[j], left, memory_order_relaxed);
   }
 
   // release slabs to operating system
@@ -233,7 +346,10 @@ static int trim_slabs(void) {
   struct Slab *next;
   for (struct Slab *slab = freed; slab; slab = next) {
     next = slab->next;
-    __sys_munmap(slab, SLAB_SIZE);
+    if (MMAP_IS_SPARSE)
+      munmap(slab, SLAB_SIZE);
+    else
+      __sys_munmap(slab, SLAB_SIZE);
     ++count;
   }
 
@@ -247,6 +363,10 @@ static int trim_slabs(void) {
 }
 
 static void *dlmalloc_rseq_populate(size_t n) {
+
+  // what other cpus handed over comes before mapping more
+  if (take_back(kPickSize[n]))
+    return TRY_AGAIN;
 
   // makes it possible to limit the growth of untrimmable rseq memory
   //
@@ -278,11 +398,19 @@ static void *dlmalloc_rseq_populate(size_t n) {
   }
 
   // get memory from system
-  // take the fast path since we're linux only
+  // take the fast path since we're linux only, unless addresses are
+  // being picked, which keeps them under 2^47 on arm64 linux, where
+  // the kernel would otherwise hand out ones a library that keeps
+  // pointers in 47 bits (luajit's gc64 build) can't hold
   int oe = errno;
   struct Slab *slab;
-  slab = __sys_mmap(0, SLAB_SIZE, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0, 0);
+  if (MMAP_IS_SPARSE) {
+    slab = mmap(0, SLAB_SIZE, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  } else {
+    slab = __sys_mmap(0, SLAB_SIZE, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0, 0);
+  }
   if (slab == MAP_FAILED) {
     errno = oe;
     return dlmalloc_threaded(n);
@@ -330,8 +458,25 @@ static inline void *dlmalloc_rseq_actual(size_t n) {
   }
 }
 
+// a thread without a registered rseq area, see TIB_FLAG_NORSEQ
+static inline bool no_rseq(void) {
+  return __get_tls()->tib_flags & TIB_FLAG_NORSEQ;
+}
+
+// a chunk freed by such a thread goes to the pool
+static void pool_push_one(struct Chunk *chunk) {
+  unsigned flindex = chunk->flindex;
+  ACQUIRE_LOCK(&pool.lock);
+  chunk->next = pool.list[flindex];
+  pool.list[flindex] = chunk;
+  atomic_store_explicit(&pool.n[flindex],
+                        atomic_load_explicit(&pool.n[flindex], memory_order_relaxed) + 1,
+                        memory_order_relaxed);
+  RELEASE_LOCK(&pool.lock);
+}
+
 static void *dlmalloc_rseq(size_t n) {
-  if (LIKELY(n <= CHUNK_MAX))
+  if (LIKELY(n <= CHUNK_MAX) && LIKELY(!no_rseq()))
     return dlmalloc_rseq_actual(n);
   return dlmalloc_threaded(n);
 }
@@ -344,7 +489,13 @@ static void dlfree_rseq(void *ptr) {
   if (LIKELY(ptr)) {
     struct Chunk *chunk = get_chunk(ptr);
     if (LIKELY(chunk->next == ALLOCATED)) {
-      push_chunk(chunk, chunk->flindex);
+      if (UNLIKELY(no_rseq())) {
+        pool_push_one(chunk);
+        return;
+      }
+      unsigned flindex = chunk->flindex;
+      if (UNLIKELY(push_chunk(chunk, flindex) > HOARD_MAX))
+        hand_over(flindex);
     } else {
       dlfree_threaded(ptr);
     }
@@ -365,7 +516,7 @@ static void *dlcalloc_rseq(size_t n_elements, size_t elem_size) {
   size_t n;
   if (UNLIKELY(ckd_mul(&n, n_elements, elem_size)))
     n = MAX_SIZE_T;
-  if (UNLIKELY(n > CHUNK_MAX))
+  if (UNLIKELY(n > CHUNK_MAX) || UNLIKELY(no_rseq()))
     return dlcalloc_threaded(n_elements, elem_size);
   if (UNLIKELY(!(p = dlmalloc_rseq_actual(n))))
     return 0;

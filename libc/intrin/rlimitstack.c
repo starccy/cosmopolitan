@@ -22,8 +22,10 @@
 #include "libc/calls/struct/rlimit.internal.h"
 #include "libc/cosmo.h"
 #include "libc/dce.h"
+#include "libc/runtime/runtime.h"
 #include "libc/runtime/stack.h"
 #include "libc/sysv/pib.h"
+#include "libc/thread/thread.h"
 
 __rarechange static struct {
   atomic_uint once;
@@ -53,4 +55,20 @@ size_t __rlimit_stack_get(void) {
   if (size > 0x7fff0000)
     size = 0x7fff0000;
   return size;
+}
+
+// the stack size pthread_attr_init() hands out. on linux and xnu this
+// is what glibc does: RLIMIT_STACK, or 8mb when that is unlimited. the
+// memory is only committed as it is touched there. windows commits it
+// all up front, so it keeps GetStackSize()
+size_t __thread_stack_default(void) {
+  size_t size;
+  if (IsWindows() || IsMetal())
+    return GetStackSize();
+  size = __rlimit_stack_get();
+  if (size >= 0x7fff0000)
+    size = 8 * 1024 * 1024;
+  if (size < PTHREAD_STACK_MIN)
+    size = PTHREAD_STACK_MIN;
+  return (size + __pagesize - 1) & -__pagesize;
 }

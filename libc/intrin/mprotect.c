@@ -20,6 +20,7 @@
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
+#include "libc/errno.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/directmap.h"
 #include "libc/intrin/dll.h"
@@ -28,6 +29,8 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/intrin/tree.h"
 #include "libc/nt/enum/memflags.h"
+#include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/nt/enum/filemapflags.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/struct/memorybasicinformation.h"
 #include "libc/runtime/internal.h"
@@ -66,6 +69,52 @@ static int __mprotect_chunk_impl(char *addr, size_t size, int prot,
       return __winerr();
     }
     p = re;
+  }
+  return 0;
+}
+
+// a file view is mapped with the access its mmap() prot needed, so a
+// later mprotect() asking for more is refused by VirtualProtect(). when
+// the view is whole and can't hold private pages yet (shared, or never
+// writable) it's mapped again in place with the larger access
+textwindows static int __mprotect_remap_nt(struct Map *map, int prot) {
+  if (map->hand <= 0 || (map->flags & MAP_ANONYMOUS))
+    return -1;
+  struct Map *next = __maps_next(map);
+  if (next && !__maps_isalloc(next))
+    return -1;  // fragmented by an earlier mprotect()
+  bool shared = (map->flags & MAP_TYPE) == MAP_SHARED;
+  if (!shared && (map->prot & PROT_WRITE))
+    return -1;  // may hold copy-on-write pages
+  int access = __prot2ntview(prot, !shared, shared);
+  if (prot & PROT_EXEC)
+    access |= kNtFileMapExecute;
+  if (!shared && (prot & PROT_WRITE))
+    access |= kNtFileMapExecute;
+  if (!UnmapViewOfFile(map->addr))
+    return __winerr();
+  int64_t off = map->off;
+  if (!MapViewOfFileEx(map->hand, access, off >> 32, off, map->size,
+                       map->addr)) {
+    __winerr();
+    int e = errno;
+    // put back what was there; the pages weren't private, so nothing
+    // is lost, and a failure here leaves a hole no one asked for
+    int old = __prot2ntview(map->prot, !shared, shared);
+    if (map->prot & PROT_EXEC)
+      old |= kNtFileMapExecute;
+    MapViewOfFileEx(map->hand, old, off >> 32, off, map->size, map->addr);
+    errno = e;
+    return -1;
+  }
+  uint32_t op;
+  if (__ntview2prot(access) != __prot2nt(prot, !shared))
+    if (!VirtualProtect(map->addr, map->size, __prot2nt(prot, !shared), &op))
+      return __winerr();
+  if (prot & (PROT_READ | PROT_WRITE)) {
+    __maps_mark(map->addr, map->size);
+  } else {
+    __maps_unmark(map->addr, map->size);
   }
   return 0;
 }
@@ -115,9 +164,15 @@ int __mprotect(char *addr, size_t size, int prot) {
     if (beg >= end)
       continue;
     found = true;
+    if (map->flags & MAP_HOLE) {
+      rc = enomem();
+      continue;
+    }
     if (addr <= map_addr && addr + size >= map_addr + PGUP(map_size)) {
       // change protection status of pages
       if (!__mprotect_chunk(map_addr, map_size, prot, map->iscow)) {
+        map->prot = prot;
+      } else if (IsWindows() && !__mprotect_remap_nt(map, prot)) {
         map->prot = prot;
       } else {
         rc = -1;

@@ -134,8 +134,87 @@ tmspace_get_f tmspace_acquire(void) {
   return res;
 }
 
+// Thread Caches
+//
+// A thread with a heap of its own keeps chunks it frees in a cache that
+// belongs to that heap, and hands them out again without taking the
+// heap's lock. Small chunks are cached by exact size. Medium ones go by
+// size class, eight per power of two: a request is rounded up to its
+// class, and a freed chunk is filed under the largest class it holds, so
+// anything a class hands out is big enough. A cached chunk stays in use
+// as far as dlmalloc is concerned, and its footer still names the heap
+// it came from, which is where it goes when the cache lets go of it.
+//
+// Only the thread owning a heap touches its cache. Once the process has
+// so many threads that heaps are shared by cpu, caching stops, and what
+// the old caches hold stays with them.
+
+#define TCACHE_SMALL_MAX    1024
+#define TCACHE_MEDIUM_MAX   65536
+#define TCACHE_SMALL_BINS   (TCACHE_SMALL_MAX / MALLOC_ALIGNMENT + 1)
+#define TCACHE_MEDIUM_BINS  49
+#define TCACHE_SMALL_COUNT  16
+#define TCACHE_MEDIUM_COUNT 8
+#define TCACHE_MAX_BYTES    (512 * 1024)
+
+struct TcacheEntry {
+  struct TcacheEntry *next;
+};
+
+struct Tcache {
+  size_t bytes;
+  struct TcacheEntry *small[TCACHE_SMALL_BINS];
+  struct TcacheEntry *medium[TCACHE_MEDIUM_BINS];
+  unsigned char nsmall[TCACHE_SMALL_BINS];
+  unsigned char nmedium[TCACHE_MEDIUM_BINS];
+};
+
+static struct Tcache g_tcache[COSMO_SHARDS];
+
+static inline struct Tcache *tcache_of(mspace heap) {
+  return g_tcache + ((char *)heap - (char *)&g_heaps[0].state) /
+                        sizeof(g_heaps[0]);
+}
+
+// chunk size of medium class c
+static inline size_t tcache_class_size(unsigned c) {
+  return (size_t)(8 + (c & 7)) << ((c >> 3) + 7);
+}
+
+// smallest class holding a chunk of size s, for s > TCACHE_SMALL_MAX
+static inline unsigned tcache_class_ceil(size_t s) {
+  unsigned b = bsrl(s - 1);
+  return ((b - 10) << 3) + ((s - 1) >> (b - 3)) + 1 - 8;
+}
+
+// largest class a chunk of size s holds, for s >= TCACHE_SMALL_MAX
+static inline unsigned tcache_class_floor(size_t s) {
+  unsigned b = bsrl(s);
+  return ((b - 10) << 3) + (s >> (b - 3)) - 8;
+}
+
+static void tcache_flush(struct Tcache *tc) {
+  struct TcacheEntry *e;
+  for (unsigned i = 0; i < TCACHE_SMALL_BINS; ++i) {
+    while ((e = tc->small[i])) {
+      tc->small[i] = e->next;
+      mspace_free(0, e);
+    }
+    tc->nsmall[i] = 0;
+  }
+  for (unsigned i = 0; i < TCACHE_MEDIUM_BINS; ++i) {
+    while ((e = tc->medium[i])) {
+      tc->medium[i] = e->next;
+      mspace_free(0, e);
+    }
+    tc->nmedium[i] = 0;
+  }
+  tc->bytes = 0;
+}
+
 void tmspace_release(tmspace_get_f getter) {
   if (~g_assigned && getter != &tmspace_get) {
+    tcache_flush(tcache_of(getter()));
     mspace_trim(getter(), 0);
     ACQUIRE_LOCK(&g_gil);
     if (~g_assigned)
@@ -147,6 +226,41 @@ void tmspace_release(tmspace_get_f getter) {
 }
 
 static void dlfree_threaded(void *p) {
+  tmspace_get_f getter = __get_tls()->tib_malloc;
+  if (p && getter != &tmspace_get) {
+    mchunkptr c = mem2chunk(p);
+    size_t cs = chunksize(c);
+    struct Tcache *tc = tcache_of(getter());
+    struct TcacheEntry *e = p;
+    // a medium chunk from another thread's heap goes straight back to
+    // it. cached here it would count as in use over there for as long
+    // as this thread lives. small ones are kept, that's what message
+    // passing hands over
+    if (!is_mmapped(c) &&
+        (cs <= TCACHE_SMALL_MAX || get_mstate_for(c) == (mstate)getter()) &&
+        tc->bytes + cs <= TCACHE_MAX_BYTES) {
+      if (cs <= TCACHE_SMALL_MAX) {
+        unsigned i = cs / MALLOC_ALIGNMENT;
+        if (tc->nsmall[i] < TCACHE_SMALL_COUNT) {
+          e->next = tc->small[i];
+          tc->small[i] = e;
+          ++tc->nsmall[i];
+          tc->bytes += cs;
+          return;
+        }
+      } else {
+        unsigned i = tcache_class_floor(cs);
+        if (i && i < TCACHE_MEDIUM_BINS &&
+            tc->nmedium[i] < TCACHE_MEDIUM_COUNT) {
+          e->next = tc->medium[i];
+          tc->medium[i] = e;
+          ++tc->nmedium[i];
+          tc->bytes += cs;
+          return;
+        }
+      }
+    }
+  }
   // we configured dlmalloc to store the mpsace pointer in the footer to
   // ensure we free on the old heap if the kernel reschedules our thread
   return mspace_free(0, p);
@@ -166,6 +280,9 @@ int dlmallopt(int param_number, int value) {
 
 static int dlmalloc_trim_threaded(size_t pad) {
   int got_some = 0;
+  tmspace_get_f getter = __get_tls()->tib_malloc;
+  if (getter != &tmspace_get)
+    tcache_flush(tcache_of(getter()));
   for (long i = 0; i < COSMO_SHARDS && g_heaps[i].state.magic; ++i)
     got_some |= mspace_trim(&g_heaps[i].state, pad);
   return got_some;
@@ -201,10 +318,43 @@ static inline mspace pick_heap(void) {
 }
 
 static void *dlmalloc_threaded(size_t n) {
-  return mspace_malloc(pick_heap(), n);
+  tmspace_get_f getter = __get_tls()->tib_malloc;
+  mspace heap = getter();
+  if (getter != &tmspace_get && n < MAX_REQUEST) {
+    struct Tcache *tc = tcache_of(heap);
+    struct TcacheEntry *e;
+    size_t cs = request2size(n);
+    if (cs <= TCACHE_SMALL_MAX) {
+      unsigned i = cs / MALLOC_ALIGNMENT;
+      if ((e = tc->small[i])) {
+        tc->small[i] = e->next;
+        --tc->nsmall[i];
+        tc->bytes -= cs;
+        return e;
+      }
+    } else if (cs <= TCACHE_MEDIUM_MAX) {
+      unsigned i = tcache_class_ceil(cs);
+      if ((e = tc->medium[i])) {
+        tc->medium[i] = e->next;
+        --tc->nmedium[i];
+        tc->bytes -= chunksize(mem2chunk(e));
+        return e;
+      }
+      n = tcache_class_size(i) - CHUNK_OVERHEAD;
+    }
+  }
+  return mspace_malloc(heap, n);
 }
 
 static void *dlcalloc_threaded(size_t n, size_t z) {
+  size_t m;
+  if (!ckd_mul(&m, n, z) && m <= TCACHE_MEDIUM_MAX &&
+      __get_tls()->tib_malloc != &tmspace_get) {
+    void *p;
+    if ((p = dlmalloc_threaded(m)))
+      memset(p, 0, m);
+    return p;
+  }
   return mspace_calloc(pick_heap(), n, z);
 }
 

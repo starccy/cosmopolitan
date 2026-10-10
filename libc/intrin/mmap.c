@@ -47,6 +47,7 @@
 #include "libc/nt/errors.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/runtime.h"
+#include "libc/nt/struct/memorybasicinformation.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/syslib.internal.h"
 #include "libc/runtime/zipos.internal.h"
@@ -118,6 +119,253 @@ textwindows static bool __maps_envelops(const char *addr, size_t size) {
     }
   }
   return true;
+}
+
+// windows can't release part of a VirtualAlloc() allocation. munmap()
+// of a subrange decommits its pages and keeps the fragment in the tree
+// as a hole, address space nothing may be handed until every fragment
+// of the allocation is a hole, at which point it's released for real.
+// mmap(MAP_FIXED) of anonymous private memory into such an allocation
+// recommits in place, which is how allocators commit and decommit.
+
+// splits map at `at`, which must lie strictly inside it. returns the
+// new righthand fragment, or null if a tracking object couldn't be had
+textwindows static struct Map *__maps_split(struct Map *map, char *at) {
+  struct Map *right;
+  if (!(right = __maps_alloc()))
+    return 0;
+  size_t left = at - map->addr;
+  right->addr = at;
+  right->size = map->size - left;
+  right->off = (map->flags & MAP_ANONYMOUS) ? 0 : map->off + left;
+  right->prot = map->prot;
+  right->flags = map->flags;
+  right->iscow = map->iscow;
+  right->readonlyfile = map->readonlyfile;
+  right->hand = MAPS_SUBREGION;
+  map->size = left;
+  tree_insert(&__maps.maps, &right->tree, __maps_compare);
+  __maps.count += 1;
+  return right;
+}
+
+// returns true if every mapping overlapping [addr,addr+size) is part of
+// a VirtualAlloc() allocation that may have holes punched into it. with
+// `gaps` false the range must also be covered without unmapped space
+textwindows static bool __maps_nt_punchable(const char *addr, size_t size,
+                                            bool gaps) {
+  struct Map *map;
+  const char *cur = addr;
+  if (!(map = __maps_floor(addr)))
+    map = __maps_first();
+  for (; map && map->addr < addr + size; map = __maps_next(map)) {
+    if (map->addr + PGUP(map->size) <= addr)
+      continue;
+    if (map->addr > cur && !gaps)
+      return false;
+    if (map->hand == MAPS_RESERVATION || (map->flags & MAP_NOFORK))
+      return false;
+    if (__maps_head(map)->hand != MAPS_VIRTUAL)
+      return false;
+    cur = map->addr + PGUP(map->size);
+  }
+  return gaps || cur >= addr + size;
+}
+
+// turns [addr,addr+size) into holes. the range must be punchable
+textwindows static int __maps_nt_punch(char *addr, size_t size) {
+  int rc = 0;
+  struct Map *map, *next;
+  if (!(map = __maps_floor(addr)))
+    map = __maps_first();
+  for (; map && map->addr < addr + size; map = next) {
+    next = __maps_next(map);
+    char *beg = MAX(addr, map->addr);
+    char *end = MIN(addr + size, map->addr + PGUP(map->size));
+    if (beg >= end)
+      continue;
+    if (map->flags & MAP_HOLE)
+      continue;
+    if (beg > map->addr)
+      if (!(map = __maps_split(map, beg)))
+        return enomem();
+    if (end < map->addr + map->size)
+      if (!(next = __maps_split(map, end)))
+        return enomem();
+    if (!VirtualFree(map->addr, map->size, kNtMemDecommit))
+      rc = __winerr();
+    __maps_unmark(map->addr, PGUP(map->size));
+    map->prot = PROT_NONE;
+    map->flags |= MAP_HOLE | MAP_NOCOMMIT;
+    map->iscow = false;
+  }
+  return rc;
+}
+
+// releases every allocation touching [addr,addr+size) that's all holes
+textwindows static int __maps_nt_release_holes(char *addr, size_t size) {
+  int rc = 0;
+  struct Map *map, *head, *next;
+  if (!(map = __maps_floor(addr)))
+    map = __maps_first();
+  if (map)
+    map = __maps_head(map);
+  while (map && map->addr < addr + size) {
+    head = map;
+    bool holes = true;
+    for (next = map; next && (next == head || !__maps_isalloc(next));
+         next = __maps_next(next))
+      if (!(next->flags & MAP_HOLE))
+        holes = false;
+    if (holes && head->hand == MAPS_VIRTUAL) {
+      if (!VirtualFree(head->addr, 0, kNtMemRelease))
+        rc = __winerr();
+      for (map = head; map != next;) {
+        struct Map *gone = map;
+        map = __maps_next(map);
+        tree_remove(&__maps.maps, &gone->tree);
+        __maps.pages -= (gone->size + __pagesize - 1) / __pagesize;
+        __maps.count -= 1;
+        __maps_free(gone);
+      }
+    }
+    map = next;
+  }
+  return rc;
+}
+
+// called by the vectored exception handler on an access violation. a
+// page that's reserved but not committed inside a private anonymous
+// mapping whose protection allows the access is committed, a granule
+// at a time, and the faulting instruction runs again. that's how
+// MAP_NORESERVE memory and pages madvise(MADV_DONTNEED) decommitted
+// come back: zero filled, charged only once touched, as on linux
+textwindows bool __nt_commit_on_fault(void *addr, int kind) {
+  struct NtMemoryBasicInformation mbi;
+  if (VirtualQuery(addr, &mbi, sizeof(mbi)) != sizeof(mbi))
+    return false;
+  if (mbi.State != kNtMemReserve && mbi.State != kNtMemCommit)
+    return false;
+  // a fault by the thread that holds the lock (the memory manager
+  // touching memory it hasn't committed) is a real one; anyone else
+  // waits for the holder to finish
+  if (!__maps_lock_unless_mine())
+    return false;
+  bool ok = false;
+  int prot = 0;
+  char *beg = 0, *end = 0;
+  struct Map *map = __maps_floor(addr);
+  if (map && (char *)addr >= map->addr &&
+      (char *)addr < map->addr + PGUP(map->size) &&
+      (map->flags & MAP_ANONYMOUS) && (map->flags & MAP_TYPE) != MAP_SHARED &&
+      !(map->flags & (MAP_HOLE | MAP_NOFORK)) &&
+      __maps_head(map)->hand == MAPS_VIRTUAL) {
+    prot = map->prot;
+    // only an access the mapping allows is ours to satisfy
+    if (kind == 1)
+      ok = prot & PROT_WRITE;
+    else if (kind == 8)
+      ok = prot & PROT_EXEC;
+    else
+      ok = prot & (PROT_READ | PROT_WRITE);
+  }
+  if (ok) {
+    // look again under the lock: another thread may have committed
+    // this granule since the fault, and then the access just retries
+    if (VirtualQuery(addr, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+      ok = false;
+    } else if (mbi.State == kNtMemCommit) {
+      ok = mbi.Protect == (uint32_t)__prot2nt(prot, false);
+      __maps_unlock();
+      return ok;
+    } else if (mbi.State != kNtMemReserve) {
+      ok = false;
+    }
+  }
+  if (ok) {
+    beg = (char *)((uintptr_t)addr & -__gransize);
+    end = beg + __gransize;
+    if (beg < map->addr)
+      beg = map->addr;
+    if (end > map->addr + PGUP(map->size))
+      end = map->addr + PGUP(map->size);
+    char *rend = (char *)mbi.BaseAddress + mbi.RegionSize;
+    if (end > rend)
+      end = rend;
+    if (beg < (char *)mbi.BaseAddress)
+      beg = mbi.BaseAddress;
+    ok = beg < end &&
+         VirtualAlloc(beg, end - beg, kNtMemCommit, __prot2nt(prot, false));
+  }
+  __maps_unlock();
+  return ok;
+}
+
+// commits whatever of [addr,addr+size) is reserved but not committed in
+// memory __nt_commit_on_fault() would commit on a touch. the kernel
+// doesn't take our fault handler's help for buffers it's handed, it
+// fails the call (ERROR_NOACCESS, WSAEFAULT) instead, so i/o calls this
+// and retries. returns true if anything was committed
+textwindows bool __nt_commit_range(void *addr, size_t size) {
+  if (!size || !__maps_lock_unless_mine())
+    return false;
+  bool any = false;
+  char *p = (char *)((uintptr_t)addr & -__pagesize);
+  char *e = (char *)addr + size;
+  while (p < e) {
+    struct NtMemoryBasicInformation mbi;
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi))
+      break;
+    char *re = (char *)mbi.BaseAddress + mbi.RegionSize;
+    if (re > e)
+      re = e;
+    if (mbi.State == kNtMemReserve) {
+      struct Map *map = __maps_floor(p);
+      if (!map || p >= map->addr + PGUP(map->size) ||
+          !(map->prot & (PROT_READ | PROT_WRITE)) ||
+          !(map->flags & MAP_ANONYMOUS) ||
+          (map->flags & MAP_TYPE) == MAP_SHARED ||
+          (map->flags & (MAP_HOLE | MAP_NOFORK)) ||
+          __maps_head(map)->hand != MAPS_VIRTUAL)
+        break;
+      if (re > map->addr + PGUP(map->size))
+        re = map->addr + PGUP(map->size);
+      if (!VirtualAlloc(p, re - p, kNtMemCommit, __prot2nt(map->prot, false)))
+        break;
+      any = true;
+    }
+    p = re;
+  }
+  __maps_unlock();
+  return any;
+}
+
+// fixed anonymous private mapping inside VirtualAlloc() memory, done in
+// place: decommit, then commit again for fresh zeroed pages. the range
+// must be punchable without gaps. called with the lock held
+textwindows static void *__mmap_nt_inplace(char *addr, size_t size, int prot,
+                                           int flags) {
+  if (__maps_nt_punch(addr, size))
+    return MAP_FAILED;
+  struct Map *map;
+  if (!(map = __maps_floor(addr)))
+    map = __maps_first();
+  for (; map && map->addr < addr + size; map = __maps_next(map)) {
+    if (map->addr + PGUP(map->size) <= addr)
+      continue;
+    if (prot != PROT_NONE) {
+      if (!VirtualAlloc(map->addr, map->size, kNtMemCommit,
+                        __prot2nt(prot, false)))
+        return (void *)enomem();
+      map->flags = flags;
+      if (prot & (PROT_READ | PROT_WRITE))
+        __maps_mark(map->addr, PGUP(map->size));
+    } else {
+      map->flags = flags | MAP_NOCOMMIT;
+    }
+    map->prot = prot;
+  }
+  return addr;
 }
 
 #if MMAP_DEBUG
@@ -414,6 +662,26 @@ int __maps_untrack(char *addr, size_t size) {
   return rc;
 }
 
+// the MapViewOfFile() access that gives a view the page protection
+// `prot` asks for. a private mapping writes copy-on-write
+textwindows int __prot2ntview(int prot, int iscow, int shared) {
+  int access = kNtFileMapRead;
+  if (prot & PROT_WRITE)
+    access = iscow ? kNtFileMapCopy : kNtFileMapWrite;
+  (void)shared;
+  return access;
+}
+
+// the page protection a view mapped with `access` starts out with
+textwindows int __ntview2prot(int access) {
+  int exec = access & kNtFileMapExecute;
+  if (access & kNtFileMapCopy)
+    return exec ? kNtPageExecuteWritecopy : kNtPageWritecopy;
+  if (access & kNtFileMapWrite)
+    return exec ? kNtPageExecuteReadwrite : kNtPageReadwrite;
+  return exec ? kNtPageExecuteRead : kNtPageReadonly;
+}
+
 textwindows dontinline static struct DirectMap sys_mmap_nt(
     void *addr, size_t size, int prot, int flags, int fd, int64_t off) {
   struct DirectMap dm;
@@ -422,9 +690,12 @@ textwindows dontinline static struct DirectMap sys_mmap_nt(
   if (!MAP_ANONYMOUS ||
       ((flags & MAP_ANONYMOUS) && (flags & MAP_TYPE) != MAP_SHARED)) {
     // allocators reserve huge PROT_NONE spans and grow into them with
-    // mprotect(), which commits the pages it's given (see mprotect.c)
+    // mprotect(), which commits the pages it's given (see mprotect.c).
+    // MAP_NORESERVE memory is reserved too and committed a granule at a
+    // time by __nt_commit_on_fault() as it's touched, which is what the
+    // flag asks for: linux charges such pages only once they're used
     uint32_t alloc = kNtMemReserve;
-    if (prot != PROT_NONE || (flags & MAP_FIXED))
+    if ((prot != PROT_NONE && !(flags & MAP_NORESERVE)) || (flags & MAP_FIXED))
       alloc |= kNtMemCommit;
     if (!(dm.addr = VirtualAlloc(addr, size, alloc, __prot2nt(prot, false))))
       dm.addr = MAP_FAILED;
@@ -447,10 +718,16 @@ textwindows dontinline static struct DirectMap sys_mmap_nt(
     mapsec = 0;
   }
 
-  // nt will whine under many circumstances if we change the execute bit
-  // later using mprotect(). the workaround is to always request execute
-  // and then virtualprotect() it away until we actually need it. please
-  // note that open-nt.c always requests an kNtGenericExecute accessmask
+  // the section is created with the most a view could ever want, since
+  // a view can't be given more than its section allows. the view itself
+  // is mapped with what `prot` asks for and no more, which lands it on
+  // the right page protection without a VirtualProtect() call, a call
+  // that costs about as much as the mapping did. the exception is a
+  // private writable view, which is mapped with execute and then has it
+  // taken away: mprotect() can't remap a view that may hold private
+  // pages, so execute has to be there from the start (see mprotect.c
+  // for the views it can remap). open-nt.c always requests an
+  // kNtGenericExecute accessmask, so the section usually gets execute
   int iscow = 0;
   int page_flags;
   int file_flags;
@@ -459,21 +736,24 @@ textwindows dontinline static struct DirectMap sys_mmap_nt(
       // windows has cow pages but they can't propagate across fork()
       // that means we only get copy-on-write for the root process :(
       page_flags = kNtPageExecuteWritecopy;
-      file_flags = kNtFileMapCopy | kNtFileMapExecute;
       iscow = 1;
     } else {
       if ((__get_pib()->fds.p[fd].flags & O_ACCMODE) == O_RDONLY) {
         page_flags = kNtPageExecuteRead;
-        file_flags = kNtFileMapRead | kNtFileMapExecute;
       } else {
         page_flags = kNtPageExecuteReadwrite;
-        file_flags = kNtFileMapWrite | kNtFileMapExecute;
       }
     }
   } else {
     page_flags = kNtPageExecuteReadwrite;
-    file_flags = kNtFileMapWrite | kNtFileMapExecute;
   }
+  file_flags = __prot2ntview(prot, iscow, (flags & MAP_TYPE) == MAP_SHARED);
+  if (prot & PROT_EXEC)
+    file_flags |= kNtFileMapExecute;
+  if (iscow && (prot & PROT_WRITE))
+    file_flags |= kNtFileMapExecute;
+  if (page_flags == kNtPageExecuteRead && (file_flags & kNtFileMapWrite))
+    return (dm.hand = -1, dm.addr = (void *)eacces(), dm);
 
   int e = errno;
 TryAgain:
@@ -482,13 +762,16 @@ TryAgain:
     if ((dm.addr = MapViewOfFileEx(dm.hand, file_flags, off >> 32, off, size,
                                    addr))) {
       uint32_t oldprot;
-      if (VirtualProtect(dm.addr, size, __prot2nt(prot, iscow), &oldprot))
+      if (__ntview2prot(file_flags) == __prot2nt(prot, iscow) ||
+          VirtualProtect(dm.addr, size, __prot2nt(prot, iscow), &oldprot))
         return dm;
       UnmapViewOfFile(dm.addr);
     }
     CloseHandle(dm.hand);
-  } else if (!(prot & PROT_EXEC) &&               //
-             (file_flags & kNtFileMapExecute) &&  //
+  } else if (!(prot & PROT_EXEC) &&                        //
+             (page_flags == kNtPageExecuteWritecopy ||     //
+              page_flags == kNtPageExecuteReadwrite ||     //
+              page_flags == kNtPageExecuteRead) &&         //
              GetLastError() == kNtErrorAccessDenied) {
     // your file needs to have been O_CREAT'd with exec `mode` bits in
     // order to be mapped with executable permission. we always try to
@@ -539,7 +822,7 @@ static struct DirectMap sys_mmap(void *addr, size_t size, int prot, int flags,
 static int __munmap(char *addr, size_t size) {
 
   // validate arguments
-  if (((uintptr_t)addr & (__gransize - 1)) ||  //
+  if (((uintptr_t)addr & (__pagesize - 1)) ||  //
       !size || (uintptr_t)addr + size < size)
     return einval();
 
@@ -547,11 +830,20 @@ static int __munmap(char *addr, size_t size) {
   __maps_lock();
   __maps_check();
 
-  // on windows we can only unmap whole allocations
+  // on windows only whole allocations can be released. anything less
+  // is decommitted and stays reserved as holes until the rest goes
   if (IsWindows())
     if (!__maps_envelops(addr, size)) {
+      int rc;
+      if (__maps_nt_punchable(addr, size, true)) {
+        __maps_unmark(addr, size);
+        rc = __maps_nt_punch(addr, size);
+        rc |= __maps_nt_release_holes(addr, size);
+      } else {
+        rc = enotsup();
+      }
       __maps_unlock();
-      return enotsup();
+      return rc;
     }
 
   // make this interval dangerous
@@ -594,14 +886,20 @@ static void *__maps_pickaddr(size_t size) {
   size = GRUP(size);
   if (!(map = __maps_last()))
     notpossible;
+  // linux on arm64 puts the stack and the kernel's own picks in the
+  // 48th bit, which is where pointers kept in 47 bits get cut off
+  char *ceiling = IsLinux() && IsAarch64() ? (char *)(1ull << 47) : 0;
   // choose address beneath higher mapping
   for (; map; map = prev) {
     char *min = (char *)(intptr_t)__gransize;
+    char *top = map->addr;
+    if (ceiling && top > ceiling)
+      top = ceiling;
     if ((prev = __maps_prev(map)))
       min = prev->addr + GRUP(prev->size);
-    if (map->addr > min &&  //
-        map->addr - min >= size) {
-      addr = map->addr - size;
+    if (top > min &&  //
+        top - min >= size) {
+      addr = top - size;
       break;
     }
   }
@@ -611,6 +909,8 @@ static void *__maps_pickaddr(size_t size) {
     addr = map->addr + GRUP(map->size);
     intptr_t end = (intptr_t)addr;
     if (ckd_add(&end, end, size))
+      return 0;
+    if (ceiling && (char *)end > ceiling)
       return 0;
   }
   return addr;
@@ -631,9 +931,27 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
     if (IsWindows()) {
       if (!__isfdkind(fd, kFdFile))
         return (void *)eacces();
+      if (__get_pib()->fds.p[fd].flags & _O_PATH)
+        return (void *)ebadf();
       if ((__get_pib()->fds.p[fd].flags & O_ACCMODE) == O_WRONLY)
         return (void *)eacces();
     }
+  }
+
+  // windows: fixed anonymous private memory that lands inside existing
+  // VirtualAlloc() allocations is recommitted in place, see above
+  if (IsWindows() && (flags & MAP_FIXED) && (flags & MAP_ANONYMOUS) &&
+      (flags & MAP_TYPE) != MAP_SHARED) {
+    __maps_lock();
+    if (!__maps_envelops(addr, size) &&
+        __maps_nt_punchable(addr, size, false)) {
+      void *res = __mmap_nt_inplace(addr, size, prot, flags);
+      __maps_unlock();
+      return res;
+    }
+    __maps_unlock();
+    if ((uintptr_t)addr & (__gransize - 1))
+      return (void *)eperm();
   }
 
   // allocate Map object
@@ -800,7 +1118,7 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
   map->hand = res.hand;
   if (IsWindows()) {
     if ((flags & MAP_ANONYMOUS) && (flags & MAP_TYPE) != MAP_SHARED &&
-        prot == PROT_NONE && !fixedmode)
+        (prot == PROT_NONE || (flags & MAP_NORESERVE)) && !fixedmode)
       map->flags |= MAP_NOCOMMIT;
     map->iscow = (flags & MAP_TYPE) != MAP_SHARED && fd != -1;
     map->readonlyfile = (flags & MAP_TYPE) == MAP_SHARED && fd != -1 &&
@@ -828,9 +1146,12 @@ static void *__mmap(char *addr, size_t size, int prot, int flags, int fd,
                     int64_t off) {
   char *res;
 
-  // validate arguments
+  // validate arguments. on windows a fixed mapping may be page aligned
+  // when it lands inside an allocation, since it's then done in place
   if ((uintptr_t)addr & (__gransize - 1))
-    addr = NULL;
+    if (!IsWindows() || !(flags & MAP_FIXED) ||
+        ((uintptr_t)addr & (__pagesize - 1)))
+      addr = NULL;
   if (!addr && (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)))
     return (void *)eperm();
   if ((intptr_t)addr < 0)
@@ -1275,3 +1596,6 @@ int munmap(void *addr, size_t size) {
 }
 
 __weak_reference(mmap, mmap64);
+
+// linux's name for it, which is the one code looks for
+__weak_reference(cosmo_mremap, mremap);

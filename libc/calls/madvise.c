@@ -70,7 +70,7 @@ int madvise(void *addr, size_t len, int advice) {
   if (!IsWindows()) {
     rc = sys_madvise(addr, len, sysadvice);
   } else {
-    errno_t err = sys_posix_madvise_nt(addr, len, sysadvice);
+    errno_t err = __madvise_nt(addr, len, sysadvice, advice == MADV_DONTNEED);
     if (err) {
       errno = err;
       rc = -1;

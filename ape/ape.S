@@ -1075,7 +1075,7 @@ ape_pe:	.ascin	"PE",4
 	.long	0			// Checksum
 	.short	v_ntsubsystem		// Subsystem: 0=Neutral,2=GUI,3=Console
 	.short	v_ntdllchar		// DllCharacteristics
-	.quad	0x10000			// StackReserve
+	.quad	0x100000			// StackReserve, for threads the host creates
 	.quad	0x1000			// StackCommit
 	.quad	0			// HeapReserve
 	.quad	0			// HeapCommit

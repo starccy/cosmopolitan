@@ -5,11 +5,15 @@
 
 /**
  * Returns preferred size and alignment of thread stack.
+ *
+ * This matches what CreateThread() reserves on Windows, and it is what
+ * a new thread gets there. On Linux and XNU pthread_attr_init() follows
+ * glibc instead and uses RLIMIT_STACK (8mb when unlimited).
  */
 #ifndef MODE_DBG
-#define GetStackSize() 81920
+#define GetStackSize() 1048576
 #else
-#define GetStackSize() 163840
+#define GetStackSize() 2097152
 #endif
 
 /**

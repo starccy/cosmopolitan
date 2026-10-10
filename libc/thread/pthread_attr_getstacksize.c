@@ -16,13 +16,15 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/struct/rlimit.internal.h"
 #include "libc/runtime/stack.h"
 #include "libc/thread/thread.h"
 
 /**
  * Returns size of thread stack.
  *
- * This defaults to GetStackSize().
+ * This defaults to RLIMIT_STACK (8mb if unlimited) the way glibc does,
+ * except on windows where it is GetStackSize().
  *
  * @param x will be set to stack size in bytes
  * @return 0 on success, or errno on error
@@ -32,7 +34,7 @@ errno_t pthread_attr_getstacksize(const pthread_attr_t *a, size_t *x) {
   if (a->__stacksize) {
     *x = a->__stacksize;
   } else {
-    *x = GetStackSize();
+    *x = __thread_stack_default();
   }
   return 0;
 }
