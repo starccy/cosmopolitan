@@ -107,6 +107,12 @@ textwindows void TerminateThisProcess(uint32_t dwExitCode) {
   if (_weaken(sys_vfork_nt_exit))
     _weaken(sys_vfork_nt_exit)(dwExitCode);
 
+  // a parent that isn't a cosmo process gets an exit code the way a
+  // shell shows it: N for exit(N), 128 plus the signal for a signal death
+  if (!__get_pib()->ppid_win32)
+    dwExitCode = dwExitCode & 0x7f ? 128 + (dwExitCode & 0x7f)
+                                   : (dwExitCode >> 8) & 0xff;
+
   // delete sig file
   for (long attempt = 0; attempt < 32; ++attempt) {
     if (__get_pib()->sigpending != &__fake_process_signals) {

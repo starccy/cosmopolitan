@@ -216,6 +216,11 @@ textwindows static uint32_t __proc_native_wstatus(uint32_t code) {
   }
 }
 
+// the wait status the exit code of a child process stands for
+textwindows uint32_t __proc_exit_wstatus(int64_t hProcess, uint32_t code) {
+  return __proc_is_native_child(hProcess) ? __proc_native_wstatus(code) : code;
+}
+
 // performs accounting on exited process
 // Drops the ownership fork() took of the child's signal file on its
 // behalf. After execve() the new program owns the file itself if it is

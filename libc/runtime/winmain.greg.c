@@ -49,6 +49,7 @@
 #include "libc/nt/runtime.h"
 #include "libc/nt/synchronization.h"
 #include "libc/nt/signals.h"
+#include "libc/nt/struct/processbasicinformation.h"
 #include "libc/nt/struct/systeminfo.h"
 #include "libc/nt/systeminfo.h"
 #include "libc/nt/thunk/msabi.h"
@@ -88,6 +89,7 @@ __msabi extern typeof(GetEnvironmentVariable) *const __imp_GetEnvironmentVariabl
 __msabi extern typeof(SleepEx) *const __imp_SleepEx;
 __msabi extern typeof(GetFileAttributes) *const __imp_GetFileAttributesW;
 __msabi extern typeof(GetModuleHandleW) *const __imp_GetModuleHandleW;
+__msabi extern typeof(GetProcAddress) *const __imp_GetProcAddress;
 __msabi extern typeof(GetStdHandle) *const __imp_GetStdHandle;
 __msabi extern typeof(GetSystemInfo) *const __imp_GetSystemInfo;
 __msabi extern typeof(GetSystemInfo) *const __imp_GetSystemInfo;
@@ -374,6 +376,38 @@ abi static int WinGetPid(const char16_t *var) {
   return 0;
 }
 
+// reads $_COSMO_PPID, "<win32 pid>:<cosmo pid>" of the cosmo process
+// that started us, and takes it if that's really the process we came
+// from, as a native program in between passes the variable on as is
+abi static void WinGetPpid(struct CosmoPib *pib) {
+  uint32_t len;
+  char16_t val[24], *p;
+  int win32 = 0, cosmo = 0;
+  if (!(len = __imp_GetEnvironmentVariableW(u"_COSMO_PPID", val,
+                                            ARRAYLEN(val))) ||
+      len >= ARRAYLEN(val))
+    return;
+  for (p = val; '0' <= *p && *p <= '9'; ++p)
+    win32 = win32 * 10 + (*p - '0');
+  if (*p++ != ':')
+    return;
+  for (; '0' <= *p && *p <= '9'; ++p)
+    cosmo = cosmo * 10 + (*p - '0');
+  if (!win32 || *p)
+    return;
+  typedef int32_t(__msabi * QueryF)(int64_t, int, void *, uint32_t,
+                                     uint32_t *);
+  QueryF query = (QueryF)__imp_GetProcAddress(
+      __imp_GetModuleHandleW(u"ntdll.dll"), "NtQueryInformationProcess");
+  struct NtProcessBasicInformation pbi;
+  uint32_t got = 0;
+  if (!query || query(-1, 0, &pbi, sizeof(pbi), &got) < 0 ||
+      pbi.InheritedFromUniqueProcessId != win32)
+    return;
+  pib->ppid_win32 = win32;
+  pib->ppid_cosmo = cosmo;
+}
+
 abi dontinline static bool WinMainCwd(struct CosmoPib *pib) {
   char16_t cwd[PATH_MAX];
   uint32_t len = __imp_GetCurrentDirectoryW(PATH_MAX, cwd);
@@ -425,6 +459,7 @@ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
   pib->hPidHold = WinGetPid(u"_COSMO_PID_HOLD");
   if (!(pib->pgid = WinGetPid(u"_COSMO_PGID")))
     pib->pgid = pib->pid;
+  WinGetPpid(pib);
   if (!(pib->sigpending = __sig_own_process(pib->pid)))
     pib->sigpending = &__fake_process_signals;
   if (!WinMainCwd(pib))

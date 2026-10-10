@@ -66,6 +66,7 @@ void __proc_add(struct Proc *);
 void __proc_wipe_and_reset(void);
 intptr_t __proc_worker_handle(void);
 int __proc_harvest(struct Proc *, bool);
+uint32_t __proc_exit_wstatus(int64_t, uint32_t);
 int sys_wait4_nt(int, int *, int, struct rusage *);
 int __proc_setpgid(int, int);
 int __proc_getpgid(int);

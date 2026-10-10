@@ -43,36 +43,6 @@ textwindows static int sys_getppid_nt_ntdll(void) {
   return 0;
 }
 
-static void sys_getppid_nt_extract(const char *str) {
-  int c;
-  int win32 = 0;
-  int cosmo = 0;
-  if (str) {
-    for (;;) {
-      c = *str;
-      if (!('0' <= c && c <= '9'))
-        break;
-      win32 *= 10;
-      win32 += c - '0';
-      ++str;
-    }
-    if (win32 && *str++ == ':') {
-      for (;;) {
-        c = *str;
-        if (!('0' <= c && c <= '9'))
-          break;
-        cosmo *= 10;
-        cosmo += c - '0';
-        ++str;
-      }
-      if (win32 == sys_getppid_nt_ntdll()) {
-        __get_pib()->ppid_win32 = win32;
-        __get_pib()->ppid_cosmo = cosmo;
-      }
-    }
-  }
-}
-
 textwindows int sys_getppid_nt(void) {
   if (__get_pib()->ppid_cosmo)
     return __get_pib()->ppid_cosmo;
@@ -88,10 +58,4 @@ textwindows int sys_getppid_nt_win32(void) {
 textwindows void sys_getppid_nt_wipe(int win32, int cosmo) {
   __get_pib()->ppid_win32 = win32;
   __get_pib()->ppid_cosmo = cosmo;
-}
-
-__attribute__((__constructor__(90))) static void sys_getppid_nt_init(void) {
-  if (!IsWindows())
-    return;
-  sys_getppid_nt_extract(getenv("_COSMO_PPID"));
 }
