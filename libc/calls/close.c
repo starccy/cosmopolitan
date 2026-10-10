@@ -25,6 +25,7 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/atomic.h"
+#include "libc/intrin/hostlibc.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
@@ -69,6 +70,9 @@ static int close_impl(int fd) {
   // atomically close file descriptor table entry
   if (IsWindows() && _weaken(__epoll_forget))
     _weaken(__epoll_forget)(fd);
+  // host C runtimes let go of their stdin, stdout or stderr as well
+  if (IsWindows() && fd <= 2 && !__vforked && _weaken(__host_std_closing))
+    _weaken(__host_std_closing)(fd);
   switch (atomic_exchange(&f->kind, kFdReserved)) {
     case kFdEmpty:
       if (IsWindows() || IsMetal()) {
@@ -141,6 +145,8 @@ static int close_impl(int fd) {
     case kFdSocket:
       if (f->scm && _weaken(__scm_forget_nt))
         _weaken(__scm_forget_nt)(f);
+      if (f->udg && _weaken(__udg_close_nt))
+        _weaken(__udg_close_nt)(f);
       if (!__vforked || f->was_created_during_vfork)
         if (_weaken(sys_closesocket_nt))
           rc = _weaken(sys_closesocket_nt)(f);

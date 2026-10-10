@@ -34,6 +34,18 @@ int __xoflags(int flags) {
 
   if (IsLinux()) {
     flags2 = flags;
+  } else if (IsXnu() && (flags & _O_PATH)) {
+    // O_EVTONLY touches no data, and O_NONBLOCK keeps a fifo from
+    // waiting for a writer; openat() clears it again. O_SYMLINK opens
+    // a link as itself, which is what O_PATH|O_NOFOLLOW means. the
+    // access mode and the creation flags are ignored like on linux
+    flags2 = 0x00008000 | 4;
+    if (flags & O_NOFOLLOW)
+      flags2 |= 0x00200000;
+    if (flags & O_DIRECTORY)
+      flags2 |= 0x00100000;
+    if (flags & O_CLOEXEC)
+      flags2 |= 0x01000000;
   } else {
     flags2 = flags & O_ACCMODE;
     if (flags & O_CREAT)
@@ -109,8 +121,7 @@ int __xoflags(int flags) {
     }
     if ((flags & O_SYNC) == O_SYNC)
       flags2 |= 0x00000080;
-    // a plain open, minus the ability to reach a file the caller can't
-    // read; better than failing callers that chose O_PATH at compile time
+    // a plain open on the bsds nobody targets
     if (flags & _O_PATH) {
       // do nothing
     }

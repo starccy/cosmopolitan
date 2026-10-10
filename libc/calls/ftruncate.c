@@ -24,6 +24,7 @@
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/strace.h"
+#include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
@@ -76,6 +77,8 @@ int ftruncate(int fd, int64_t length) {
     rc = sys_ftruncate(fd, length, length);
     if (IsNetbsd() && rc == -1 && errno == ENOSPC)
       errno = EFBIG;  // POSIX doesn't specify ENOSPC for ftruncate()
+  } else if (!__isfdopen(fd) || (__get_pib()->fds.p[fd].flags & _O_PATH)) {
+    rc = ebadf();
   } else if (__isfdopen(fd)) {
     rc = sys_ftruncate_nt(__get_pib()->fds.p[fd].handle, length);
   } else {

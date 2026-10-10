@@ -42,11 +42,17 @@
 #include "libc/nt/enum/fileflagandattributes.h"
 #include "libc/nt/enum/filesharemode.h"
 #include "libc/nt/enum/filetype.h"
+#include "libc/nt/enum/fileinformationclass.h"
+#include "libc/nt/enum/status.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/files.h"
+#include "libc/nt/nt/file.h"
+#include "libc/nt/ntdll.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/byhandlefileinformation.h"
-#include "libc/nt/struct/win32finddata.h"
+#include "libc/nt/struct/fileidbothdirectoryinformation.h"
+#include "libc/nt/struct/iostatusblock.h"
+#include "libc/nt/synchronization.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/str/str.h"
@@ -57,6 +63,7 @@
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/s.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/sysv/errno.h"
 #include "libc/sysv/pib.h"
 #include "libc/thread/posixthread.internal.h"
 #include "libc/thread/thread.h"
@@ -112,9 +119,15 @@ struct dirstream {
       bool isroot;
       bool gotdot;
       bool gotdotdot;
+      bool restart;
       uint32_t drives;
       uint32_t virts;
-      struct NtWin32FindData windata;
+      uint32_t attrs;    // current entry
+      uint64_t fileid;   // current entry
+      uint64_t selfid;   // the directory itself
+      char *ntbuf;       // one NtQueryDirectoryFile batch
+      uint32_t ntbuf_next;
+      char16_t entname[260];
       char16_t name16[PATH_MAX];
       uint32_t name16len;
     };
@@ -166,9 +179,62 @@ static void unlockdir(DIR *dir) {
     pthread_mutex_unlock(&dir->lock);
 }
 
-textwindows dontinline static int fdopendir_nt(DIR *res, int fd) {
-  if (!__isfdkind(fd, kFdFile))
-    return ebadf();
+// bytes per NtQueryDirectoryFile() call: a few hundred entries
+#define DIRSTREAM_NTBUF 32768
+
+// fetches the next batch of entries from the directory handle.
+// returns 1 with entries, 0 at the end, -1 w/ errno
+textwindows static int readdir_nt_fill(DIR *dir) {
+  struct NtIoStatusBlock iosb;
+  NtStatus st = NtQueryDirectoryFile(
+      __get_pib()->fds.p[dir->fd].handle, 0, 0, 0, &iosb,
+      dir->ntbuf,
+      DIRSTREAM_NTBUF, kNtFileIdBothDirectoryInformation, false, 0,
+      dir->restart);
+  if (st == kNtStatusPending) {
+    // an overlapped handle completes on itself when no event is given
+    WaitForSingleObject(__get_pib()->fds.p[dir->fd].handle, -1u);
+    st = iosb.Status;
+  }
+  dir->restart = false;
+  if (st == 0x80000006u ||  // STATUS_NO_MORE_FILES
+      st == 0xC000000Fu)    // STATUS_NO_SUCH_FILE (empty on some fs)
+    return 0;
+  if (st & 0x80000000u) {
+    if (st == 0xC0000103u ||  // STATUS_NOT_A_DIRECTORY
+        st == 0xC000000Du)    // STATUS_INVALID_PARAMETER
+      return enotdir();
+    errno = __winerrno(RtlNtStatusToDosError(st));
+    return -1;
+  }
+  dir->ntbuf_next = 0;
+  return 1;
+}
+
+// loads the next raw entry into attrs, fileid and entname
+textwindows static int readdir_nt_next(DIR *dir) {
+  int rc;
+  if (dir->ntbuf_next == -1u)
+    if ((rc = readdir_nt_fill(dir)) <= 0)
+      return rc;
+  struct NtFileIdBothDirectoryInformation *e =
+      (struct NtFileIdBothDirectoryInformation *)(dir->ntbuf + dir->ntbuf_next);
+  dir->ntbuf_next = e->NextEntryOffset ? dir->ntbuf_next + e->NextEntryOffset
+                                       : -1u;
+  dir->attrs = e->FileAttributes;
+  dir->fileid = e->FileId;
+  size_t n = e->FileNameLength / sizeof(char16_t);
+  if (n >= ARRAYLEN(dir->entname))
+    n = ARRAYLEN(dir->entname) - 1;
+  memcpy(dir->entname, e->FileName, n * sizeof(char16_t));
+  dir->entname[n] = 0;
+  return 1;
+}
+
+// asks for the directory's path, which costs about as much as the open
+// did, so it's only done for a directory whose file id says it may be a
+// volume root: ntfs keeps the root in mft record 5, fat reports 0
+textwindows static int fdopendir_nt_root(DIR *res, int fd) {
   res->name16len = GetFinalPathNameByHandle(
       __get_pib()->fds.p[fd].handle, res->name16, ARRAYLEN(res->name16),
       kNtFileNameNormalized | kNtVolumeNameDos);
@@ -176,28 +242,49 @@ textwindows dontinline static int fdopendir_nt(DIR *res, int fd) {
     return __winerr();
   if (res->name16len + 2 + 1 > ARRAYLEN(res->name16))
     return enametoolong();
-  if (!__get_pib()->fds.p[fd].used_explicit_drive_letter) {
-    char unixpath[PATH_MAX];
-    if (__mkunixpath(res->name16, unixpath) == -1)
-      return -1;
-    if ((res->isroot = (unixpath[0] == '/' && !unixpath[1]))) {
-      res->drives = GetLogicalDrives();
-      res->virts = GetVirtualRoots();
-    }
+  char unixpath[PATH_MAX];
+  if (__mkunixpath(res->name16, unixpath) == -1)
+    return -1;
+  if ((res->isroot = (unixpath[0] == '/' && !unixpath[1]))) {
+    res->drives = GetLogicalDrives();
+    res->virts = GetVirtualRoots();
   }
-  if (res->name16len > 1 && res->name16[res->name16len - 1] != u'\\')
-    res->name16[res->name16len++] = u'\\';
-  res->name16[res->name16len++] = u'*';
-  res->name16[res->name16len] = u'\0';
-  if ((res->hand = FindFirstFile(res->name16, &res->windata)) == -1)
-    return __fix_enotdir(__winerr(), res->name16);
   return 0;
 }
 
-textwindows static uint8_t GetNtDirentType(struct NtWin32FindData *w) {
-  if (w->dwFileAttributes & kNtFileAttributeReparsePoint)
+textwindows dontinline static int fdopendir_nt(DIR *res, int fd) {
+  if (!__isfdkind(fd, kFdFile) || (__get_pib()->fds.p[fd].flags & _O_PATH))
+    return ebadf();
+  struct NtByHandleFileInformation wst;
+  if (!GetFileInformationByHandle(__get_pib()->fds.p[fd].handle, &wst))
+    return __winerr();
+  if (!(wst.dwFileAttributes & kNtFileAttributeDirectory))
+    return enotdir();
+  res->selfid = (uint64_t)wst.nFileIndexHigh << 32 | wst.nFileIndexLow;
+  uint64_t index = res->selfid & 0xffffffffffff;
+  if (!__get_pib()->fds.p[fd].used_explicit_drive_letter &&
+      (index == 5 || index == 0))
+    if (fdopendir_nt_root(res, fd))
+      return -1;
+  res->hand = -1;
+  if (!(res->ntbuf = malloc(DIRSTREAM_NTBUF)))
+    return -1;
+  res->ntbuf_next = -1u;
+  res->restart = true;
+  // the first batch now, so a handle that isn't a directory fails here
+  int rc = readdir_nt_fill(res);
+  if (rc < 0) {
+    free(res->ntbuf);
+    return -1;
+  }
+  res->isdone = !rc;
+  return 0;
+}
+
+textwindows static uint8_t GetNtDirentType(uint32_t attrs) {
+  if (attrs & kNtFileAttributeReparsePoint)
     return DT_LNK;
-  if (w->dwFileAttributes & kNtFileAttributeDirectory)
+  if (attrs & kNtFileAttributeDirectory)
     return DT_DIR;
   return DT_REG;
 }
@@ -221,9 +308,16 @@ textwindows dontinline static struct dirent *readdir_nt(DIR *dir) {
   struct NtByHandleFileInformation wst;
 
 TryAgain:
-  while (!dir->isdone &&
-         (dir->windata.dwFileAttributes & kNtFileAttributeSystem))
-    dir->isdone = !FindNextFile(dir->hand, &dir->windata);
+  while (!dir->isdone) {
+    int rc = readdir_nt_next(dir);
+    if (rc < 0)
+      return NULL;
+    if (!rc) {
+      dir->isdone = true;
+    } else if (!(dir->attrs & kNtFileAttributeSystem)) {
+      break;
+    }
+  }
   if (dir->isdone) {
     for (;;) {
       if (dir->drives) {
@@ -263,16 +357,20 @@ TryAgain:
       // UNIX always yields "." and ".."
       if (!dir->gotdot) {
         // Windows won't yield "." for drive directory
-        dir->windata.cFileName[0] = '.';
-        dir->windata.cFileName[1] = 0;
+        dir->entname[0] = '.';
+        dir->entname[1] = 0;
+        dir->attrs = kNtFileAttributeDirectory;
+        dir->fileid = 0;
         goto LetsGo;
       }
       if (!dir->gotdotdot) {
         // Windows won't yield ".." for drive directory
         // Windows won't yield ".." for drive direct subdirectories
-        dir->windata.cFileName[0] = '.';
-        dir->windata.cFileName[1] = '.';
-        dir->windata.cFileName[2] = 0;
+        dir->entname[0] = '.';
+        dir->entname[1] = '.';
+        dir->entname[2] = 0;
+        dir->attrs = kNtFileAttributeDirectory;
+        dir->fileid = 0;
         goto LetsGo;
       }
       return NULL;
@@ -280,73 +378,28 @@ TryAgain:
   }
 
 LetsGo:;
-  // join absolute path that's already normalized
-  uint64_t ino = 0;
-  char16_t jp[PATH_MAX];
-  size_t i = dir->name16len - 1;  // foo\* -> foo\ (strip star)
+  // the listing carries each entry's file id, which is what stat()
+  // reports as the inode, for "." and ".." too (the parent's record).
+  // a synthesized "." or ".." on a root has none: "." is the directory
+  // itself, ".." on the cosmos root stays the root, as on unix
+  uint64_t ino = dir->fileid;
   bool pretend_this_file_doesnt_exist = false;
-  memcpy(jp, dir->name16, i * sizeof(char16_t));
-  char16_t *p = dir->windata.cFileName;
+  char16_t *p = dir->entname;
   if (p[0] == u'.' && p[1] == u'\0') {
-    // join("foo\\", ".") -> "foo\\"
     dir->gotdot = true;
+    if (!ino)
+      ino = dir->selfid;
   } else if (p[0] == u'.' && p[1] == u'.' && p[2] == u'\0') {
     dir->gotdotdot = true;
-    if (i == 7 &&         //
-        jp[0] == '\\' &&  //
-        jp[1] == '\\' &&  //
-        jp[2] == '?' &&   //
-        jp[3] == '\\' &&  //
-        jp[5] == ':' &&   //
-        jp[6] == '\\') {
-      if (kToUpper[jp[4] & 255] == kToUpper[__getcosmosdrive() & 255]) {
-        // e.g. \\?\B:\ stays the same (assuming $COSMOSDRIVE = "B:")
-      } else {
-        jp[4] = __getcosmosdrive();
-      }
-    } else {
-      --i;  // foo\bar\ -> foo\ (parent)
-      while (i && jp[i - 1] != '\\')
-        --i;
-    }
-  } else {
-    while (*p) {
-      if (i + 1 < ARRAYLEN(jp)) {
-        jp[i++] = *p++;
-      } else {
-        pretend_this_file_doesnt_exist = true;
-        goto GiveUpOnGettingInode;
-      }
-    }
-  }
-  jp[i] = u'\0';
-
-  // get inode such that it's consistent with stat()
-  // it's important that we not follow symlinks here
-  intptr_t fh =
-      CreateFile(jp, kNtFileReadAttributes,
-                 kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, 0,
-                 kNtOpenExisting,
-                 kNtFileAttributeNormal | kNtFileFlagBackupSemantics |
-                     kNtFileFlagOpenReparsePoint,
-                 0);
-  if (fh != -1) {
-    if (GetFileInformationByHandle(fh, &wst))
-      ino = (uint64_t)wst.nFileIndexHigh << 32 | wst.nFileIndexLow;
-    CloseHandle(fh);
-  } else {
-    // ignore errors and set inode to zero
-    STRACE("failed to get inode of path join(%#hs, %#hs) -> %#hs %m",
-           dir->name16, dir->windata.cFileName, jp);
-    pretend_this_file_doesnt_exist = true;
+    if (!ino)
+      ino = dir->selfid;
   }
 
-GiveUpOnGettingInode:
   // create result object
   dir->ent.d_ino = ino;
   dir->ent.d_off = dir->index;
   axdx_t tpr = tprecode16to8(dir->ent.d_name, sizeof(dir->ent.d_name),
-                             dir->windata.cFileName);
+                             dir->entname);
   if (tpr.ax >= sizeof(dir->ent.d_name) - 1)
     pretend_this_file_doesnt_exist = true;
   if (dir->isroot && tpr.ax == 1 && isalpha(dir->ent.d_name[0]))
@@ -358,8 +411,7 @@ GiveUpOnGettingInode:
       if ((dir->virts & (1u << i)) &&
           !strcasecmp(dir->ent.d_name, kVirtualRoots[i]))
         pretend_this_file_doesnt_exist = true;
-  dir->ent.d_type = GetNtDirentType(&dir->windata);
-  dir->isdone = !FindNextFile(dir->hand, &dir->windata);
+  dir->ent.d_type = GetNtDirentType(dir->attrs);
   if (pretend_this_file_doesnt_exist)
     goto TryAgain;
   return &dir->ent;
@@ -722,8 +774,7 @@ int closedir(DIR *dir) {
     if (dir->fd != -1)
       rc |= close(dir->fd);
     if (IsWindows() && !dir->iszip && !dir->isproc)
-      if (!FindClose(dir->hand))
-        rc = __winerr();
+      free(dir->ntbuf);
     free(dir);
   }
   return rc;
@@ -768,14 +819,10 @@ static void rewinddir_impl(DIR *dir) {
       dir->drives = GetLogicalDrives();
       dir->virts = GetVirtualRoots();
     }
-    FindClose(dir->hand);
-    if ((dir->hand = FindFirstFile(dir->name16, &dir->windata)) != -1) {
-      dir->isdone = false;
-      dir->index = 0;
-    } else {
-      dir->isdone = true;
-      __winerr();
-    }
+    dir->isdone = false;
+    dir->restart = true;
+    dir->ntbuf_next = -1u;
+    dir->index = 0;
   }
 }
 

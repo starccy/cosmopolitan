@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/stdio/syscall.h"
 #include "libc/calls/calls.h"
+#include "libc/calls/struct/statx.h"
 #include "libc/calls/struct/timespec.h"
 #include "libc/cosmotime.h"
 #include "libc/cosmo.h"
@@ -91,6 +92,7 @@ static long sys_futex_emul(va_list va) {
  * - `SYS_getcpu`
  * - `SYS_futex` (wait, wake and their whole-bitset forms)
  * - `SYS_fchmod`, `SYS_fchown`, `SYS_fchmodat`, `SYS_copy_file_range`
+ * - `SYS_renameat2`, `SYS_syncfs`, `SYS_statx`
  *
  * @return system call result, or -1 w/ errno
  */
@@ -144,6 +146,60 @@ long syscall(long number, ...) {
       unsigned flags = va_arg(va, unsigned);
       va_end(va);
       return copy_file_range(in, inoff, out, outoff, len, flags);
+    }
+    case SYS_eventfd2: {
+      va_list va;
+      va_start(va, number);
+      unsigned initval = va_arg(va, unsigned);
+      int flags = va_arg(va, int);
+      va_end(va);
+      return eventfd(initval, flags);
+    }
+#ifdef SYS_eventfd
+    case SYS_eventfd: {
+      va_list va;
+      va_start(va, number);
+      unsigned initval = va_arg(va, unsigned);
+      va_end(va);
+      return eventfd(initval, 0);
+    }
+#endif
+    case SYS_memfd_create: {
+      va_list va;
+      va_start(va, number);
+      const char *name = va_arg(va, const char *);
+      unsigned flags = va_arg(va, unsigned);
+      va_end(va);
+      return memfd_create(name, flags);
+    }
+    case SYS_renameat2: {
+      va_list va;
+      va_start(va, number);
+      int olddirfd = va_arg(va, int);
+      const char *oldpath = va_arg(va, const char *);
+      int newdirfd = va_arg(va, int);
+      const char *newpath = va_arg(va, const char *);
+      unsigned flags = va_arg(va, unsigned);
+      va_end(va);
+      return renameat2(olddirfd, oldpath, newdirfd, newpath, flags);
+    }
+    case SYS_syncfs: {
+      va_list va;
+      va_start(va, number);
+      int fd = va_arg(va, int);
+      va_end(va);
+      return syncfs(fd);
+    }
+    case SYS_statx: {
+      va_list va;
+      va_start(va, number);
+      int dirfd = va_arg(va, int);
+      const char *path = va_arg(va, const char *);
+      int flags = va_arg(va, int);
+      unsigned mask = va_arg(va, unsigned);
+      struct statx *out = va_arg(va, struct statx *);
+      va_end(va);
+      return statx(dirfd, path, flags, mask, out);
     }
     case SYS_gettid:
       return gettid();

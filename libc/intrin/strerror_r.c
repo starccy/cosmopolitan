@@ -16,11 +16,9 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
-#include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/fmt/itoa.h"
 #include "libc/fmt/magnumstrs.internal.h"
-#include "libc/nt/runtime.h"
 #include "libc/str/str.h"
 
 /**
@@ -48,18 +46,6 @@ errno_t strerror_r(int err, char *buf, size_t size) {
   }
   while ((c = *msg++) && p + 1 < pe) {
     *p++ = c;
-  }
-
-  // copy windows error information
-  if (IsWindows()) {
-    uint32_t winerr;
-    if ((winerr = GetLastError()) != err && winerr) {
-      stpcpy(FormatUint32(stpcpy(tmp, " (win32 error "), winerr), ")");
-      msg = tmp;
-      while ((c = *msg++) && p + 1 < pe) {
-        *p++ = c;
-      }
-    }
   }
 
   // force nul terminator

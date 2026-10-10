@@ -18,8 +18,16 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/ctype.h"
 #include "libc/limits.h"
+#include "libc/nt/createfile.h"
+#include "libc/nt/enum/accessmask.h"
+#include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/fileflagandattributes.h"
+#include "libc/nt/enum/filesharemode.h"
+#include "libc/nt/enum/io.h"
 #include "libc/nt/files.h"
+#include "libc/nt/runtime.h"
+#include "libc/nt/struct/byhandlefileinformation.h"
+#include "libc/nt/struct/win32finddata.h"
 #include "libc/nt/systeminfo.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
@@ -234,6 +242,16 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
   if (isalpha(p[0]) && p[1] == ':' && p[2] == '/') {
     p[1] = p[0];
     p[0] = '/';
+  }
+
+  // normalize an absolute unix path as a whole before the drive in it
+  // is looked at, so ".." stops at "/" and "/c/.." is "/", like unix
+  if (p[0] == '/' && p[1] != '/') {
+    n = __normunixpath(p, n);
+    if (!n) {
+      p[n++] = '/';
+      p[n] = 0;
+    }
   }
 
   // turn root path "/" into "\\?\c:\" depending on $SYSTEMDRIVE
@@ -471,12 +489,157 @@ dontinline textwindows static const char *__rewritepath(const char *path,
   return path;
 }
 
+// whether path has a "." or ".." component after one that names
+// something, the only kind lexical normalization can get wrong. unc,
+// device and nt namespace paths are left to the lexical rules
+textwindows static bool __hasinnerdots(const char *p) {
+  if ((p[0] == '/' || p[0] == '\\') &&
+      (p[1] == '/' || p[1] == '\\' || (p[1] == '?' && p[2] == '?')))
+    return false;
+  bool named = false;
+  for (const char *s = p;;) {
+    while (*s == '/' || *s == '\\')
+      ++s;
+    const char *b = s;
+    while (*s && *s != '/' && *s != '\\')
+      ++s;
+    size_t n = s - b;
+    if (!n)
+      return false;
+    bool dots = b[0] == '.' && (n == 1 || (n == 2 && b[1] == '.'));
+    if (dots && named)
+      return true;
+    if (!dots && b[n - 1] != ':')
+      named = true;
+  }
+}
+
+// whether the reparse point at path is a symbolic link, as opposed to
+// a junction or a volume mount point, which stand in for directories
+textwindows bool __nt_issymlink(const char16_t *path) {
+  struct NtWin32FindData fd;
+  int64_t h;
+  if ((h = FindFirstFile(path, &fd)) == -1)
+    return false;
+  FindClose(h);
+  return (fd.dwFileAttributes & kNtFileAttributeReparsePoint) &&
+         fd.dwReserved0 == kNtIoReparseTagSymlink;
+}
+
+// checks that base, what comes before a "." or ".." component, is a
+// directory, the way a unix kernel does as it walks the path. when it
+// is a symbolic link and ".." follows, base is replaced by the link's
+// target, which ".." then climbs out of. returns the new length of
+// base, or -1 w/ errno
+textwindows static int __checkdotbase(int64_t dirhand, char base[PATH_MAX],
+                                      int baselen, bool dotdot,
+                                      bool used_explicit_drive_letter) {
+  char16_t base16[PATH_MAX];
+  if (__normdospath(dirhand, base, base16, used_explicit_drive_letter) == -1)
+    return -1;
+  uint32_t attrs;
+  if ((attrs = GetFileAttributes(base16)) == -1u)
+    return __fix_enotdir(__winerr(), base16);
+  if (!(attrs & kNtFileAttributeReparsePoint))
+    return (attrs & kNtFileAttributeDirectory) ? baselen : enotdir();
+  int64_t h;
+  if ((h = CreateFile(base16, kNtFileReadAttributes,
+                      kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete,
+                      0, kNtOpenExisting, kNtFileFlagBackupSemantics, 0)) ==
+      -1)
+    return __fix_enotdir(__winerr(), base16);
+  int rc = baselen;
+  struct NtByHandleFileInformation wst;
+  if (!GetFileInformationByHandle(h, &wst)) {
+    rc = __winerr();
+  } else if (!(wst.dwFileAttributes & kNtFileAttributeDirectory)) {
+    rc = enotdir();
+  } else if (dotdot && __nt_issymlink(base16)) {
+    uint32_t n = GetFinalPathNameByHandle(
+        h, base16, PATH_MAX, kNtFileNameNormalized | kNtVolumeNameDos);
+    if (!n) {
+      rc = __winerr();
+    } else if (n >= PATH_MAX) {
+      rc = enametoolong();
+    } else {
+      rc = __mkunixpath(base16, base);
+    }
+  }
+  CloseHandle(h);
+  return rc;
+}
+
+// rebuilds path component by component, checking what comes before
+// each inner "." and ".." with __checkdotbase(). the result is left in
+// out, where lexical normalization gives what a unix kernel would
+dontinline textwindows static const char *__resolvedots(
+    int64_t dirhand, const char *path, char out[static PATH_MAX],
+    bool used_explicit_drive_letter) {
+  char w[PATH_MAX];
+  int n = 0;
+  bool named = false;
+  const char *s = path;
+  if (*s == '/' || *s == '\\')
+    w[n++] = '/';
+  w[n] = 0;
+  for (;;) {
+    while (*s == '/' || *s == '\\')
+      ++s;
+    const char *b = s;
+    while (*s && *s != '/' && *s != '\\')
+      ++s;
+    size_t m = s - b;
+    if (!m)
+      break;
+    bool dots = b[0] == '.' && (m == 1 || (m == 2 && b[1] == '.'));
+    if (dots && named)
+      if ((n = __checkdotbase(dirhand, w, n, m == 2,
+                              used_explicit_drive_letter)) == -1)
+        return 0;
+    if (!dots && b[m - 1] != ':')
+      named = true;
+    if (n + 1 + m + 1 > PATH_MAX) {
+      enametoolong();
+      return 0;
+    }
+    if (n && w[n - 1] != '/')
+      w[n++] = '/';
+    memcpy(w + n, b, m);
+    w[n += m] = 0;
+  }
+  size_t len = strlen(path);
+  if (len && (path[len - 1] == '/' || path[len - 1] == '\\')) {
+    if (n + 2 > PATH_MAX) {
+      enametoolong();
+      return 0;
+    }
+    w[n++] = '/';
+    w[n] = 0;
+  }
+  memcpy(out, w, n + 1);
+  return out;
+}
+
+/**
+ * Applies the rewrites a unix path gets before conversion, "/tmp" to
+ * the host's temp directory above all, for whoever converts a path some
+ * other way. `buf` is PATH_MAX bytes. Returns `path` or `buf`, or null
+ * with errno.
+ */
+textwindows const char *__rewriteunixpath(const char *path, char *buf) {
+  return __rewritepath(path, buf);
+}
+
 textwindows int __mkntpathath(int64_t dirhand, const char *path,
                               char16_t file[static PATH_MAX],
                               bool used_explicit_drive_letter) {
 
   char rewritten[PATH_MAX];
   if (!(path = __rewritepath(path, rewritten)))
+    return -1;
+  if (__hasinnerdots(path) &&
+      !(path = __resolvedots(dirhand, path, rewritten,
+                             used_explicit_drive_letter)))
     return -1;
 
   // __mkntpath() normalizes away the trailing slash, so we need to
@@ -562,17 +725,15 @@ textwindows int __mkntpathath(int64_t dirhand, const char *path,
  * always use UTF-8. So the first thing UNIX system call wrappers do, on
  * Windows, is call this function.
  *
- * This function does pure normalization. UNIX kernels normally do i/o
- * checks as they're normalizing a path. For example, if `foo` is a
- * regular file, and you try to open `foo/bar/../` then Cosmo Windows
- * will pretend nothing's wrong, since this routine normalized it away,
- * however a UNIX kernel would notice that `bar` isn't an existant dir
- * during the normalization process. Cosmopolitan doesn't polyfill this
- * error checking. However an exception is made for one particularly
- * important case, which is paths that have a trailing slash. If you
- * pass this function `"foo/"` rather than `"foo"` then a quick i/o
- * check will be performed to ensure `foo` is either a directory or a
- * directory symlink; otherwise ENOTDIR will be raised.
+ * UNIX kernels check each component as they walk a path, and so does
+ * this function where lexical normalization would give a different
+ * answer: whatever comes before an inner `.` or `..` must be an
+ * existing directory (`foo/bar/..` raises ENOENT when `foo/bar` is
+ * missing and ENOTDIR when `foo` is a regular file), and `..` after a
+ * symbolic link climbs out of the link's target. Paths without such
+ * components cost no i/o here. A path with a trailing slash also gets
+ * a quick check that it names a directory or a directory symlink,
+ * otherwise ENOTDIR is raised.
  *
  * You should use UNIX style paths with Cosmopolitan's UNIX system call
  * wrappers. However this routine ensures you can pass DOS or UNC style

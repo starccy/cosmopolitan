@@ -138,11 +138,9 @@ TryAgain:
       flags |= AT_SYMLINK_NOFOLLOW;
       goto TryAgain;
     } else {
-      rc = __winerr();
+      rc = __fix_enotdir(__winerr(), path16);
     }
   }
   ALLOW_SIGNALS;
-
-  // mop up errors
-  return __fix_enotdir(rc, path16);
+  return rc;
 }

@@ -11,6 +11,14 @@ COSMOPOLITAN_C_START_
 #define SYS_fchown          __NR_linux_fchown
 #define SYS_fchmodat        __NR_linux_fchmodat
 #define SYS_copy_file_range __NR_linux_copy_file_range
+#define SYS_eventfd2        __NR_linux_eventfd2
+#define SYS_memfd_create    __NR_linux_memfd_create
+#define SYS_renameat2       __NR_linux_renameat2
+#define SYS_syncfs          __NR_linux_syncfs
+#define SYS_statx           __NR_linux_statx
+#ifdef __x86_64__
+#define SYS_eventfd         __NR_linux_eventfd
+#endif
 
 long syscall(long, ...) libcesque;
 

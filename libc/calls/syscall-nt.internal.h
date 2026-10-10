@@ -25,6 +25,7 @@ int sys_getpriority_nt(int, unsigned);
 int sys_kill_nt(int, int);
 int sys_linkat_nt(int, const char *, int, const char *);
 int sys_posix_madvise_nt(char *, size_t, int);
+int __madvise_nt(char *, size_t, int, bool);
 int sys_mkdirat_nt(int, const char *, uint32_t);
 int sys_msync_nt(char *, size_t, int);
 int sys_open_nt(int, const char *, uint32_t, int32_t) __wur;

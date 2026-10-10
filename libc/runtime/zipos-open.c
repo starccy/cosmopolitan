@@ -32,6 +32,7 @@
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/at.h"
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/map.h"
 #include "libc/sysv/consts/o.h"
@@ -81,15 +82,31 @@ static int __zipos_mkfd(int minfd) {
   } else {
     cmd = F_DUPFD_CLOEXEC;
   }
-  int fd, e = errno;
-  if ((fd = __sys_fcntl(2, cmd, minfd)) != -1) {
-    return fd;
-  } else if (errno == EINVAL) {
-    errno = e;
-    return __fixupnewfd(__sys_fcntl(2, F_DUPFD, minfd), O_CLOEXEC);
-  } else {
-    return fd;
+  // the kernel's number is taken by duplicating a descriptor that's
+  // open, standard error unless the program was started without it
+  int fd, src, tmp = -1, e = errno;
+  for (src = 2; src >= 0; --src) {
+    if ((fd = __sys_fcntl(src, cmd, minfd)) != -1)
+      return fd;
+    if (errno != EBADF)
+      break;
   }
+  if (src < 0) {
+    if ((tmp = sys_openat(AT_FDCWD, "/dev/null", O_RDONLY, 0)) == -1)
+      return -1;
+    src = tmp;
+    if ((fd = __sys_fcntl(src, cmd, minfd)) != -1) {
+      sys_close(tmp);
+      return fd;
+    }
+  }
+  if (errno == EINVAL) {
+    errno = e;
+    fd = __fixupnewfd(__sys_fcntl(src, F_DUPFD, minfd), O_CLOEXEC);
+  }
+  if (tmp != -1)
+    sys_close(tmp);
+  return fd;
 }
 
 static int __zipos_setfd(int fd, struct ZiposHandle *h, unsigned flags) {

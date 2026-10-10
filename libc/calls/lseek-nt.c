@@ -19,6 +19,7 @@
 #include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/dce.h"
 #include "libc/intrin/fds.h"
 #include "libc/nt/enum/filetype.h"
 #include "libc/nt/files.h"
@@ -79,7 +80,17 @@ textwindows int64_t sys_lseek_nt(int fd, int64_t offset, int whence) {
     int64_t res;
     if (f->cursor)
       __cursor_lock(f->cursor);
-    if ((res = Seek(f, offset, whence)) != -1)
+    if (SupportsWindows() && __nt_syncio(f)) {
+      // see __nt_syncio(); SEEK_SET/CUR/END are FILE_BEGIN/CURRENT/END
+      if ((unsigned)whence > 2) {
+        res = einval();
+      } else if (!SetFilePointerEx(f->handle, offset, &res, whence)) {
+        res = __winerr();
+      }
+    } else {
+      res = Seek(f, offset, whence);
+    }
+    if (res != -1)
       if (f->cursor)
         f->cursor->shared->pointer = res;
     if (f->cursor)

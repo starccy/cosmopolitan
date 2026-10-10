@@ -85,7 +85,7 @@ textwindows int sys_unlinkat_nt(int dirfd, const char *path, int flags) {
     uint32_t dwErrorCode = GetLastError();
     if (dwFileAttrs & kNtFileAttributeReadonly)
       SetFileAttributes(path16, dwFileAttrs);
-    errno = __errno_windows2linux(dwErrorCode);
+    errno = __winerrno(dwErrorCode);
     return __fix_enotdir(-1, path16);
   }
   return 0;

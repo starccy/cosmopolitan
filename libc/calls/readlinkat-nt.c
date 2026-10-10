@@ -19,12 +19,15 @@
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/calls/internal.h"
+#include "libc/sysv/pib.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/nt/createfile.h"
 #include "libc/nt/enum/accessmask.h"
 #include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/fileflagandattributes.h"
 #include "libc/nt/enum/filesharemode.h"
+#include "libc/nt/errors.h"
 #include "libc/nt/files.h"
 #include "libc/nt/runtime.h"
 #include "libc/stdio/sysparam.h"
@@ -36,6 +39,18 @@ textwindows static ssize_t sys_readlinkat_nt_impl(int dirfd, const char *path,
                                                   char16_t path16[PATH_MAX],
                                                   char path8[PATH_MAX]) {
 
+  // an empty path names the descriptor itself, a link opened with
+  // O_PATH|O_NOFOLLOW
+  if (!*path && __isfdkind(dirfd, kFdFile)) {
+    int path8len;
+    if ((path8len = __readntsym(__get_pib()->fds.p[dirfd].handle, path8, 0)) ==
+        -1)
+      return -1;
+    int copied = MIN(path8len, bufsiz);
+    if (copied)
+      memcpy(buf, path8, copied);
+    return copied;
+  }
   // convert link path to win32 style
   if (__mkntpathat(dirfd, path, path16) == -1)
     return -1;
@@ -43,9 +58,15 @@ textwindows static ssize_t sys_readlinkat_nt_impl(int dirfd, const char *path,
   // check this is a symbolic link, however we want to punt the
   // existence check to CreateFile() which can spot loop errors
   uint32_t dwFileAttrs;
-  if ((dwFileAttrs = GetFileAttributes(path16)) != -1u)
+  if ((dwFileAttrs = GetFileAttributes(path16)) != -1u) {
     if (!(dwFileAttrs & kNtFileAttributeReparsePoint))
       return einval();
+  } else if (GetLastError() == kNtErrorFileNotFound ||
+             GetLastError() == kNtErrorPathNotFound) {
+    // GetFileAttributes() doesn't follow the last component either, so
+    // the open below would fail the same way
+    return __fix_enotdir(__winerr(), path16);
+  }
 
   // open file
   int64_t h;

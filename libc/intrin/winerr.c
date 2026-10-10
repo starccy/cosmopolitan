@@ -18,8 +18,29 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/errno.h"
+#include "libc/fmt/magnumstrs.internal.h"
+#include "libc/intrin/strace.h"
+#include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/sysv/errno.h"
+
+/**
+ * Translates a win32 error code into an errno.
+ *
+ * strerror() says only what linux would. With --strace the pair is
+ * logged here instead, the one place the win32 code is still known to
+ * belong to the failure. The last error is left as it was, since some
+ * callers read it again.
+ */
+textwindows int __winerrno(uint32_t winerr) {
+  int e = __errno_windows2linux(winerr);
+  if (SYSDEBUG && strace_enabled(0) > 0) {
+    uint32_t keep = GetLastError();
+    STRACE("win32 error %u → %s", winerr, _strerrno(e));
+    SetLastError(keep);
+  }
+  return e;
+}
 
 /**
  * Return path for failed Win32 API calls.
@@ -28,6 +49,6 @@
  * @note this is a code-size saving device
  */
 int64_t __winerr(void) {
-  errno = __errno_windows2linux(GetLastError());
+  errno = __winerrno(GetLastError());
   return -1;
 }

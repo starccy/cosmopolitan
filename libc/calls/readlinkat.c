@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/sysv/consts/at.h"
 #include "libc/dce.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/kprintf.h"
@@ -124,6 +125,15 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
     // the zip store has no symbolic links
     if (!_weaken(__zipos_stat)(&zipname, &st)) {
       bytes = einval();
+    } else {
+      bytes = -1;
+    }
+  } else if (IsXnu() && !*path && dirfd != AT_FDCWD) {
+    // an empty path names the descriptor itself, a link opened with
+    // O_PATH|O_NOFOLLOW, which xnu opened with O_SYMLINK
+    char linkpath[1024];
+    if (__sys_fcntl(dirfd, 50 /* F_GETPATH */, linkpath) != -1) {
+      bytes = sys_readlinkat(AT_FDCWD, linkpath, buf, bufsiz);
     } else {
       bytes = -1;
     }

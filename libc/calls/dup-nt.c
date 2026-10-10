@@ -26,6 +26,7 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/errno.h"
 #include "libc/intrin/fds.h"
+#include "libc/intrin/hostlibc.h"
 #include "libc/intrin/weaken.h"
 #include "libc/nt/files.h"
 #include "libc/nt/runtime.h"
@@ -99,6 +100,8 @@ textwindows static int sys_dup_nt_impl(int oldfd, int newfd, int flags,
   // track fd to file descriptors table
   __get_pib()->fds.p[newfd] = __get_pib()->fds.p[oldfd];
   __get_pib()->fds.p[newfd].scm = 0;
+  if (__get_pib()->fds.p[newfd].udg && _weaken(__udg_ref_nt))
+    _weaken(__udg_ref_nt)(__get_pib()->fds.p + newfd);
   if (__get_pib()->fds.p[newfd].pty) {
     struct Pty *pty = __get_pib()->fds.p[newfd].pty;
     ++pty->refs;
@@ -120,6 +123,8 @@ textwindows static int sys_dup_nt_impl(int oldfd, int newfd, int flags,
     __get_pib()->fds.p[newfd].flags &= ~O_CLOEXEC;
   }
   __fds_unlock();
+  if (newfd <= 2 && !__vforked && _weaken(__host_std_opened))
+    _weaken(__host_std_opened)(newfd);
   return newfd;
 }
 

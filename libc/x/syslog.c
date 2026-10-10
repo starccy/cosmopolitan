@@ -71,7 +71,7 @@ static void __initlog() {
   log_ident[0] = '\0';
   log_opt = LOG_ODELAY;
   log_facility = LOG_USER;
-  log_mask = LOG_PRI(0xff);  // Initially use max verbosity
+  log_mask = 0xff;  // Initially use max verbosity
   log_fd = -1;
 }
 
@@ -219,11 +219,12 @@ void vsyslog(int priority, const char *message, va_list ap) {
  * Sets log priority mask
  *
  * Modifies the log priority mask that determines which calls to
- * syslog() may be logged.
- * Log priority values are LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR,
- * LOG_WARNING, LOG_NOTICE, LOG_INFO, and LOG_DEBUG.
+ * syslog() may be logged. The mask holds one bit per priority, built
+ * with LOG_MASK(pri) or LOG_UPTO(pri) from LOG_EMERG, LOG_ALERT,
+ * LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO and LOG_DEBUG.
+ * A zero mask leaves the current one in place.
  *
- * @param mask the new priority mask to use by syslog()
+ * @param maskpri the new priority mask to use by syslog()
  * @return the previous log priority mask
  * @asyncsignalsafe
  */
@@ -233,7 +234,7 @@ int setlogmask(int maskpri) {
     __initlog();
   ret = log_mask;
   if (maskpri)
-    log_mask = LOG_PRI(maskpri);
+    log_mask = maskpri & 0xff;
   return ret;
 }
 
@@ -299,7 +300,7 @@ void syslog(int priority, const char *message, ...) {
   if (log_facility == -1) {
     __initlog();
   }
-  if (LOG_PRI(priority) <= log_mask) {
+  if (LOG_MASK(LOG_PRI(priority)) & log_mask) {
     va_start(ap, message);
     vsyslog(priority, message, ap);
     va_end(ap);

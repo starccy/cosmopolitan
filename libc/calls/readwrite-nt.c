@@ -21,6 +21,7 @@
 #include "libc/calls/struct/rlimit.h"
 #include "libc/calls/struct/sigset.h"
 #include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/intrin/maps.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/fds.h"
@@ -29,7 +30,11 @@
 #include "libc/nt/enum/filetype.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/events.h"
+#include "libc/nt/enum/fileinformationclass.h"
+#include "libc/nt/enum/filemovemethod.h"
 #include "libc/nt/files.h"
+#include "libc/nt/nt/file.h"
+#include "libc/nt/struct/iostatusblock.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/byhandlefileinformation.h"
@@ -60,6 +65,31 @@ static inline void RaiseSignal(int sig) {
 }
 
 /**
+ * Returns true if `f` is a file handle opened for synchronous i/o.
+ *
+ * Handles cosmo opens are overlapped, and win32 keeps no file pointer
+ * for those, so cosmo keeps its own. A synchronous handle, one a shell
+ * redirected output to for instance, does have one, which every holder
+ * of the handle moves: a host library or child process writing to the
+ * same file. Using it, rather than cosmo's, keeps our writes from
+ * landing on top of theirs.
+ */
+textwindows bool __nt_syncio(struct Fd *f) {
+  if (!f->syncio) {
+    uint32_t mode = 0;
+    struct NtIoStatusBlock io;
+    if (!NtQueryInformationFile(f->handle, &io, &mode, sizeof(mode),
+                                kNtFileModeInformation) &&
+        (mode & 0x30)) {  // FILE_SYNCHRONOUS_IO_ALERT or _NONALERT
+      f->syncio = 1;
+    } else {
+      f->syncio = 2;
+    }
+  }
+  return f->syncio == 1;
+}
+
+/**
  * Runs code that's common to read/write/pread/pwrite/etc on Windows.
  *
  * @return bytes exchanged, or -1 w/ errno, or -2 if operation failed
@@ -87,6 +117,7 @@ sys_readwrite_nt(int fd, void *data, size_t size, ssize_t offset,
 
   // determine if we need to lock file descriptor
   bool locked = isdisk && !pwriting && f->cursor;
+  bool syncio = isdisk && __nt_syncio(f);
 
   for (;;) {
     int got_sig = 0;
@@ -118,8 +149,16 @@ sys_readwrite_nt(int fd, void *data, size_t size, ssize_t offset,
     // which is fine, because the one win32 has was never very good in
     // the sense that it behaves so differently from linux, that using
     // win32 i/o required more compatibilty toil than doing it by hand
+    // a synchronous handle's own pointer is shared with whoever else
+    // has the handle, and positioned i/o moves it, so pread/pwrite put
+    // it back afterwards
+    int64_t syncpos = -1;
+    if (syncio)
+      SetFilePointerEx(handle, 0, &syncpos, kNtFileCurrent);
     if (!pwriting && !appending) {
-      if (seekable && f->cursor) {
+      if (syncio && syncpos != -1) {
+        offset = syncpos;
+      } else if (seekable && f->cursor) {
         offset = f->cursor->shared->pointer;
       } else {
         offset = 0;
@@ -179,6 +218,8 @@ sys_readwrite_nt(int fd, void *data, size_t size, ssize_t offset,
     if (ok)
       ok = GetOverlappedResult(handle, &overlap, &exchanged, true);
     uint32_t io_error = GetLastError();
+    if (syncio && syncpos != -1 && pwriting)
+      SetFilePointerEx(handle, syncpos, 0, kNtFileBegin);
     CloseEventTls(event);
 
     // check if i/o completed
@@ -205,6 +246,14 @@ sys_readwrite_nt(int fd, void *data, size_t size, ssize_t offset,
     if (locked)
       __cursor_unlock(f->cursor);
 
+    // a buffer in memory that's only reserved so far (MAP_NORESERVE, or
+    // pages madvise gave back) fails the call rather than faulting in
+    if (io_error == kNtErrorNoaccess && __nt_commit_range(data, size)) {
+      if (got_sig)
+        _weaken(__sig_relay)(got_sig, SI_KERNEL, waitmask);
+      continue;
+    }
+
     // check if i/o failed
     if (io_error != kNtErrorOperationAborted) {
       if (got_sig)  // swallow dequeued signal
@@ -220,7 +269,7 @@ sys_readwrite_nt(int fd, void *data, size_t size, ssize_t offset,
 
     // it's now reasonable to report semaphore creation error
     if (other_error) {
-      errno = __errno_windows2linux(other_error);
+      errno = __winerrno(other_error);
       return -1;
     }
 

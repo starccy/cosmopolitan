@@ -16,15 +16,18 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/calls.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/limits.h"
 #include "libc/runtime/pathconf.h"
 #include "libc/sysv/consts/_posix.h"
+#include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/limits.h"
+#include "libc/sysv/consts/ok.h"
 #include "libc/sysv/errfuns.h"
 
-long fpathconf(int fd, int name) {
+static long pathconf_value(int name) {
   switch (name) {
     case _PC_LINK_MAX:
       return _POSIX_LINK_MAX;
@@ -75,6 +78,28 @@ long fpathconf(int fd, int name) {
   }
 }
 
+/**
+ * Returns configuration value about file descriptor.
+ *
+ * @return value on success, or -1 w/ errno
+ * @raise EBADF if `fd` isn't open
+ * @raise EINVAL if `name` isn't valid
+ */
+long fpathconf(int fd, int name) {
+  if (fcntl(fd, F_GETFD) == -1)
+    return -1;
+  return pathconf_value(name);
+}
+
+/**
+ * Returns configuration value about path.
+ *
+ * @return value on success, or -1 w/ errno
+ * @raise ENOENT if `path` doesn't exist
+ * @raise EINVAL if `name` isn't valid
+ */
 long pathconf(const char *path, int name) {
-  return fpathconf(-1, name);
+  if (access(path, F_OK) == -1)
+    return -1;
+  return pathconf_value(name);
 }

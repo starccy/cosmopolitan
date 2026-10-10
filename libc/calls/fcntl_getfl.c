@@ -57,6 +57,8 @@ static int __unxoflags(int flags) {
                : IsNetbsd()  ? 0x00400000
                              : 0))
     flags2 |= O_CLOEXEC;
+  if (IsXnu() && (flags & 0x00008000))
+    flags2 |= _O_PATH;  // O_EVTONLY is what xoflags() made of O_PATH
   return flags2;
 }
 
@@ -71,7 +73,7 @@ int __fcntl_getfl(int fd) {
   } else if (__isfdopen(fd)) {
   WindowsImpl:
     rc = __get_pib()->fds.p[fd].flags &
-         (O_ACCMODE | O_APPEND | O_DIRECT | O_NONBLOCK);
+         (O_ACCMODE | O_APPEND | O_DIRECT | O_NONBLOCK | _O_PATH);
   } else {
     rc = ebadf();
   }

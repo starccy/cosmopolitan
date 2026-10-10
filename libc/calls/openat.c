@@ -36,6 +36,7 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
@@ -222,6 +223,8 @@ int openat(int dirfd, const char *path, int flags, ...) {
     rc = sys_openat(dirfd, path, flags & ~O_UNLINK, mode);
     if (rc != -1) {
       // openat succeeded
+      if (IsXnu() && (flags & _O_PATH) && !(flags & O_NONBLOCK))
+        __sys_fcntl(rc, F_SETFL, 0);
       if (flags & O_UNLINK) {
         // Implement Cosmopolitan O_UNLINK extension for UNIX
         // This cannot fail since we require O_CREAT / O_EXCL

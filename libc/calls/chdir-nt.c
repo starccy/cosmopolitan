@@ -17,8 +17,14 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/ctype.h"
 #include "libc/errno.h"
 #include "libc/limits.h"
+#include "libc/nt/createfile.h"
+#include "libc/nt/enum/accessmask.h"
+#include "libc/nt/enum/creationdisposition.h"
+#include "libc/nt/enum/fileflagandattributes.h"
+#include "libc/nt/enum/filesharemode.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/files.h"
 #include "libc/nt/runtime.h"
@@ -59,16 +65,56 @@ textwindows int sys_chdir_nt16(char16_t path[hasatleast PATH_MAX],
       errno = ENOTDIR;
       break;
     default:
-      errno = __errno_windows2linux(dwErrorCode);
+      errno = __winerrno(dwErrorCode);
       break;
   }
   return -1;
 }
 
+int __chdir_nt_handle(int64_t);
+
+// whether a component of the drive path path16 is a symbolic link.
+// junctions and mount points don't count, getcwd() keeps them the way
+// unix keeps a mount point. unc and device paths are left alone
+textwindows static bool __haslinkcomponent(char16_t *path16, uint32_t len) {
+  uint32_t i = 0;
+  if (len >= 4 && path16[0] == '\\' && path16[1] == '\\' &&
+      path16[2] == '?' && path16[3] == '\\')
+    i = 4;
+  if (!(i + 3 <= len && isalpha(path16[i]) && path16[i + 1] == ':' &&
+        path16[i + 2] == '\\'))
+    return false;
+  for (i += 3; i <= len; ++i) {
+    if (i < len && path16[i] != '\\')
+      continue;
+    char16_t c = path16[i];
+    path16[i] = 0;
+    uint32_t attrs = GetFileAttributes(path16);
+    bool link = attrs != -1u && (attrs & kNtFileAttributeReparsePoint) &&
+                __nt_issymlink(path16);
+    path16[i] = c;
+    if (link)
+      return true;
+  }
+  return false;
+}
+
+// a path through a symbolic link becomes the current directory by its
+// target, so getcwd() and ".." answer what they do on unix
 textwindows int sys_chdir_nt(const char *path) {
   int len;
+  int64_t h;
   char16_t path16[PATH_MAX];
   if ((len = __mkntpath(path, path16)) == -1)
     return -1;
+  if (__haslinkcomponent(path16, len) &&
+      (h = CreateFile(path16, kNtFileReadAttributes,
+                      kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete,
+                      0, kNtOpenExisting, kNtFileFlagBackupSemantics, 0)) !=
+          -1) {
+    int rc = __chdir_nt_handle(h);
+    CloseHandle(h);
+    return rc;
+  }
   return sys_chdir_nt16(path16, len);
 }

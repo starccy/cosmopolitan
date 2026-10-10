@@ -27,13 +27,12 @@
 
 int sys_chdir_nt16(char16_t[hasatleast PATH_MAX], uint32_t);
 
-textwindows int sys_fchdir_nt(int dirfd) {
+// makes the directory open on handle the current one, by its final
+// path, i.e. with symbolic links along the way resolved
+textwindows int __chdir_nt_handle(int64_t handle) {
   char16_t dir[PATH_MAX];
-  if (!__isfdkind(dirfd, kFdFile))
-    return ebadf();
   uint32_t len = GetFinalPathNameByHandle(
-      __get_pib()->fds.p[dirfd].handle, dir, ARRAYLEN(dir),
-      kNtFileNameNormalized | kNtVolumeNameDos);
+      handle, dir, ARRAYLEN(dir), kNtFileNameNormalized | kNtVolumeNameDos);
 
   // GetFinalPathNameByHandle() always answers in the \\?\ namespace,
   // which disables win32 path normalization, so SetCurrentDirectory()
@@ -58,4 +57,10 @@ textwindows int sys_fchdir_nt(int dirfd) {
     }
   }
   return sys_chdir_nt16(dir, len);
+}
+
+textwindows int sys_fchdir_nt(int dirfd) {
+  if (!__isfdkind(dirfd, kFdFile))
+    return ebadf();
+  return __chdir_nt_handle(__get_pib()->fds.p[dirfd].handle);
 }

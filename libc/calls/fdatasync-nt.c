@@ -23,6 +23,7 @@
 #include "libc/nt/enum/filetype.h"
 #include "libc/nt/files.h"
 #include "libc/nt/struct/byhandlefileinformation.h"
+#include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #if SupportsWindows()
@@ -33,6 +34,8 @@ textwindows int sys_fdatasync_nt(int fd, bool fake) {
     return ebadf();
   if (!__isfdkind(fd, kFdFile))
     return einval();
+  if (__get_pib()->fds.p[fd].flags & _O_PATH)
+    return ebadf();
   if (GetFileType(__get_pib()->fds.p[fd].handle) != kNtFileTypeDisk)
     return einval();
   if (!GetFileInformationByHandle(__get_pib()->fds.p[fd].handle, &wst))

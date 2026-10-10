@@ -87,6 +87,17 @@ NtStatus NtCancelIoFileEx(int64_t FileHandle,
                           struct NtIoStatusBlock *IoRequestToCancel,
                           struct NtIoStatusBlock *IoStatusBlock);
 
+NtStatus NtCreateWaitCompletionPacket(
+    int64_t *out_WaitCompletionPacketHandle, uint32_t DesiredAccess,
+    struct NtObjectAttributes *opt_ObjectAttributes);
+NtStatus NtAssociateWaitCompletionPacket(
+    int64_t WaitCompletionPacketHandle, int64_t IoCompletionHandle,
+    int64_t TargetObjectHandle, void *KeyContext, void *ApcContext,
+    NtStatus IoStatus, uintptr_t IoStatusInformation,
+    unsigned char *opt_out_AlreadySignaled);
+NtStatus NtCancelWaitCompletionPacket(int64_t WaitCompletionPacketHandle,
+                                      unsigned char RemoveSignaledPacket);
+
 NtStatus RtlNtStatusToDosError(NtStatus Status);
 
 #if ShouldUseMsabiAttribute()

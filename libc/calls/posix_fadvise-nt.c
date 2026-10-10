@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/syscall-nt.internal.h"
@@ -25,6 +26,7 @@
 #include "libc/nt/enum/filetype.h"
 #include "libc/nt/files.h"
 #include "libc/nt/runtime.h"
+#include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/posix.h"
 #include "libc/sysv/errno.h"
 #include "libc/sysv/pib.h"
@@ -61,6 +63,8 @@ textwindows static errno_t sys_posix_fadvise_nt_impl(int fd, uint64_t offset,
 
   if (GetFileType(h1) == kNtFileTypePipe)
     return ESPIPE;
+  if (flags & _O_PATH)
+    return EBADF;
 
   int e = errno;
   if (GetNtOpenFlags(flags, mode, &perm, &share, 0, &attr) == -1) {
@@ -78,7 +82,7 @@ textwindows static errno_t sys_posix_fadvise_nt_impl(int fd, uint64_t offset,
           kNtFileFlagSequentialScan | kNtFileFlagWriteThrough;
 
   if ((h2 = ReOpenFile(h1, perm, share, attr | kNtFileFlagOverlapped)) == -1)
-    return __errno_windows2linux(GetLastError());
+    return __winerrno(GetLastError());
 
   if (h2 != h1)
     CloseHandle(h1);

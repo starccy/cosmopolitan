@@ -980,6 +980,10 @@ union input_buffer {
 /* TZDIR with a trailing '/' rather than a trailing '\0'.  */
 static char const tzdirslash[sizeof TZDIR] = TZDIR "/";
 
+/* Same for the database in our zip store, which is read when the host
+   has none.  The host's is tried first since it's usually newer.  */
+static char const tzzipslash[sizeof TZDIR_ZIP] = TZDIR_ZIP "/";
+
 /* Local storage needed for 'tzloadbody'.  */
 union local_storage {
   /* The results of analyzing the file's contents after it is opened.  */
@@ -997,7 +1001,7 @@ union local_storage {
      However, there is no need for this to be smaller than struct
      file_analysis as that struct is allocated anyway, as the other
      union member.  */
-  char fullname[max(sizeof(struct file_analysis), sizeof tzdirslash + 1024)];
+  char fullname[max(sizeof(struct file_analysis), sizeof tzzipslash + 1024)];
 };
 
 /* Load tz data from the file named NAME into *SP.  Read extended
@@ -1078,9 +1082,11 @@ localtime_tzloadbody_(char const *name, struct state *sp, bool doextend,
 #else
 	doaccess = name[0] == '/';
 #endif
+	fid = -1;
 	if (!doaccess) {
 		char const *dot;
-		if (sizeof lsp->fullname - sizeof tzdirslash <= strlen(name))
+		char const *zone = name;
+		if (sizeof lsp->fullname - sizeof tzzipslash <= strlen(name))
 		  return ENAMETOOLONG;
 
 		/* Create a string "TZDIR/NAME".  Using sprintf here
@@ -1100,12 +1106,28 @@ localtime_tzloadbody_(char const *name, struct state *sp, bool doextend,
 		  }
 
 		name = lsp->fullname;
+
+		/* Read the host's database when it has this zone, and the
+		   copy in our zip store otherwise.  Hosts that ship one
+		   keep it current; ours is as old as the release.  */
+		if (!doaccess) {
+		  fid = open(name, O_RDONLY);
+		  if (fid < 0) {
+		    memcpy(lsp->fullname, tzzipslash, sizeof tzzipslash);
+		    strcpy(lsp->fullname + sizeof tzzipslash, zone);
+		    fid = open(name, O_RDONLY);
+		    if (fid < 0)
+		      return errno;
+		  }
+		}
 	}
-	if (doaccess && access(name, R_OK) != 0)
-	  return errno;
-	fid = open(name, O_RDONLY);
-	if (fid < 0)
-	  return errno;
+	if (fid < 0) {
+		if (doaccess && access(name, R_OK) != 0)
+		  return errno;
+		fid = open(name, O_RDONLY);
+		if (fid < 0)
+		  return errno;
+	}
 
 	nread = read(fid, up->buf, sizeof up->buf);
 	if (nread < tzheadsize) {

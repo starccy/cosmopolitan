@@ -43,9 +43,10 @@ bool __is_evil_path(const char *p) {
       break;
   }
 
-  // sys_open() on xnu doesn't allow malformed utf-8 but we check that
-  // we don't create such paths in userspace across all OSes too
-  if (SupportsXnu())
+  // sys_open() on xnu doesn't allow malformed utf-8. the other kernels
+  // take any byte string, and a name they accept is one we create, so
+  // this is asked of the host we're on rather than of every host.
+  if (IsXnu())
     if (!isutf8(c, e - c))
       return true;
 
@@ -53,12 +54,10 @@ bool __is_evil_path(const char *p) {
   // normalization works is it'll succeed and a file named "foo" will
   // pop up on your computer. now obviously "." are ".." are fine as
   // last components, since everyone agrees on their normalization.
-  // however we should probably steer people away from doing things that
-  // won't work when they migrate their app to the windows platform.
   // it's also worth noting that windows hates control characters.
   // however they forgot to hate the DEL (0177) character somehow.
   // checking here also helps us raise EILSEQ instead of EINVAL.
-  if (SupportsWindows()) {
+  if (IsWindows()) {
     if (e - c == 1 && *c == '.')
       return false;
     if (e - c == 2 && c[0] == '.' && c[1] == '.')

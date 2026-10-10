@@ -834,7 +834,7 @@ static PyTypeObject tee_type = {
 };
 
 static PyObject *
-tee(PyObject *self, PyObject *args)
+itertools_tee(PyObject *self, PyObject *args)
 {
     Py_ssize_t i, n=2;
     PyObject *it, *iterable, *copyable, *result;
@@ -4646,7 +4646,7 @@ combinations_with_replacement(p, r)\n\
 
 
 static PyMethodDef module_methods[] = {
-    {"tee",     (PyCFunction)tee,       METH_VARARGS, tee_doc},
+    {"tee",     (PyCFunction)itertools_tee,     METH_VARARGS, tee_doc},
     {NULL,              NULL}           /* sentinel */
 };
 

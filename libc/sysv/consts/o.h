@@ -22,6 +22,7 @@
 #define O_SYNC      0x00101000
 #define O_RSYNC     0x00101000
 #define _O_PATH     0x00200000
+#define O_PATH      _O_PATH
 #define _O_TMPFILE  0x00400000
 #define O_UNLINK    0x10000000
 

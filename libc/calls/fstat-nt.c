@@ -80,12 +80,22 @@ textwindows int sys_fstat_nt(int fd, struct stat *st) {
       return 0;
     default:
       // if the file was opened, then we know it's at least readable
-      return sys_fstat_nt_handle(__get_pib()->fds.p[fd].handle, 0, st, 0444);
+      return sys_fstat_nt_handle_exec(__get_pib()->fds.p[fd].handle, 0,
+                                      __get_pib()->fds.p[fd].exec - 1, st,
+                                      0444);
   }
 }
 
 textwindows int sys_fstat_nt_handle(int64_t handle, const char16_t *path,
                                     struct stat *out_st, int mode) {
+  return sys_fstat_nt_handle_exec(handle, path, -1, out_st, mode);
+}
+
+// `exec` is 0 or 1 when the caller already knows whether the file counts
+// as an executable, and -1 to look at the name and then the content
+textwindows int sys_fstat_nt_handle_exec(int64_t handle, const char16_t *path,
+                                         int exec, struct stat *out_st,
+                                         int mode) {
 
   // Always set st_blksize to avoid divide by zero issues.
   // The Linux kernel sets this for /dev/tty and similar too.
@@ -101,7 +111,8 @@ textwindows int sys_fstat_nt_handle(int64_t handle, const char16_t *path,
   if (GetFileInformationByHandle(handle, &wst)) {
     st.st_mode = mode;
     if ((wst.dwFileAttributes & kNtFileAttributeDirectory) ||
-        (ft == kNtFileTypeDisk && IsWindowsExecutable(handle, path)))
+        (ft == kNtFileTypeDisk &&
+         (exec != -1 ? exec : IsWindowsExecutable(handle, path))))
       st.st_mode |= 0111;
     st.st_flags = wst.dwFileAttributes;
     if (!(wst.dwFileAttributes & kNtFileAttributeReadonly))

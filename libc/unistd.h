@@ -2,7 +2,9 @@
 #define COSMOPOLITAN_LIBC_UNISTD_H_
 COSMOPOLITAN_C_START_
 
-#define _CS_PATH 0
+#define _CS_PATH                  0
+#define _CS_GNU_LIBC_VERSION      2
+#define _CS_GNU_LIBPTHREAD_VERSION 3
 
 size_t confstr(int, char *, size_t) libcesque;
 

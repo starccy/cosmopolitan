@@ -1,11 +1,9 @@
 #ifndef COSMOPOLITAN_LIBC_SYSV_CONSTS_SPLICE_H_
 #define COSMOPOLITAN_LIBC_SYSV_CONSTS_SPLICE_H_
-COSMOPOLITAN_C_START_
 
-extern const unsigned int SPLICE_F_GIFT;
-extern const unsigned int SPLICE_F_MORE;
-extern const unsigned int SPLICE_F_MOVE;
-extern const unsigned int SPLICE_F_NONBLOCK;
+#define SPLICE_F_MOVE     1
+#define SPLICE_F_NONBLOCK 2
+#define SPLICE_F_MORE     4
+#define SPLICE_F_GIFT     8
 
-COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_SPLICE_H_ */

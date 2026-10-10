@@ -289,13 +289,13 @@ textwindows static int __flocks_lockfile(int64_t hand, uint32_t flags,
     if (io_error != kNtErrorOperationAborted) {
       if (got_sig)  // swallow dequeued signal
         _weaken(__sig_relay)(got_sig, SI_KERNEL, waitmask);
-      errno = __errno_windows2linux(io_error);
+      errno = __winerrno(io_error);
       return -1;
     }
 
     // it's now reasonable to report semaphore creation error
     if (other_error) {
-      errno = __errno_windows2linux(other_error);
+      errno = __winerrno(other_error);
       return -1;
     }
 

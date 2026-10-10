@@ -24,6 +24,7 @@
 #include "libc/nt/files.h"
 #include "libc/nt/runtime.h"
 #include "libc/sysv/consts/o.h"
+#include "libc/sysv/errfuns.h"
 
 textwindows int sys_fcntl_nt_setfl(struct Fd *fd, unsigned flags) {
 
@@ -37,6 +38,10 @@ textwindows int sys_fcntl_nt_setfl(struct Fd *fd, unsigned flags) {
   unsigned allowed = O_APPEND | O_DIRECT | O_DSYNC | O_NONBLOCK;
   unsigned needreo = O_APPEND | O_DIRECT | O_DSYNC;
   unsigned newflag = (fd->flags & ~allowed) | (flags & allowed);
+
+  // linux refuses F_SETFL on an O_PATH descriptor
+  if (fd->flags & _O_PATH)
+    return ebadf();
 
   if (fd->kind == kFdFile && ((fd->flags & needreo) ^ (flags & needreo))) {
     unsigned perm, share, attr;

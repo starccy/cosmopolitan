@@ -33,13 +33,16 @@
 #include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/fileflagandattributes.h"
 #include "libc/nt/enum/fileinfobyhandleclass.h"
+#include "libc/nt/enum/io.h"
 #include "libc/nt/enum/filesharemode.h"
 #include "libc/nt/enum/filetype.h"
 #include "libc/nt/errors.h"
 #include "libc/nt/files.h"
+#include "libc/nt/struct/byhandlefileinformation.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/filebasicinfo.h"
+#include "libc/nt/struct/fileattributetaginformation.h"
 #include "libc/nt/synchronization.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/str/str.h"
@@ -77,6 +80,54 @@ textwindows static bool sys_open_nt_ishiddenpath(const char16_t *p, int n) {
   return false;
 }
 
+// O_PATH opens a handle for fstat(), fchdir() and openat() only. it asks
+// for the attributes alone, so the file needs no read permission and the
+// open takes no part in sharing checks. O_NOFOLLOW opens a symbolic link
+// as itself. a reparse point that is not a link, a unix socket file say,
+// opens as itself too, the way a plain O_PATH open does on linux
+textwindows static intptr_t sys_open_nt_path(char16_t *path16,
+                                             uint32_t flags) {
+  int64_t hand;
+  uint32_t attr = kNtFileAttributeNormal | kNtFileFlagBackupSemantics;
+  uint32_t share = kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete;
+  if (flags & O_NOFOLLOW)
+    attr |= kNtFileFlagOpenReparsePoint;
+  hand = CreateFile(path16, kNtFileReadAttributes, share, &kNtIsInheritable,
+                    kNtOpenExisting, attr, 0);
+  if (hand == -1 && !(flags & O_NOFOLLOW)) {
+    uint32_t e = GetLastError();
+    uint32_t fattr = GetFileAttributes(path16);
+    if (fattr != -1u && (fattr & kNtFileAttributeReparsePoint)) {
+      struct NtFileAttributeTagInformation tag;
+      hand = CreateFile(path16, kNtFileReadAttributes, share,
+                        &kNtIsInheritable, kNtOpenExisting,
+                        attr | kNtFileFlagOpenReparsePoint, 0);
+      if (hand != -1 &&
+          (!GetFileInformationByHandleEx(hand, kNtFileAttributeTagInfo, &tag,
+                                         sizeof(tag)) ||
+           tag.ReparseTag == kNtIoReparseTagSymlink ||
+           tag.ReparseTag == kNtIoReparseTagMountPoint)) {
+        // a dangling link stays an error
+        CloseHandle(hand);
+        hand = -1;
+      }
+    }
+    if (hand == -1)
+      SetLastError(e);
+  }
+  if (hand == -1)
+    __winerr();
+  if (hand != -1 && (flags & O_DIRECTORY)) {
+    struct NtByHandleFileInformation wst;
+    if (!GetFileInformationByHandle(hand, &wst) ||
+        !(wst.dwFileAttributes & kNtFileAttributeDirectory)) {
+      CloseHandle(hand);
+      return enotdir();
+    }
+  }
+  return __fix_enotdir(hand, path16);
+}
+
 textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
                                              uint32_t flags, int32_t mode,
                                              uint32_t extra_attr) {
@@ -87,10 +138,21 @@ textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
   if ((path16len = __mkntpathat(dirfd, path, path16)) == -1)
     return -1;
 
+  if (flags & _O_PATH)
+    return sys_open_nt_path(path16, flags);
+
+  // a read-only open of something that has to exist already needs no
+  // look at the attributes first: CreateFile() with backup semantics
+  // takes files and directories alike, and read() on a directory is
+  // EISDIR from the error win32 gives. every other case wants them
+  bool fast = (flags & O_ACCMODE) == O_RDONLY &&
+              !(flags & (O_CREAT | O_EXCL | O_TRUNC | O_NOFOLLOW | O_UNLINK |
+                         _O_TMPFILE));
+
   // implement no follow flag
   // you can't open symlinks; use readlink
   // this flag only applies to the final path component
-  uint32_t fattr = GetFileAttributes(path16);
+  uint32_t fattr = fast ? -1u : GetFileAttributes(path16);
   if (flags & O_NOFOLLOW) {
     if (fattr != -1u && (fattr & kNtFileAttributeReparsePoint))
       return eloop();
@@ -135,6 +197,10 @@ textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
     perm |= kNtGenericExecute;
     attr &= ~kNtFileAttributeReadonly;
   }
+  if (fast) {
+    perm |= kNtGenericExecute;
+    attr |= kNtFileFlagBackupSemantics;
+  }
 
   // kNtTruncateExisting always returns kNtErrorInvalidParameter :'(
   if (disp == kNtTruncateExisting) {
@@ -165,10 +231,20 @@ textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
     __winerr();
 
   // make it possible to create an unreadable file
-  if (hand != -1)
+  if (hand != -1 && !fast)
     if (fattr == -1u)
       if (~mode & 0400)
         RestrictFileWin32(hand, kNtFileReadData);
+
+  // O_DIRECTORY on the fast path is checked on the handle
+  if (hand != -1 && fast && (flags & O_DIRECTORY)) {
+    struct NtByHandleFileInformation wst;
+    if (!GetFileInformationByHandle(hand, &wst) ||
+        !(wst.dwFileAttributes & kNtFileAttributeDirectory)) {
+      CloseHandle(hand);
+      return enotdir();
+    }
+  }
 
   return __fix_enotdir(hand, path16);
 }
@@ -182,6 +258,19 @@ textwindows static bool sys_open_nt_used_explicit_drive_letter(const char *p) {
   return false;
 }
 
+// what the name says about executability, so fstat() needn't read the
+// file to find out; see IsWindowsExecutableName()
+textwindows static char sys_open_nt_exec_by_name(const char *file) {
+  char16_t name16[PATH_MAX];
+  size_t n = strlen(file);
+  if (n >= PATH_MAX)
+    return 0;
+  for (size_t i = 0; i <= n; ++i)
+    name16[i] = file[i] & 255;
+  int rc = IsWindowsExecutableName(name16);
+  return rc == -1 ? 0 : rc + 1;
+}
+
 textwindows static int sys_open_nt_file(int dirfd, const char *file,
                                         uint32_t flags, int32_t mode,
                                         size_t fd) {
@@ -193,6 +282,7 @@ textwindows static int sys_open_nt_file(int dirfd, const char *file,
     __get_pib()->fds.p[fd].mode = mode;
     __get_pib()->fds.p[fd].used_explicit_drive_letter =
         sys_open_nt_used_explicit_drive_letter(file);
+    __get_pib()->fds.p[fd].exec = sys_open_nt_exec_by_name(file);
     if (!(flags & O_APPEND) || (flags & O_ACCMODE) != O_WRONLY) {
       __fds_lock();
       __get_pib()->fds.p[fd].cursor = __cursor_new();

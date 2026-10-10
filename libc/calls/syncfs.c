@@ -19,6 +19,8 @@
 #include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/dce.h"
+#include "libc/sysv/consts/f.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
@@ -39,7 +41,15 @@
 int syncfs(int fd) {
   if (__isfdkind(fd, kFdZip)) {
     return erofs();
-  } else {
+  } else if (IsLinux()) {
     return sys_syncfs(fd);
+  } else if (IsWindows()) {
+    // no volume flush without administrator rights; the file itself
+    return fsync(fd);
+  } else {
+    // xnu has no per-filesystem sync; the whole machine then
+    if (fcntl(fd, F_GETFD) == -1)
+      return -1;
+    return sys_sync();
   }
 }

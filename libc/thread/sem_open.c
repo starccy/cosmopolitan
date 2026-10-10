@@ -64,8 +64,14 @@ static void sem_open_unlock(void) {
   pthread_mutex_unlock(&g_semaphores.lock);
 }
 
+// a forked child holds every semaphore its parent had open, and will
+// sem_close() each of them, so count those references in shared memory
 static void sem_open_wipe(void) {
+  struct Semaphore *s;
   pthread_mutex_wipe_np(&g_semaphores.lock);
+  for (s = g_semaphores.list; s; s = s->next)
+    atomic_fetch_add_explicit(&s->sem->sem_prefs, s->refs,
+                              memory_order_acq_rel);
 }
 
 static void sem_open_setup(void) {
@@ -76,32 +82,101 @@ static void sem_open_init(void) {
   cosmo_once(&g_semaphores.once, sem_open_setup);
 }
 
-static sem_t *sem_open_impl(const char *path, int oflag, unsigned mode,
-                            unsigned value) {
+// creates the file only if nobody has, so that exactly one process
+// initializes it; that one publishes sem_magic last
+static sem_t *sem_open_create(const char *path, unsigned mode,
+                              unsigned value) {
   int fd;
   sem_t *sem;
   struct stat st;
-  oflag |= O_RDWR | O_CLOEXEC;
-  if ((fd = openat(AT_FDCWD, path, oflag, mode)) == -1) {
+  if ((fd = openat(AT_FDCWD, path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
+                   mode)) == -1)
     return SEM_FAILED;
-  }
-  npassert(!fstat(fd, &st));
-  if (st.st_size < 4096 && ftruncate(fd, 4096) == -1) {
-    npassert(!close(fd));
+  if (fstat(fd, &st) == -1 || ftruncate(fd, 4096) == -1) {
+    int e = errno;
+    close(fd);
+    unlink(path);
+    errno = e;
     return SEM_FAILED;
   }
   sem = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (sem != MAP_FAILED) {
     atomic_store_explicit(&sem->sem_value, value, memory_order_relaxed);
-    sem->sem_magic = SEM_MAGIC_NAMED;
     sem->sem_dev = st.st_dev;
     sem->sem_ino = st.st_ino;
     sem->sem_pshared = true;
+    atomic_store_explicit((_Atomic(unsigned) *)&sem->sem_magic,
+                          SEM_MAGIC_NAMED, memory_order_release);
   } else {
+    int e = errno;
+    unlink(path);
+    errno = e;
     sem = SEM_FAILED;
   }
   npassert(!close(fd));
   return sem;
+}
+
+// maps a semaphore someone else created without writing to it, since
+// other processes may be using it already. the creator may still be
+// between its open and its ftruncate() or its store of sem_magic, so
+// give it a moment
+static sem_t *sem_open_existing(const char *path) {
+  int fd;
+  sem_t *sem;
+  struct stat st;
+  if ((fd = openat(AT_FDCWD, path, O_RDWR | O_CLOEXEC)) == -1)
+    return SEM_FAILED;
+  for (int i = 0;; ++i) {
+    if (fstat(fd, &st) == -1) {
+      int e = errno;
+      close(fd);
+      errno = e;
+      return SEM_FAILED;
+    }
+    if (st.st_size >= 4096)
+      break;
+    if (i == 1000) {
+      close(fd);
+      errno = EINVAL;
+      return SEM_FAILED;
+    }
+    usleep(1000);
+  }
+  sem = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  npassert(!close(fd));
+  if (sem == MAP_FAILED)
+    return SEM_FAILED;
+  for (int i = 0; atomic_load_explicit((_Atomic(unsigned) *)&sem->sem_magic,
+                                       memory_order_acquire) !=
+                  SEM_MAGIC_NAMED;
+       ++i) {
+    if (i == 1000) {
+      munmap(sem, 4096);
+      errno = EINVAL;
+      return SEM_FAILED;
+    }
+    usleep(1000);
+  }
+  return sem;
+}
+
+static sem_t *sem_open_impl(const char *path, int oflag, unsigned mode,
+                            unsigned value) {
+  sem_t *sem;
+  for (;;) {
+    if (oflag & O_CREAT) {
+      if ((sem = sem_open_create(path, mode, value)) != SEM_FAILED)
+        return sem;
+      if (errno != EEXIST || (oflag & O_EXCL))
+        return SEM_FAILED;
+    }
+    if ((sem = sem_open_existing(path)) != SEM_FAILED)
+      return sem;
+    // it was unlinked between our two opens, so try creating it again
+    if (errno != ENOENT || !(oflag & O_CREAT))
+      return SEM_FAILED;
+  }
 }
 
 static struct Semaphore *sem_open_find(const char *path) {
@@ -178,10 +253,12 @@ sem_t *sem_open(const char *name, int oflag, ...) {
   char path[78];
   struct Semaphore *s;
   unsigned mode = 0, value = 0;
-  va_start(va, oflag);
-  mode = va_arg(va, unsigned);
-  value = va_arg(va, unsigned);
-  va_end(va);
+  if (oflag & O_CREAT) {
+    va_start(va, oflag);
+    mode = va_arg(va, unsigned);
+    value = va_arg(va, unsigned);
+    va_end(va);
+  }
   if (oflag & ~(O_CREAT | O_EXCL)) {
     einval();
     return SEM_FAILED;

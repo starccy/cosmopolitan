@@ -429,7 +429,7 @@ static textwindows int readAdapterAddresses(void) {
                             // kNtGaaFlagIncludePrefix,
                             NULL, aa, &size);
   if (rc != kNtErrorSuccess) {
-    errno = __errno_windows2linux(GetLastError());
+    errno = __winerrno(GetLastError());
     goto err;
   }
   if (createHostInfo(aa) == -1)
