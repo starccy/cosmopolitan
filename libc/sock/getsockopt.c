@@ -25,6 +25,7 @@
 #include "libc/sock/sock.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/ip.h"
 #include "libc/sysv/consts/ipproto.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/sol.h"
@@ -77,6 +78,16 @@ int getsockopt(int fd, int level, int optname, void *out_opt_optval,
     rc = enoprotoopt();  // see libc/sysv/consts.sh
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
+  } else if (IsXnu() && __is_pmtudisc(level, optname)) {
+    int df;
+    uint32_t len = sizeof(df);
+    if (!out_opt_optval || !out_optlen || *out_optlen < sizeof(int)) {
+      rc = einval();
+    } else if ((rc = sys_getsockopt(fd, level, level == SOL_IP ? 28 : 62, &df,
+                                    &len)) != -1) {
+      *(int *)out_opt_optval = df ? IP_PMTUDISC_DO : IP_PMTUDISC_DONT;
+      *out_optlen = sizeof(int);
+    }
   } else if (!IsWindows()) {
     int hopt = __sockopt2host(level, optname);
     if (hopt) {

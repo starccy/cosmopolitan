@@ -36,9 +36,12 @@
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/runtime/stack.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/sock.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/consts/f.h"
+#include "libc/sysv/consts/msg.h"
 #include "libc/sysv/consts/scm.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/calls/calls.h"
@@ -87,13 +90,18 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
     int hflags = __msg2host(flags);
     if (hflags == -1) {
       rc = einval();
-    } else if (IsBsd() && (msg->msg_name || msg->msg_control)) {
+    } else if (IsBsd()) {
+      // the bsd msghdr has a 32-bit msg_controllen with msg_flags right
+      // after it, where linux has a 64-bit msg_controllen
       memcpy(&msg2, msg, sizeof(msg2));
+      msg2.msg_controllen = (uint32_t)msg->msg_controllen;
       if (msg->msg_name) {
         msg2.msg_name = &bsd.sa;
         msg2.msg_namelen = sizeof(bsd);
       }
       if ((rc = sys_recvmsg(fd, &msg2, hflags)) != -1) {
+        int bsdflags = msg2.msg_controllen >> 32;
+        msg2.msg_controllen = (uint32_t)msg2.msg_controllen;
         if (msg->msg_name)
           sockaddr2linux(&bsd, msg2.msg_namelen, msg->msg_name,
                          &msg->msg_namelen);
@@ -110,8 +118,12 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
                                              msg->msg_controllen);
           if (cloexec)
             recvmsg_cloexec(msg);
+        } else {
+          msg->msg_controllen = 0;
         }
-        msg->msg_flags = __msg2linux(msg2.msg_flags);
+        // xnu hands back the flags it was called with as well
+        msg->msg_flags = __msg2linux(bsdflags) &
+                         (MSG_TRUNC | MSG_CTRUNC | MSG_OOB);
       }
     } else {
       rc = sys_recvmsg(fd, msg, hflags);
@@ -120,7 +132,12 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
     }
   } else if (__isfdopen(fd)) {
     struct Fd *f = __get_pib()->fds.p + fd;
-    if (__isfdkind(fd, kFdSocket)) {
+    if (__isfdkind(fd, kFdSocket) && f->type != SOCK_STREAM &&
+        f->family != AF_UNIX && f->family != AF_PACKET) {
+      rc = sys_recvmsg_nt(fd, msg, flags);
+    } else if (__isfdkind(fd, kFdSocket) && __udg_nt(f)) {
+      rc = __udg_recvmsg_nt(fd, msg, flags, cloexec);
+    } else if (__isfdkind(fd, kFdSocket)) {
       rc = sys_recvfrom_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
                            msg->msg_name,
                            msg->msg_name ? &msg->msg_namelen : 0);
@@ -134,12 +151,18 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
           }
         }
       }
-    } else if (__isfdkind(fd, kFdFile) && !msg->msg_name) { /* socketpair */
+    } else if (__sockpair_nt(f) && __isfdkind(fd, kFdFile)) {
       if (!flags) {
         if ((got = sys_read_nt(fd, msg->msg_iov, msg->msg_iovlen, -1)) !=
             -1) {
           msg->msg_flags = 0;
-          msg->msg_controllen = 0;
+          if (msg->msg_name)
+            msg->msg_namelen = 0;  // the peer is unnamed
+          if (msg->msg_control && __scm_msgpipe_nt(f)) {
+            __scm_take_nt(f, msg, cloexec);
+          } else {
+            msg->msg_controllen = 0;
+          }
           rc = got;
         } else {
           rc = -1;

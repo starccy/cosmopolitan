@@ -14,6 +14,10 @@
 #include "libc/nt/struct/overlapped.h"
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
+#include "libc/nt/ipc.h"
+#include "libc/sysv/consts/poll.h"
+#include "libc/sock/struct/pollfd.h"
+#include "libc/macros.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/calls/struct/iovec.internal.h"
 #include "libc/sock/struct/cmsghdr.h"
@@ -33,7 +37,7 @@
 #if SupportsWindows()
 
 /**
- * @fileoverview SCM_RIGHTS over AF_UNIX stream sockets on Windows.
+ * @fileoverview SCM_RIGHTS over AF_UNIX sockets on Windows.
  *
  * NT has no ancillary data. A message that carries descriptors goes out
  * as a frame in the byte stream: a 16 byte magic, the count, then one
@@ -44,6 +48,17 @@
  * the caller, installs the handles in the descriptor table and queues
  * the new numbers on the socket until a recvmsg() with a control buffer
  * takes them.
+ *
+ * When the peer is this very process, as with a socketpair() whose other
+ * end may since have gone to a child, the receiver can't be known. Then
+ * the handles stay in the sender and the frame names it as their source;
+ * a receiver in another process takes them over from there, closing the
+ * sender's copies. A socket that travels this way arrives as a plain
+ * handle, which sends and receives but which WSAPoll() doesn't know.
+ *
+ * SOCK_DGRAM and SOCK_SEQPACKET pairs are message mode named pipes on NT
+ * (socketpair-nt.c), where one message is one write. Their frame goes in
+ * front of the data in the same message, and reads look for it there.
  */
 
 #define SIO_AF_UNIX_GETPEERPID 0x58000100u
@@ -57,6 +72,8 @@ struct ScmHead {
   unsigned char magic[SCM_MAGIC_LEN];
   uint32_t nfds;
   uint32_t datalen;
+  uint32_t srcpid;  // 0 when the handles are already the receiver's
+  uint32_t reserved;
 };
 
 struct ScmEntry {
@@ -221,17 +238,41 @@ textwindows static ssize_t ViewFind(const struct iovec *iov, size_t iovlen,
   return -1;
 }
 
+// a handle the frame carries, made ours. `src` is the sending process
+// when the handles are still in it
+textwindows static int64_t ScmTake(int64_t src, int64_t h) {
+  int64_t mine;
+  if (!src)
+    return h;
+  if (!DuplicateHandle(src, h, GetCurrentProcess(), &mine, 0, false,
+                       kNtDuplicateSameAccess | kNtDuplicateCloseSource))
+    return -1;
+  return mine;
+}
+
 textwindows static void ScmInstall(struct Fd *f, uint32_t n,
                                    const struct ScmEntry *e,
-                                   const struct NtWsaProtocolInfo *pi) {
+                                   const struct NtWsaProtocolInfo *pi,
+                                   uint32_t srcpid) {
+  int64_t src = 0;
+  bool ours = !srcpid || srcpid == GetCurrentProcessId();
+  if (!ours && !(src = OpenProcess(kNtProcessDupHandle, false, srcpid)))
+    return;  // the sender is gone and its handles with it
   struct ScmQueue *q = f->scm;
   if (!q || q->n + n > q->cap) {
     int cap = (q ? q->cap : 0) + n + 8;
     struct ScmQueue *nq = realloc(q, sizeof(*q) + cap * sizeof(int));
     if (!nq) {
       for (uint32_t i = 0; i < n; ++i)
-        if (e[i].kind != kFdSocket)
-          CloseHandle(e[i].handle);
+        if (e[i].handle) {
+          if (src)
+            DuplicateHandle(src, e[i].handle, 0, 0, 0, false,
+                            kNtDuplicateCloseSource);
+          else
+            CloseHandle(e[i].handle);
+        }
+      if (src)
+        CloseHandle(src);
       return;
     }
     if (!q)
@@ -242,15 +283,20 @@ textwindows static void ScmInstall(struct Fd *f, uint32_t n,
   uint32_t sk = 0;
   for (uint32_t i = 0; i < n; ++i) {
     int64_t handle;
-    if (e[i].kind == kFdSocket) {
+    if (e[i].kind == kFdSocket && ours) {
       // a socket travels as a WSAPROTOCOL_INFO blob so the receiver's
       // winsock provider knows it; a raw DuplicateHandle would let
       // recv/send through but leave WSAPoll() answering ENOTSOCK
       handle = WSASocket(-1, -1, -1, &pi[sk++], 0, kNtWsaFlagOverlapped);
+      if (e[i].handle)
+        CloseHandle(e[i].handle);  // the raw copy kept for other takers
       if (handle == -1)
         continue;
     } else {
-      handle = e[i].handle;
+      if (e[i].kind == kFdSocket)
+        ++sk;
+      if ((handle = ScmTake(src, e[i].handle)) == -1)
+        continue;
     }
     int fd = __reservefd(-1);
     if (fd == -1) {
@@ -279,6 +325,8 @@ textwindows static void ScmInstall(struct Fd *f, uint32_t n,
     g->kind = e[i].kind;
     q->fds[q->n++] = fd;
   }
+  if (src)
+    CloseHandle(src);
 }
 
 // consumes a frame that sits at the front of the queue and installs
@@ -313,7 +361,7 @@ textwindows static ssize_t ScmTakeFrame(struct Fd *f, uint64_t waitmask) {
         return -1;
       }
     }
-    ScmInstall(f, head.nfds, ents, pi);
+    ScmInstall(f, head.nfds, ents, pi, head.srcpid);
     free(pi);
     free(ents);
   }
@@ -460,12 +508,17 @@ textwindows static bool ScmPassable(int fd) {
   }
 }
 
-/**
- * Sends a message with SCM_RIGHTS attached.
- */
-textwindows ssize_t __scm_send_nt(int fd, const struct msghdr *msg, int flags) {
-  int list[SCM_MAX_FD];
+// a SOCK_DGRAM or SOCK_SEQPACKET socketpair end, a message mode pipe
+textwindows bool __scm_msgpipe_nt(struct Fd *f) {
+  return f->kind == kFdFile && (f->mode & 0170000) == 0140000;
+}
+
+// the descriptors a message's SCM_RIGHTS carry, into list; -1 w/ errno
+textwindows static ssize_t ScmList(const struct msghdr *msg,
+                                   int list[SCM_MAX_FD]) {
   size_t n = 0;
+  if (!msg->msg_control || !msg->msg_controllen)
+    return 0;
   for (struct cmsghdr *c = CMSG_FIRSTHDR(msg); c; c = CMSG_NXTHDR(msg, c)) {
     if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS ||
         c->cmsg_len < CMSG_LEN(0))
@@ -476,6 +529,111 @@ textwindows ssize_t __scm_send_nt(int fd, const struct msghdr *msg, int flags) {
     memcpy(list + n, CMSG_DATA(c), k * sizeof(int));
     n += k;
   }
+  for (size_t i = 0; i < n; ++i)
+    if (!ScmPassable(list[i]))
+      return ebadf();
+  return n;
+}
+
+
+// Builds the head of a frame for n descriptors, made for process pid. When
+// that's this process the handles stay ours, see the top of this file.
+// Returns 0 or -1 w/ errno
+textwindows static int ScmBuild(struct ScmFrame *fr, const int *list, size_t n,
+                                uint32_t pid, size_t datalen, size_t room) {
+  bool keep = pid == GetCurrentProcessId();
+  if (keep) {
+    fr->proc = GetCurrentProcess();
+  } else if (!(fr->proc = OpenProcess(kNtProcessDupHandle, false, pid))) {
+    return __winerr();
+  }
+  size_t nsock = 0;
+  for (size_t i = 0; i < n; ++i)
+    nsock += __get_pib()->fds.p[list[i]].kind == kFdSocket;
+  fr->hlen = sizeof(struct ScmHead) + n * sizeof(struct ScmEntry) +
+             nsock * sizeof(struct NtWsaProtocolInfo);
+  fr->made = 0;
+  if (!(fr->p = malloc(fr->hlen + room))) {
+    if (!keep)
+      CloseHandle(fr->proc);
+    return enomem();
+  }
+  struct ScmHead *head = (struct ScmHead *)fr->p;
+  struct ScmEntry *ents = (struct ScmEntry *)(fr->p + sizeof(*head));
+  struct NtWsaProtocolInfo *pinfo =
+      (struct NtWsaProtocolInfo *)(fr->p + sizeof(*head) +
+                                   n * sizeof(struct ScmEntry));
+  memcpy(head->magic, kScmMagic, SCM_MAGIC_LEN);
+  head->nfds = n;
+  head->datalen = datalen;
+  head->srcpid = keep ? GetCurrentProcessId() : 0;
+  head->reserved = 0;
+  size_t pk = 0;
+  for (; fr->made < n; ++fr->made) {
+    struct Fd *g = __get_pib()->fds.p + list[fr->made];
+    struct ScmEntry *e = ents + fr->made;
+    e->handle = 0;
+    if (g->kind == kFdSocket) {
+      // hand the socket over the winsock way so WSAPoll() works there
+      if (WSADuplicateSocket(g->handle, pid, &pinfo[pk++]) == -1) {
+        __winsockerr();
+        break;
+      }
+    }
+    if (g->kind != kFdSocket || keep) {
+      if (!DuplicateHandle(GetCurrentProcess(), g->handle, fr->proc, &e->handle,
+                           0, false, kNtDuplicateSameAccess)) {
+        __winerr();
+        break;
+      }
+    }
+    e->kind = g->kind;
+    e->flags = g->flags;
+    e->mode = g->mode;
+    e->family = g->family;
+    e->type = g->type;
+    e->protocol = g->protocol;
+    e->evflags = g->evflags;
+    e->offset = g->cursor ? g->cursor->shared->pointer : 0;
+  }
+  if (fr->made < n) {
+    int e = errno;
+    for (size_t i = 0; i < fr->made; ++i)
+      if (ents[i].handle)
+        DuplicateHandle(fr->proc, ents[i].handle, 0, 0, 0, false,
+                        kNtDuplicateCloseSource);
+    if (!keep)
+      CloseHandle(fr->proc);
+    free(fr->p);
+    errno = e;
+    return -1;
+  }
+  return 0;
+}
+
+// frees a frame, taking its handles back if it never went out
+textwindows static void ScmDone(struct ScmFrame *fr, bool sent) {
+  if (!sent) {
+    struct ScmEntry *ents =
+        (struct ScmEntry *)(fr->p + sizeof(struct ScmHead));
+    for (size_t i = 0; i < fr->made; ++i)
+      if (ents[i].handle)
+        DuplicateHandle(fr->proc, ents[i].handle, 0, 0, 0, false,
+                        kNtDuplicateCloseSource);
+  }
+  if (fr->proc != GetCurrentProcess())
+    CloseHandle(fr->proc);
+  free(fr->p);
+}
+
+/**
+ * Sends a message with SCM_RIGHTS attached.
+ */
+textwindows ssize_t __scm_send_nt(int fd, const struct msghdr *msg, int flags) {
+  int list[SCM_MAX_FD];
+  ssize_t n = ScmList(msg, list);
+  if (n == -1)
+    return -1;
   if (!n)
     return sys_send_nt(fd, msg->msg_iov, msg->msg_iovlen, flags);
   size_t datalen = 0;
@@ -483,104 +641,208 @@ textwindows ssize_t __scm_send_nt(int fd, const struct msghdr *msg, int flags) {
     datalen += msg->msg_iov[i].iov_len;
   if (!datalen)
     return 0;
-  for (size_t i = 0; i < n; ++i)
-    if (!ScmPassable(list[i]))
-      return ebadf();
 
   struct Fd *f = __get_pib()->fds.p + fd;
   uint32_t pid = 0, br;
   if (WSAIoctl(f->handle, SIO_AF_UNIX_GETPEERPID, 0, 0, &pid, sizeof(pid), &br,
                0, 0) == -1)
     return __winsockerr();
-  int64_t proc;
-  if (pid == GetCurrentProcessId()) {
-    proc = GetCurrentProcess();
-  } else if (!(proc = OpenProcess(kNtProcessDupHandle, false, pid))) {
-    return __winerr();
-  }
 
-  size_t nsock = 0;
-  for (size_t i = 0; i < n; ++i)
-    nsock += __get_pib()->fds.p[list[i]].kind == kFdSocket;
-  size_t hlen = sizeof(struct ScmHead) + n * sizeof(struct ScmEntry) +
-                nsock * sizeof(struct NtWsaProtocolInfo);
   bool gather = msg->msg_iovlen < 16;
-  unsigned char *frame = malloc(gather ? hlen : hlen + datalen);
-  if (!frame) {
-    if (proc != GetCurrentProcess())
-      CloseHandle(proc);
+  struct ScmFrame fr;
+  if (ScmBuild(&fr, list, n, pid, datalen, gather ? 0 : datalen) == -1)
+    return -1;
+  ssize_t rc;
+  if (gather) {
+    struct iovec iov[16];
+    iov[0].iov_base = fr.p;
+    iov[0].iov_len = fr.hlen;
+    for (size_t i = 0; i < msg->msg_iovlen; ++i)
+      iov[i + 1] = msg->msg_iov[i];
+    rc = sys_send_nt(fd, iov, msg->msg_iovlen + 1, flags);
+  } else {
+    unsigned char *p = fr.p + fr.hlen;
+    for (size_t i = 0; i < msg->msg_iovlen; ++i) {
+      memcpy(p, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
+      p += msg->msg_iov[i].iov_len;
+    }
+    rc = sys_send_nt(fd, &(struct iovec){fr.p, fr.hlen + datalen}, 1, flags);
+  }
+  if (rc != -1 && (size_t)rc < fr.hlen) {
+    rc = eio();
+  } else if (rc != -1) {
+    rc -= fr.hlen;
+  }
+  int e = errno;
+  ScmDone(&fr, rc != -1);
+  errno = e;
+  return rc;
+}
+
+// the frame for the descriptors in msg, made out to pid: how many there
+// were, 0 leaving fr empty, or -1 w/ errno
+textwindows ssize_t __scm_frame_build_nt(struct ScmFrame *fr,
+                                         const struct msghdr *msg,
+                                         uint32_t pid, size_t datalen) {
+  int list[SCM_MAX_FD];
+  ssize_t n = ScmList(msg, list);
+  if (n <= 0) {
+    fr->p = 0;
+    fr->hlen = 0;
+    return n;
+  }
+  if (ScmBuild(fr, list, n, pid, datalen, 0) == -1)
+    return -1;
+  return n;
+}
+
+textwindows void __scm_frame_done_nt(struct ScmFrame *fr, bool sent) {
+  ScmDone(fr, sent);
+}
+
+// a frame at the front of buf: its descriptors are installed on f when
+// `install` says so, and its length comes back; -1 when it isn't one
+textwindows ssize_t __scm_frame_take_nt(struct Fd *f, const unsigned char *buf,
+                                        size_t len, bool install) {
+  const struct ScmHead *h = (const struct ScmHead *)buf;
+  if (len < sizeof(*h) || memcmp(h->magic, kScmMagic, SCM_MAGIC_LEN) ||
+      h->nfds > SCM_MAX_FD)
+    return -1;
+  const struct ScmEntry *ents = (const struct ScmEntry *)(buf + sizeof(*h));
+  size_t hlen = sizeof(*h) + h->nfds * sizeof(struct ScmEntry);
+  if (len < hlen)
+    return -1;
+  size_t nsock = 0;
+  for (uint32_t i = 0; i < h->nfds; ++i)
+    nsock += ents[i].kind == kFdSocket;
+  hlen += nsock * sizeof(struct NtWsaProtocolInfo);
+  if (len < hlen)
+    return -1;
+  if (install)
+    ScmInstall(f, h->nfds, ents,
+               (const struct NtWsaProtocolInfo *)(buf + sizeof(*h) +
+                                                  h->nfds *
+                                                      sizeof(struct ScmEntry)),
+               h->srcpid);
+  return hlen;
+}
+
+/**
+ * Sends one message on a SOCK_DGRAM or SOCK_SEQPACKET socketpair end.
+ *
+ * The iovecs go out as a single write, since each write is a message
+ * of its own on a message mode pipe, with a frame in front when the
+ * message carries descriptors.
+ */
+textwindows ssize_t __scm_msgpipe_send_nt(int fd, const struct msghdr *msg) {
+  int list[SCM_MAX_FD];
+  ssize_t n = ScmList(msg, list);
+  if (n == -1)
+    return -1;
+  size_t datalen = 0;
+  for (size_t i = 0; i < msg->msg_iovlen; ++i)
+    datalen += msg->msg_iov[i].iov_len;
+  if (!n && msg->msg_iovlen <= 1)
+    return sys_write_nt(fd, msg->msg_iov, msg->msg_iovlen, -1);
+  struct ScmFrame fr = {0};
+  if (n) {
+    if (ScmBuild(&fr, list, n, GetCurrentProcessId(), datalen, datalen) == -1)
+      return -1;
+  } else if (!(fr.p = malloc(datalen ? datalen : 1))) {
     return enomem();
   }
-  struct ScmHead *head = (struct ScmHead *)frame;
-  struct ScmEntry *ents = (struct ScmEntry *)(frame + sizeof(*head));
-  struct NtWsaProtocolInfo *pinfo =
-      (struct NtWsaProtocolInfo *)(frame + sizeof(*head) +
-                                   n * sizeof(struct ScmEntry));
-  memcpy(head->magic, kScmMagic, SCM_MAGIC_LEN);
-  head->nfds = n;
-  head->datalen = datalen;
-  size_t made = 0, pk = 0;
-  ssize_t rc = 0;
-  for (; made < n; ++made) {
-    struct Fd *g = __get_pib()->fds.p + list[made];
-    if (g->kind == kFdSocket) {
-      // hand the socket over the winsock way so WSAPoll() works there
-      if (WSADuplicateSocket(g->handle, pid, &pinfo[pk++]) == -1) {
-        rc = __winsockerr();
-        break;
-      }
-      ents[made].handle = 0;
-    } else {
-      int64_t dup;
-      if (!DuplicateHandle(GetCurrentProcess(), g->handle, proc, &dup, 0, false,
-                           kNtDuplicateSameAccess)) {
-        rc = __winerr();
-        break;
-      }
-      ents[made].handle = dup;
-    }
-    ents[made].kind = g->kind;
-    ents[made].flags = g->flags;
-    ents[made].mode = g->mode;
-    ents[made].family = g->family;
-    ents[made].type = g->type;
-    ents[made].protocol = g->protocol;
-    ents[made].evflags = g->evflags;
-    ents[made].offset = g->cursor ? g->cursor->shared->pointer : 0;
+  unsigned char *p = fr.p + fr.hlen;
+  for (size_t i = 0; i < msg->msg_iovlen; ++i) {
+    memcpy(p, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
+    p += msg->msg_iov[i].iov_len;
   }
-  if (rc != -1) {
-    if (gather) {
-      struct iovec iov[16];
-      iov[0].iov_base = frame;
-      iov[0].iov_len = hlen;
-      for (size_t i = 0; i < msg->msg_iovlen; ++i)
-        iov[i + 1] = msg->msg_iov[i];
-      rc = sys_send_nt(fd, iov, msg->msg_iovlen + 1, flags);
-    } else {
-      unsigned char *p = frame + hlen;
-      for (size_t i = 0; i < msg->msg_iovlen; ++i) {
-        memcpy(p, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
-        p += msg->msg_iov[i].iov_len;
-      }
-      rc = sys_send_nt(fd, &(struct iovec){frame, hlen + datalen}, 1, flags);
-    }
-    if (rc != -1 && (size_t)rc < hlen) {
-      rc = eio();
-    } else if (rc != -1) {
-      rc -= hlen;
-    }
+  ssize_t rc = sys_write_nt(fd, &(struct iovec){fr.p, fr.hlen + datalen}, 1, -1);
+  if (rc != -1)
+    rc = rc > (ssize_t)fr.hlen ? rc - (ssize_t)fr.hlen : 0;
+  int e = errno;
+  if (n) {
+    ScmDone(&fr, rc != -1);
+  } else {
+    free(fr.p);
   }
-  if (rc == -1) {
-    int e = errno;
-    for (size_t i = 0; i < made; ++i)
-      if (ents[i].kind != kFdSocket)
-        DuplicateHandle(proc, ents[i].handle, 0, 0, 0, false,
-                        kNtDuplicateCloseSource);
-    errno = e;
+  errno = e;
+  return rc;
+}
+
+// copies up to n bytes into the caller's iovecs, returns how many
+textwindows static size_t ScmCopyOut(const struct iovec *iov, size_t iovlen,
+                                     const unsigned char *p, size_t n) {
+  size_t done = 0;
+  for (size_t i = 0; i < iovlen && done < n; ++i) {
+    size_t k = MIN(iov[i].iov_len, n - done);
+    memcpy(iov[i].iov_base, p + done, k);
+    done += k;
   }
-  if (proc != GetCurrentProcess())
-    CloseHandle(proc);
-  free(frame);
+  return done;
+}
+
+/**
+ * Reads one message from a SOCK_DGRAM or SOCK_SEQPACKET socketpair end.
+ *
+ * A message with a frame in front has its descriptors installed and
+ * queued for recvmsg(), and only its data reaches the caller. Returns
+ * -3 when the next message is a plain one, for the ordinary read path.
+ */
+textwindows ssize_t __scm_msgpipe_read_nt(int fd, const struct iovec *iov,
+                                          size_t iovlen, uint64_t waitmask) {
+  struct Fd *f = __get_pib()->fds.p + fd;
+  struct ScmHead head;
+  uint32_t got, avail, left;
+  for (;;) {
+    if (!PeekNamedPipe(f->handle, &head, sizeof(head), &got, &avail, &left))
+      return -3;  // let the ordinary read say what's wrong
+    if (got)
+      break;
+    if (f->flags & O_NONBLOCK)
+      return -3;
+    struct pollfd p = {fd, POLLIN};
+    if (ppoll(&p, 1, 0, &waitmask) == -1)
+      return -1;
+    if (p.revents & (POLLHUP | POLLERR | POLLNVAL))
+      return -3;
+  }
+  if (got < sizeof(head) || memcmp(head.magic, kScmMagic, SCM_MAGIC_LEN))
+    return -3;
+  size_t size = (size_t)got + left;
+  unsigned char *buf = malloc(size);
+  if (!buf)
+    return enomem();
+  ssize_t rc = sys_readwrite_nt(fd, buf, size, -1, f->handle, waitmask,
+                                (void *)ReadFile);
+  if (rc < 0) {
+    free(buf);
+    return rc == -2 ? __winerr() : rc;
+  }
+  struct ScmHead *h = (struct ScmHead *)buf;
+  size_t nsock = 0, hlen = 0;
+  if ((size_t)rc >= sizeof(*h) && !memcmp(h->magic, kScmMagic, SCM_MAGIC_LEN) &&
+      h->nfds <= SCM_MAX_FD) {
+    struct ScmEntry *ents = (struct ScmEntry *)(buf + sizeof(*h));
+    hlen = sizeof(*h) + h->nfds * sizeof(struct ScmEntry);
+    if ((size_t)rc >= hlen) {
+      for (uint32_t i = 0; i < h->nfds; ++i)
+        nsock += ents[i].kind == kFdSocket;
+      hlen += nsock * sizeof(struct NtWsaProtocolInfo);
+    }
+    if ((size_t)rc >= hlen && (size_t)rc - hlen >= h->datalen) {
+      ScmInstall(f, h->nfds, ents,
+                 (struct NtWsaProtocolInfo *)(buf + sizeof(*h) +
+                                              h->nfds * sizeof(struct ScmEntry)),
+                 h->srcpid);
+      rc = ScmCopyOut(iov, iovlen, buf + hlen, h->datalen);
+      free(buf);
+      return rc;
+    }
+    hlen = 0;
+  }
+  // another reader got the framed message first and this is some other one
+  rc = ScmCopyOut(iov, iovlen, buf, rc);
+  free(buf);
   return rc;
 }
 

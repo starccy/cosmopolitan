@@ -44,6 +44,13 @@ textwindows int sys_socket_nt(int family, int type, int protocol) {
   if (fd == -1)
     return -1;
   truetype = type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK);
+  if (family == AF_UNIX && truetype == SOCK_DGRAM) {
+    if (__udg_socket_nt(fd, type, protocol) == -1) {
+      __releasefd(fd);
+      return -1;
+    }
+    return fd;
+  }
   if ((h = WSASocket(__af2host(family), truetype, protocol, NULL, 0,
                      kNtWsaFlagOverlapped)) != -1) {
     oflags = O_RDWR;
@@ -59,6 +66,8 @@ textwindows int sys_socket_nt(int family, int type, int protocol) {
     __get_pib()->fds.p[fd].mode = 0140666;
     __get_pib()->fds.p[fd].handle = h;
     __get_pib()->fds.p[fd].was_created_during_vfork = __vforked;
+    if (truetype == SOCK_DGRAM)
+      __winsock_udp_connreset(h, false);
     return fd;
   } else {
     __releasefd(fd);

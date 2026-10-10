@@ -65,10 +65,12 @@ ssize_t sendto(int fd, const void *buf, size_t size, int flags,
     flags &= __MSG_NAMED;
   BEGIN_CANCELATION_POINT;
 
-  if (addrsize && addrsize < sizeof(struct sockaddr)) {
+  if (addrsize && addrsize < sizeof(opt_addr->sa_family)) {
     rc = einval();
   } else if (addrsize && kisdangerous(opt_addr)) {
     rc = efault();
+  } else if (addrsize && __sockaddr_too_short(opt_addr, addrsize)) {
+    rc = einval();
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {

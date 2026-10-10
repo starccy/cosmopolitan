@@ -63,10 +63,12 @@ int connect(int fd, const struct sockaddr *addr, uint32_t addrsize) {
   int rc;
   BEGIN_CANCELATION_POINT;
 
-  if (addrsize < sizeof(struct sockaddr)) {
+  if (addrsize < sizeof(addr->sa_family)) {
     rc = einval();
   } else if (kisdangerous(addr)) {
     rc = efault();
+  } else if (__sockaddr_too_short(addr, addrsize)) {
+    rc = einval();
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {

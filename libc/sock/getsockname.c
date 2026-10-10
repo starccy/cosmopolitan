@@ -75,7 +75,14 @@ static int __getsockpeername(int fd, struct sockaddr *out_addr,
   if (kisdangerous(out_addr) || kisdangerous(inout_addrsize)) {
     rc = efault();
   } else if (IsWindows()) {
-    if (__isfdkind(fd, kFdSocket)) {
+    if (__isfdopen(fd) && __sockpair_nt(__get_pib()->fds.p + fd)) {
+      ss.ss_family = AF_UNIX;
+      rc = 0;
+    } else if (__isfdkind(fd, kFdSocket) &&
+               __udg_nt(__get_pib()->fds.p + fd)) {
+      rc = __udg_getname_nt(__get_pib()->fds.p + fd,
+                            impl_win32 == getpeername_nt, &ss, &size);
+    } else if (__isfdkind(fd, kFdSocket)) {
       if ((rc = impl_win32(__get_pib()->fds.p[fd].handle, &ss, &size))) {
         if (impl_win32 == getsockname_nt && WSAGetLastError() == WSAEINVAL) {
           // The socket has not been bound to an address with bind, or
@@ -99,7 +106,12 @@ static int __getsockpeername(int fd, struct sockaddr *out_addr,
   if (!rc) {
     if (IsBsd())
       __convert_bsd_to_sockaddr(&ss);
-    __write_sockaddr(&ss, out_addr, inout_addrsize);
+    __write_sockaddr(&ss,
+                     IsWindows() && !(__isfdkind(fd, kFdSocket) &&
+                                      __udg_nt(__get_pib()->fds.p + fd))
+                         ? 0
+                         : size,
+                     out_addr, inout_addrsize);
   }
 
   STRACE("%s(%d, [%s]) -> %d% lm", name, fd,

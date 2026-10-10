@@ -98,6 +98,9 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
                        inout_optlen) == -1)
     return __winsockerr();
 
+  if (__is_pmtudisc(level, optname) && *inout_optlen >= sizeof(int))
+    *(int *)out_opt_optval = __pmtudisc2linux_nt(*(int *)out_opt_optval);
+
   if (level == SOL_SOCKET) {
     if (optname == SO_LINGER && in_optlen == sizeof(struct linger)) {
       linger = *(struct linger_nt *)out_opt_optval;

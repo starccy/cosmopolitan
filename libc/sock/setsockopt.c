@@ -25,11 +25,50 @@
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
+#include "libc/sock/ifname.h"
+#include "libc/sock/struct/ifreq.h"
+#include "libc/stdio/sysparam.h"
+#include "libc/str/str.h"
+#include "libc/sysv/consts/ipproto.h"
+#include "libc/sysv/consts/so.h"
+#include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/sock/syscall_fd.internal.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/ip.h"
+#include "libc/sysv/consts/sol.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+
+// xnu refuses ipv4 options on an ipv6 socket, dual-stack or not, where
+// linux applies them to the ipv4 traffic; say the socket lacks them
+static void setsockopt_xnu_ipv4_on_ipv6(int fd, int level) {
+  union sockaddr_storage_bsd ss;
+  uint32_t len = sizeof(ss);
+  if (IsXnu() && level == SOL_IP && errno == EINVAL &&
+      __sys_getsockname(fd, &ss, &len) != -1 &&
+      ss.sa.sa_family == __af2host(AF_INET6))
+    errno = ENOPROTOOPT;
+}
+
+// xnu binds a socket to an interface by index, with IP_BOUND_IF for
+// ipv4 and IPV6_BOUND_IF for ipv6, where linux names it
+static int setsockopt_xnu_bindtodevice(int fd, const void *optval,
+                                       uint32_t optlen) {
+  char name[IFNAMSIZ] = {0};
+  unsigned idx = 0;
+  union sockaddr_storage_bsd ss;
+  uint32_t len = sizeof(ss);
+  memcpy(name, optval, MIN(optlen, sizeof(name) - 1));
+  if (*name && !(idx = if_nametoindex(name)))
+    return enodev();
+  if (__sys_getsockname(fd, &ss, &len) == -1)
+    return -1;
+  if (ss.sa.sa_family == __af2host(AF_INET6))
+    return sys_setsockopt(fd, IPPROTO_IPV6, 125, &idx, sizeof(idx));
+  return sys_setsockopt(fd, IPPROTO_IP, 25, &idx, sizeof(idx));
+}
 
 static bool setsockopt_polyfill(int *optname) {
   if (errno == ENOPROTOOPT && *optname == SO_REUSEPORT /* RHEL5 */) {
@@ -68,6 +107,19 @@ int setsockopt(int fd, int level, int optname, const void *optval,
     rc = efault();
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
+  } else if (IsXnu() && level == SOL_SOCKET && optname == SO_BINDTODEVICE) {
+    rc = setsockopt_xnu_bindtodevice(fd, optval, optlen);
+  } else if (IsXnu() && __is_pmtudisc(level, optname)) {
+    // xnu only has the don't fragment bit, IP_DONTFRAG and IPV6_DONTFRAG
+    if (optlen < sizeof(int)) {
+      rc = einval();
+    } else {
+      int df = *(const int *)optval >= IP_PMTUDISC_DO;
+      rc = sys_setsockopt(fd, level, level == SOL_IP ? 28 : 62, &df,
+                          sizeof(df));
+      if (rc == -1)
+        setsockopt_xnu_ipv4_on_ipv6(fd, level);
+    }
   } else if (!IsWindows()) {
     rc = -1;
     e = errno;
@@ -82,6 +134,8 @@ int setsockopt(int fd, int level, int optname, const void *optval,
         break;
       }
     } while (setsockopt_polyfill(&optname));
+    if (rc == -1)
+      setsockopt_xnu_ipv4_on_ipv6(fd, level);
   } else if (!__isfdopen(fd)) {
     rc = ebadf();
   } else if (__isfdkind(fd, kFdSocket)) {

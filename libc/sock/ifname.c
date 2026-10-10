@@ -16,8 +16,9 @@
 // An interface has both a name and a small integer index, which is what
 // an IPv6 scope id or a multicast socket option carries. Linux and
 // Windows answer SIOCGIFINDEX and SIOCGIFNAME, and FreeBSD the former.
-// Elsewhere the interfaces are numbered in the order the host lists them,
-// which round-trips between these three calls, but isn't the kernel's.
+// XNU lists both in the NET_RT_IFLIST sysctl. Elsewhere the interfaces
+// are numbered in the order the host lists them, which round-trips
+// between these three calls, but isn't the kernel's.
 
 #define MAX_IFS 128
 
@@ -84,7 +85,60 @@ static int ListFromIoctl(ifname_t *out, int max) {
   return n;
 }
 
+// one RTM_IFINFO message per interface: a struct if_msghdr, whose
+// ifm_index sits at byte 12 and which is 112 bytes long, followed by a
+// struct sockaddr_dl holding the name
+static int ListFromXnu(ifname_t *out, unsigned *idx, int max) {
+  int mib[6] = {4 /* CTL_NET */, 17 /* PF_ROUTE */, 0, 0,
+                3 /* NET_RT_IFLIST */, 0};
+  size_t len = 0;
+  char *buf;
+  int n = 0;
+  if (sysctl(mib, 6, 0, &len, 0, 0) == -1 || !(buf = malloc(len)))
+    return -1;
+  if (sysctl(mib, 6, buf, &len, 0, 0) == -1) {
+    free(buf);
+    return -1;
+  }
+  for (size_t i = 0; i + 4 <= len && n < max;) {
+    uint16_t msglen, index;
+    int addrs;
+    memcpy(&msglen, buf + i, 2);
+    if (!msglen || msglen > len - i)
+      break;
+    memcpy(&addrs, buf + i + 4, 4);
+    memcpy(&index, buf + i + 12, 2);
+    const unsigned char *sdl = (const unsigned char *)buf + i + 112;
+    if (buf[i + 3] == 0xe /* RTM_IFINFO */ && (addrs & 0x10 /* RTA_IFP */) &&
+        msglen >= 112 + 8 && sdl[1] == 18 /* AF_LINK */ && sdl[5] &&
+        sdl[5] < IFNAMSIZ && 8 + sdl[5] <= msglen - 112) {
+      memcpy(out[n], sdl + 8, sdl[5]);
+      out[n][sdl[5]] = 0;
+      idx[n++] = index;
+    }
+    i += msglen;
+  }
+  free(buf);
+  return n;
+}
+
+static unsigned XnuIndex(const char *name) {
+  ifname_t names[MAX_IFS];
+  unsigned idx[MAX_IFS];
+  int n = ListFromXnu(names, idx, MAX_IFS);
+  for (int i = 0; i < n; ++i)
+    if (!strcmp(names[i], name))
+      return idx[i];
+  return 0;
+}
+
 static int ListNames(ifname_t *out, int max) {
+  if (IsXnu()) {
+    unsigned idx[MAX_IFS];
+    int n = ListFromXnu(out, idx, max < MAX_IFS ? max : MAX_IFS);
+    if (n > 0)
+      return n;
+  }
   if (IsLinux()) {
     int n = ListFromSysfs(out, max);
     if (n > 0)
@@ -115,7 +169,9 @@ unsigned if_nametoindex(const char *name) {
     enodev();
     return 0;
   }
-  if ((fd = IfSocket()) != -1) {
+  if (IsXnu()) {
+    idx = XnuIndex(name);
+  } else if ((fd = IfSocket()) != -1) {
     struct ifreq r = {0};
     strcpy(r.ifr_name, name);
     if (ioctl(fd, SIOCGIFINDEX, &r) != -1 && r.ifr_ifindex > 0)
@@ -143,7 +199,7 @@ char *if_indextoname(unsigned index, char *name) {
     enxio();
     return 0;
   }
-  if ((fd = IfSocket()) != -1) {
+  if (!IsXnu() && (fd = IfSocket()) != -1) {
     struct ifreq r = {0};
     r.ifr_ifindex = index;
     bool ok = ioctl(fd, SIOCGIFNAME, &r) != -1 && r.ifr_name[0];
@@ -188,6 +244,13 @@ struct if_nameindex *if_nameindex(void) {
     t[i].if_name = strings + i * IFNAMSIZ;
     strcpy(t[i].if_name, names[i]);
   }
+  // in index order, the way the kernel lists them to glibc
+  for (int i = 1; i < n; ++i)
+    for (int j = i; j > 0 && t[j - 1].if_index > t[j].if_index; --j) {
+      struct if_nameindex x = t[j];
+      t[j] = t[j - 1];
+      t[j - 1] = x;
+    }
   return t;
 }
 

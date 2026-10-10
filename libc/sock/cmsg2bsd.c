@@ -2,6 +2,7 @@
 #include "libc/sock/struct/cmsghdr.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/ip.h"
 #include "libc/sysv/consts/sol.h"
 
 /*
@@ -32,13 +33,17 @@ static void level2linux(int32_t *level, int32_t *type) {
     *level = SOL_SOCKET;
   } else if (*level == SOL_IP || *level == SOL_IPV6) {
     *type = __sockopt2linux(*level, *type);
+    // the bsds tag the received tos with the option that asked for it
+    if (*level == SOL_IP && *type == IP_RECVTOS)
+      *type = IP_TOS;
   }
 }
 
 /**
  * Converts a Linux control buffer into the host BSD's layout.
  *
- * `dst` never needs more room than `srclen`.
+ * `dst` never needs more room than `srclen`, since a one byte payload
+ * widened to an int still fits in the padding of the Linux entry.
  *
  * @return byte length written to `dst`, or -1 if it didn't fit
  */
@@ -52,6 +57,14 @@ ssize_t __cmsg2bsd(const void *src, size_t srclen, void *dst, size_t dstcap) {
     if (h.cmsg_len < sizeof(h) || h.cmsg_len > srclen - si)
       break;
     size_t payload = h.cmsg_len - sizeof(h);
+    const unsigned char *data = s + si + sizeof(h);
+    // linux takes a one byte IP_TOS, the bsds want an int
+    int tos;
+    if (h.cmsg_level == SOL_IP && h.cmsg_type == IP_TOS && payload == 1) {
+      tos = *data;
+      data = (const unsigned char *)&tos;
+      payload = sizeof(tos);
+    }
     size_t blen = BSD_HDR + payload;
     if (align_bsd(blen) > dstcap - di)
       return -1;
@@ -60,7 +73,7 @@ ssize_t __cmsg2bsd(const void *src, size_t srclen, void *dst, size_t dstcap) {
     memcpy(d + di, &len32, 4);
     memcpy(d + di + 4, &h.cmsg_level, 4);
     memcpy(d + di + 8, &h.cmsg_type, 4);
-    memcpy(d + di + BSD_HDR, s + si + sizeof(h), payload);
+    memcpy(d + di + BSD_HDR, data, payload);
     di += align_bsd(blen);
     si += CMSG_ALIGN(h.cmsg_len);
   }

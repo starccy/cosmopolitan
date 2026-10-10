@@ -58,8 +58,13 @@ struct Fd {
   void *inotify;     // inotify off linux: the watches and the queue
   void *epset;       // epoll on windows: the interest list
   void *scm;         // unix stream on windows: received fds not yet taken
+  void *udg;         // unix datagram on windows, see unixdgram-nt.c
   void *pty;         // pseudoconsole on windows, see pty.internal.h
   bool ptymaster;
+  char syncio;  // windows disk file: 0 not known yet, 1 synchronous, 2 not
+  char exec;    // windows disk file: 0 name doesn't say, 1 not exec, 2 exec
+  long fionbio;     // windows socket: the handle FIONBIO was last set on
+  int fionbio_pid;  // and in which process, since fork() doesn't keep it
 };
 
 struct Fds {

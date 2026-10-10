@@ -43,6 +43,9 @@
 #include "libc/sysv/pib.h"
 #if SupportsWindows()
 
+// reads on a message pair look for descriptors in front of the data
+__static_yoink("__scm_msgpipe_read_nt");
+
 textwindows static bool ExchangeAll(int fd, void *buf, size_t n,
                                     bool writing) {
   char *p = buf;
@@ -98,12 +101,14 @@ textwindows static int SocketPairStream(int oflags, int sv[2]) {
   }
   close(srv);
   unlink(sa.sun_path);
+  __fds_lock();
+  __get_pib()->fds.p[cli].mode = kSockPairStreamMode;
+  __get_pib()->fds.p[acc].mode = kSockPairStreamMode;
   if (oflags & O_NONBLOCK) {
-    __fds_lock();
     __get_pib()->fds.p[cli].flags |= O_NONBLOCK;
     __get_pib()->fds.p[acc].flags |= O_NONBLOCK;
-    __fds_unlock();
   }
+  __fds_unlock();
   sv[0] = cli;
   sv[1] = acc;
   return 0;

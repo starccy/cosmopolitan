@@ -8,8 +8,11 @@
 #define IPV6_MULTICAST_LOOP 19
 #define IPV6_JOIN_GROUP     20
 #define IPV6_LEAVE_GROUP    21
+#define IPV6_MTU_DISCOVER   23
 #define IPV6_V6ONLY         26
+#define IPV6_RECVPKTINFO    49
 #define IPV6_PKTINFO        50
+#define IPV6_RECVHOPLIMIT   51
 #define IPV6_HOPLIMIT       52
 #define IPV6_HOPOPTS        54
 #define IPV6_RECVRTHDR      56
@@ -17,5 +20,12 @@
 #define IPV6_DONTFRAG       62
 #define IPV6_RECVTCLASS     66
 #define IPV6_TCLASS         67
+
+#define IPV6_PMTUDISC_DONT      0
+#define IPV6_PMTUDISC_WANT      1
+#define IPV6_PMTUDISC_DO        2
+#define IPV6_PMTUDISC_PROBE     3
+#define IPV6_PMTUDISC_INTERFACE 4
+#define IPV6_PMTUDISC_OMIT      5
 
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_IPV6_H_ */

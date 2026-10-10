@@ -17,6 +17,7 @@
 #define SO_SNDLOWAT    19
 #define SO_RCVTIMEO    20
 #define SO_SNDTIMEO    21
+#define SO_BINDTODEVICE 25
 #define SO_ACCEPTCONN  30
 
 /* bsd only; sits above linux's numbers */

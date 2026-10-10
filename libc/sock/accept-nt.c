@@ -73,7 +73,7 @@ textwindows static int sys_accept_nt_impl(struct Fd *f,
     // return on genuine errors
     uint32_t err = WSAGetLastError();
     if (err != WSAEWOULDBLOCK) {
-      errno = __errno_windows2linux(err);
+      errno = __winerrno(err);
       if (errno == ECONNRESET)
         errno = ECONNABORTED;
       return -1;

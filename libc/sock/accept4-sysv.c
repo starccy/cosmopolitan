@@ -29,7 +29,8 @@
 #include "libc/sysv/consts/sock.h"
 #include "libc/sysv/errfuns.h"
 
-int sys_accept4(int server, struct sockaddr_storage *addr, int flags) {
+int sys_accept4(int server, struct sockaddr_storage *addr, uint32_t *out_size,
+                int flags) {
   uint32_t size = sizeof(*addr);
   int olderr, client, file_mode;
   olderr = errno;
@@ -53,5 +54,6 @@ int sys_accept4(int server, struct sockaddr_storage *addr, int flags) {
            (flags & SOCK_NONBLOCK ? (IsLinux() ? O_NONBLOCK : 4) : 0))));
     }
   }
+  *out_size = size;
   return client;
 }

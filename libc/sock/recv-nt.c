@@ -25,6 +25,7 @@
 #include "libc/nt/struct/overlapped.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/nt/winsock.h"
+#include "libc/intrin/maps.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/fio.h"
@@ -56,6 +57,22 @@ textwindows static int sys_recv_nt_start(int64_t handle,
                  overlap, 0);
 }
 
+// a receive that fails with WSAEWOULDBLOCK when nothing's there,
+// instead of asking WSAPoll and then waiting on an overlapped read
+textwindows ssize_t __winsock_recv_nonblock(struct Fd *f,
+                                            const struct iovec *iov,
+                                            size_t iovlen, uint32_t flags,
+                                            void *addr, uint32_t *addrsize) {
+  struct NtIovec iovnt[16];
+  uint32_t got;
+  if (__winsock_fionbio(f))
+    return __winsockerr();
+  if (WSARecvFrom(f->handle, iovnt, __iovec2nt(iovnt, iov, iovlen), &got,
+                  &flags, addr, addrsize, 0, 0))
+    return __winsockerr();
+  return got;
+}
+
 textwindows static ssize_t sys_recv_nt_impl(int fd, const struct iovec *iov,
                                             size_t iovlen, uint32_t flags) {
 
@@ -65,6 +82,8 @@ textwindows static ssize_t sys_recv_nt_impl(int fd, const struct iovec *iov,
 
   if (flags & ~(MSG_DONTWAIT | MSG_OOB | MSG_PEEK | MSG_WAITALL))
     return einval();
+  if (__udg_nt(__get_pib()->fds.p + fd))
+    return __udg_recv_nt(fd, iov, iovlen, flags, 0, 0, 0);
 
   if (iovlen) {
     if (kisdangerous(iov))
@@ -84,12 +103,17 @@ textwindows static ssize_t sys_recv_nt_impl(int fd, const struct iovec *iov,
   //  is specified along with MSG_OOB, MSG_PEEK, or MSG_PARTIAL, then
   //  this call will fail with WSAEOPNOTSUPP."
   //                             —Quoth MSDN § WSARecv
-  if (flags & MSG_WAITALL)
+  if (flags & MSG_WAITALL) {
     __imp_ioctlsocket(f->handle, __ioctl2host(FIONBIO), (uint32_t[]){0});
+    f->fionbio = 0;
+  }
 
   bool nonblock = (f->flags & O_NONBLOCK) || (flags & MSG_DONTWAIT);
   if (__scm_stream_nt(f)) {
     rc = __scm_recv_nt(f, iov, iovlen, flags, nonblock, waitmask);
+  } else if ((f->flags & O_NONBLOCK) && !(flags & MSG_WAITALL)) {
+    rc = __winsock_recv_nonblock(f, iov, iovlen,
+                                 __msg2host(flags & ~MSG_DONTWAIT), 0, 0);
   } else if (nonblock && !__winsock_recv_ready(f->handle, flags)) {
     rc = eagain();
   } else {
@@ -99,15 +123,31 @@ textwindows static ssize_t sys_recv_nt_impl(int fd, const struct iovec *iov,
     if (rc == -1 && errno == kNtErrorHandleEof)
       rc = 0;
   }
+  rc = __winsock_dgram_rc(f, rc, iov, iovlen, 0);
 
   __sig_unblock(waitmask);
 
   return rc;
 }
 
+
+// the kernel fails a receive into memory that's only reserved so far
+// (MAP_NORESERVE, or pages madvise gave back) with WSAEFAULT rather
+// than faulting it in, so commit the buffers and try once more
+textwindows static bool __recv_nt_commit(const struct iovec *iov,
+                                         size_t iovlen) {
+  bool any = false;
+  for (size_t i = 0; i < iovlen; ++i)
+    if (iov[i].iov_len)
+      any |= __nt_commit_range(iov[i].iov_base, iov[i].iov_len);
+  return any;
+}
+
 textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
                                 uint32_t flags) {
   ssize_t rc = sys_recv_nt_impl(fd, iov, iovlen, flags);
+  if (rc == -1 && errno == EFAULT && __recv_nt_commit(iov, iovlen))
+    rc = sys_recv_nt_impl(fd, iov, iovlen, flags);
   if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
     _weaken(__epoll_rearm_in)(fd);
   return rc;

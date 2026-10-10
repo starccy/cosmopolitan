@@ -150,14 +150,14 @@ __winsock_block(int64_t handle, uint32_t flags, bool nonblock,
     if (io_error != kNtErrorOperationAborted) {
       if (got_sig)  // swallow dequeued signal
         _weaken(__sig_relay)(got_sig, SI_KERNEL, waitmask);
-      errno = __errno_windows2linux(io_error);
+      errno = __winerrno(io_error);
       return -1;
     }
 
     // it's now reasonable to report semaphore creation error
     if (other_error) {
       unassert(!got_sig);
-      errno = __errno_windows2linux(other_error);
+      errno = __winerrno(other_error);
       return -1;
     }
 

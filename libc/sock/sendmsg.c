@@ -34,7 +34,9 @@
 #include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/runtime/stack.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/sock.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -95,12 +97,24 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
       if (__isfdkind(fd, kFdSocket) &&
           __scm_stream_nt(__get_pib()->fds.p + fd)) {
         rc = __scm_send_nt(fd, msg, flags);
+      } else if (__isfdkind(fd, kFdSocket) &&
+                 __udg_nt(__get_pib()->fds.p + fd)) {
+        rc = __udg_sendto_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
+                             msg->msg_name, msg->msg_namelen, msg);
+      } else if (__scm_msgpipe_nt(__get_pib()->fds.p + fd)) {
+        rc = __scm_msgpipe_send_nt(fd, msg);
+      } else if (__isfdkind(fd, kFdSocket) &&
+                 __get_pib()->fds.p[fd].type != SOCK_STREAM &&
+                 __get_pib()->fds.p[fd].family != AF_UNIX) {
+        rc = sys_sendmsg_nt(fd, msg, flags);
       } else {
-        rc = einval(); /* control msg only on unix streams */
+        rc = einval();
       }
     } else if (__isfdkind(fd, kFdSocket)) {
       rc = sys_sendto_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
                          msg->msg_name, msg->msg_namelen);
+    } else if (__scm_msgpipe_nt(__get_pib()->fds.p + fd)) {
+      rc = __scm_msgpipe_send_nt(fd, msg);  // iovecs make one message
     } else if (__isfdkind(fd, kFdFile)) {  // e.g. socketpair
       rc = sys_write_nt(fd, msg->msg_iov, msg->msg_iovlen, -1);
     } else {

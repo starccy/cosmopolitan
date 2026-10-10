@@ -25,6 +25,8 @@
 │  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                      │
 │                                                                              │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/sock/ifname.h"
+#include "libc/sock/in.h"
 #include "libc/sock/struct/sockaddr.h"
 #include "libc/sysv/consts/af.h"
 #include "libc/str/str.h"
@@ -68,17 +70,12 @@ int __lookup_ipliteral(struct address buf[static 1], const char *name, int famil
 		if (isdigit(*++p)) scopeid = strtoull(p, &z, 10);
 		else z = p-1;
 		if (*z) {
-#if 1
-			// todo(jart): do something
-			return EAI_NONAME;
-#else
 			if (!IN6_IS_ADDR_LINKLOCAL(&a6) &&
 			    !IN6_IS_ADDR_MC_LINKLOCAL(&a6))
 				return EAI_NONAME;
 			scopeid = if_nametoindex(p);
 			if (!scopeid)
 				return EAI_NONAME;
-#endif
 		}
 		if (scopeid > UINT_MAX)
 			return EAI_NONAME;

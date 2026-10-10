@@ -158,28 +158,36 @@ static int inet_pton_inet6_impl(const char *src, uint8_t *dst) {
  * @return 1 on success, 0 on src malformed, or -1 w/ errno
  */
 int inet_pton(int af, const char *src, void *dst) {
-  uint8_t *p;
-  int b, c, j;
+  uint8_t p[4];
+  int b, c, j, digits;
   if (af == AF_INET6)
     return inet_pton_inet6_impl(src, dst);
   if (af != AF_INET)
     return eafnosupport();
+  // four dotted decimal octets, each one to three digits with no
+  // leading zero, which is what glibc and the bsds accept
   j = 0;
-  p = dst;
-  p[0] = 0;
+  b = 0;
+  digits = 0;
   while ((c = *src++)) {
     if (isdigit(c)) {
-      b = c - '0' + p[j] * 10;
-      p[j] = MIN(255, b);
+      if (digits && !b)
+        return 0;
+      b = b * 10 + c - '0';
       if (b > 255)
         return 0;
-    } else if (c == '.') {
-      if (++j == 4)
-        return 0;
-      p[j] = 0;
+      ++digits;
+    } else if (c == '.' && digits && j < 3) {
+      p[j++] = b;
+      b = 0;
+      digits = 0;
     } else {
       return 0;
     }
   }
-  return j == 3 ? 1 : 0;
+  if (j != 3 || !digits)
+    return 0;
+  p[3] = b;
+  memcpy(dst, p, 4);
+  return 1;
 }

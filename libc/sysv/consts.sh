@@ -353,7 +353,7 @@ syscon	tcp	TCP_CORK				3			3			4			4			4			16			4			0			# nagle's algorithm stri
 syscon	tcp	TCP_MAXSEG				2			2			2			2			2			2			2			0			# reduces tcp segment size; see also tcp offloading
 syscon	tcp	TCP_FASTOPEN				23			23			0x105			0x105			0x0401			0			0			15			# reduces roundtrips; for listener; Linux 3.7+ (c. 2012) / or is windows it 0x22? /proc/sys/net/ipv4/tcp_fastopen TODO(jart): MSG_FASTOPEN; XNU sources say 261 but not sure if that's true
 syscon	tcp	TCP_FASTOPEN_CONNECT			30			30			0			0			0			0			0			0			# reduces roundtrips; for listener; Linux 3.7+ (c. 2012) / or is windows it 0x22? /proc/sys/net/ipv4/tcp_fastopen TODO(jart): MSG_FASTOPEN; XNU sources say 261 but not sure if that's true
-syscon	tcp	TCP_KEEPIDLE				4			4			0			0			0x100			0			3			3			# start keepalives after this period
+syscon	tcp	TCP_KEEPIDLE				4			4			0x10			0x10			0x100			0			3			3			# start keepalives after this period
 syscon	tcp	TCP_KEEPINTVL				5			5			0x101			0x101			0x200			0			5			17			# interval between keepalives
 syscon	tcp	TCP_KEEPCNT				6			6			0x102			0x102			0x400			0			6			16			# number of keepalives before death
 syscon	tcp	TCP_INFO				11			11			0x200			0x200			32			9			9			0			# get connection info
@@ -395,7 +395,8 @@ syscon	ip	IP_MULTICAST_IF				32			32			9			9			9			9			9			9			# bsd consensus
 syscon	ip	IP_MULTICAST_LOOP			34			34			11			11			11			11			11			11			# bsd consensus
 syscon	ip	IP_MULTICAST_TTL			33			33			10			10			10			10			10			10			# bsd consensus
 syscon	ip	IP_PKTINFO				8			8			26			26			0			0			25			19
-syscon	ip	IP_RECVTOS				13			13			0			0			68			0			0			40
+syscon	ip	IP_RECVTOS				13			13			27			27			68			0			0			40
+syscon	ip	IP_MTU_DISCOVER				10			10			0			0			0			0			0			71
 
 #	IPPROTO_IPV6 (or SOL_IPV6) socket options
 #
@@ -410,12 +411,17 @@ syscon	ipv6	IPV6_MULTICAST_LOOP			19			19			11			11			11			11			11			11			# bsd 
 syscon	ipv6	IPV6_UNICAST_HOPS			16			16			4			4			4			4			4			4			# bsd consensus
 syscon	ipv6	IPV6_RECVTCLASS				66			66			35			35			57			57			57			40
 syscon	ipv6	IPV6_TCLASS				67			67			36			36			61			61			61			39
-syscon	ipv6	IPV6_DONTFRAG				62			62			0			0			62			62			62			14
-syscon	ipv6	IPV6_HOPLIMIT				52			52			0			0			47			47			47			21
-syscon	ipv6	IPV6_HOPOPTS				54			54			0			0			49			49			49			1
-syscon	ipv6	IPV6_PKTINFO				50			50			0			0			46			46			46			19
-syscon	ipv6	IPV6_RECVRTHDR				56			56			0			0			38			38			38			38
-syscon	ipv6	IPV6_RTHDR				57			57			0			0			51			51			51			32
+syscon	ipv6	IPV6_DONTFRAG				62			62			62			62			62			62			62			14
+syscon	ipv6	IPV6_HOPLIMIT				52			52			47			47			47			47			47			21
+syscon	ipv6	IPV6_HOPOPTS				54			54			49			49			49			49			49			1
+syscon	ipv6	IPV6_PKTINFO				50			50			46			46			46			46			46			19
+syscon	ipv6	IPV6_RECVPKTINFO			49			49			61			61			36			36			36			19
+syscon	ipv6	IPV6_RECVHOPLIMIT			51			51			37			37			37			37			37			21
+syscon	ipv6	IPV6_MTU_DISCOVER			23			23			0			0			0			0			0			71
+syscon	ipv6	IPV6_RECVRTHDR				56			56			38			38			38			38			38			38
+syscon	ipv6	IPV6_RTHDR				57			57			51			51			51			51			51			32
+
+syscon	udp	UDP_SEGMENT				103			103			0			0			0			0			0			2
 
 #	IPPROTO_ICMPV6 (or SOL_ICMPV6) socket options
 #

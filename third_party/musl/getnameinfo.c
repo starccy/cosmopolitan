@@ -28,6 +28,7 @@
 #include "libc/calls/sysdir.internal.h"
 #include "libc/calls/weirdtypes.h"
 #include "libc/fmt/conv.h"
+#include "libc/sock/ifname.h"
 #include "libc/sock/in.h"
 #include "libc/sock/sock.h"
 #include "libc/sock/struct/ifreq.h"
@@ -216,10 +217,6 @@ int getnameinfo(const struct sockaddr *restrict sa, socklen_t sl,
 			if (flags & NI_NAMEREQD) return EAI_NONAME;
 			inet_ntop(af, a, buf, sizeof buf);
 			if (scopeid) {
-#if 1
-                                /* TODO(jart): How do we handle this? */
-                                return EAI_NONAME;
-#else
 				char *p = 0, tmp[IF_NAMESIZE+1];
 				if (!(flags & NI_NUMERICSCOPE) &&
 				    (IN6_IS_ADDR_LINKLOCAL(a) ||
@@ -229,7 +226,6 @@ int getnameinfo(const struct sockaddr *restrict sa, socklen_t sl,
 					p = itoa(num, scopeid);
 				*--p = '%';
 				strcat(buf, p);
-#endif
 			}
 		}
 		if (strlen(buf) >= nodelen) return EAI_OVERFLOW;

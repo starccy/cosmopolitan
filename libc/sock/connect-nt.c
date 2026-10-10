@@ -31,6 +31,7 @@
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/struct/sockaddr.h"
+#include "libc/sock/struct/sockaddr6.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/fio.h"
@@ -38,6 +39,8 @@
 #include "libc/sysv/consts/poll.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/so.h"
+#include "libc/sysv/consts/sock.h"
+#include "libc/str/str.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/errno.h"
@@ -57,11 +60,41 @@ __HOSTCONST(int, SO_ERROR);
 textwindows static int sys_connect_nt_impl(struct Fd *f, const void *addr,
                                            uint32_t addrsize,
                                            sigset_t waitmask) {
+  if (__udg_nt(f))
+    return __udg_connect_nt(f, addr, addrsize);
 
   // normalize unix socket filenames
   struct sockaddr_un sun;
   if (__fixsunpath(&sun, &addr, &addrsize) == -1)
     return -1;
+
+  // a datagram socket may connect again, and AF_UNSPEC disconnects it,
+  // which winsock does for an address that's all zeroes
+  if (f->type == SOCK_DGRAM) {
+    struct sockaddr_storage ss;
+    bool unspec = addrsize >= sizeof(uint16_t) &&
+                  ((struct sockaddr *)addr)->sa_family == AF_UNSPEC;
+    if (unspec) {
+      bzero(&ss, sizeof(ss));
+      ss.ss_family = __af2host(f->family);
+      addr = &ss;
+      addrsize = f->family == AF_INET6 ? sizeof(struct sockaddr_in6)
+                                       : sizeof(struct sockaddr_in);
+    } else {
+      if (!f->isbound) {
+        struct sockaddr_storage any = {0};
+        any.ss_family = ((struct sockaddr *)addr)->sa_family;
+        if (sys_bind_nt(f, &any, sizeof(any)) == -1)
+          return -1;
+      }
+      addr = __sockaddr2nt(addr, addrsize, &ss);
+    }
+    if (WSAConnect(f->handle, addr, addrsize, 0, 0, 0, 0))
+      return __winsockerr();
+    __winsock_udp_connreset(f->handle, !unspec);
+    f->connecting = unspec ? UNCONNECTED : CONNECTED;
+    return 0;
+  }
 
   // check if already connected
   if (f->connecting == 2)
@@ -176,7 +209,7 @@ textwindows static int sys_connect_nt_impl(struct Fd *f, const void *addr,
         return __winsockerr();
       if (!err)
         return eio();  // should be impossible
-      errno = __errno_windows2linux(err);
+      errno = __winerrno(err);
       return -1;
     }
 

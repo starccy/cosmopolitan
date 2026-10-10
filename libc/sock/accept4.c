@@ -56,12 +56,13 @@ int accept4(int fd, struct sockaddr *opt_out_addr, uint32_t *opt_inout_addrsize,
             int flags) {
   int rc;
   struct sockaddr_storage ss = {0};
+  uint32_t size = 0;
   BEGIN_CANCELATION_POINT;
 
   if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {
-    rc = sys_accept4(fd, &ss, flags);
+    rc = sys_accept4(fd, &ss, &size, flags);
   } else if (!__isfdopen(fd)) {
     rc = ebadf();
   } else if (__isfdkind(fd, kFdSocket)) {
@@ -74,7 +75,7 @@ int accept4(int fd, struct sockaddr *opt_out_addr, uint32_t *opt_inout_addrsize,
     if (IsBsd()) {
       __convert_bsd_to_sockaddr(&ss);
     }
-    __write_sockaddr(&ss, opt_out_addr, opt_inout_addrsize);
+    __write_sockaddr(&ss, size, opt_out_addr, opt_inout_addrsize);
   }
 
   END_CANCELATION_POINT;

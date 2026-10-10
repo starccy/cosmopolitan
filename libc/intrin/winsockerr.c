@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/errno.h"
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
@@ -25,6 +26,6 @@
  * Error return path for winsock wrappers.
  */
 textwindows int64_t __winsockerr(void) {
-  errno = __errno_windows2linux(WSAGetLastError());
+  errno = __winerrno(WSAGetLastError());
   return -1;
 }

@@ -5,6 +5,7 @@
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/consts/tcp.h"
+#include "libc/sysv/consts/udp.h"
 
 struct SockOpt {
   int linux;
@@ -14,6 +15,7 @@ struct SockOpt {
 #define OPT(NAME) {NAME, &__host_##NAME},
 
 #define SO_OPTS(X)     \
+  X(SO_DEBUG)          \
   X(SO_TYPE)           \
   X(SO_ERROR)          \
   X(SO_ACCEPTCONN)     \
@@ -33,6 +35,7 @@ struct SockOpt {
   X(SO_REUSEPORT)
 
 #define TCP_OPTS(X)             \
+  X(TCP_NODELAY)                \
   X(TCP_MAXSEG)                 \
   X(TCP_CORK)                   \
   X(TCP_KEEPIDLE)               \
@@ -72,6 +75,7 @@ struct SockOpt {
   X(IP_PKTINFO)           \
   X(IP_RECVTTL)           \
   X(IP_RECVTOS)           \
+  X(IP_MTU_DISCOVER)      \
   X(IP_MTU)               \
   X(IP_MULTICAST_IF)      \
   X(IP_MULTICAST_TTL)     \
@@ -89,7 +93,10 @@ struct SockOpt {
   X(IPV6_LEAVE_GROUP)       \
   X(IPV6_V6ONLY)            \
   X(IPV6_PKTINFO)           \
+  X(IPV6_RECVPKTINFO)       \
   X(IPV6_HOPLIMIT)          \
+  X(IPV6_RECVHOPLIMIT)      \
+  X(IPV6_MTU_DISCOVER)      \
   X(IPV6_HOPOPTS)           \
   X(IPV6_RECVRTHDR)         \
   X(IPV6_RTHDR)             \
@@ -97,23 +104,27 @@ struct SockOpt {
   X(IPV6_RECVTCLASS)        \
   X(IPV6_TCLASS)
 
+#define UDP_OPTS(X) X(UDP_SEGMENT)
+
 #define DECL(NAME) extern const int __host_##NAME __asm__(#NAME);
 SO_OPTS(DECL)
 TCP_OPTS(DECL)
 IP_OPTS(DECL)
 IPV6_OPTS(DECL)
+UDP_OPTS(DECL)
 __HOSTCONST(int, SOL_SOCKET);
 
 static const struct SockOpt kSo[] = {SO_OPTS(OPT)};
 static const struct SockOpt kTcp[] = {TCP_OPTS(OPT)};
 static const struct SockOpt kIp[] = {IP_OPTS(OPT)};
 static const struct SockOpt kIpv6[] = {IPV6_OPTS(OPT)};
+static const struct SockOpt kUdp[] = {UDP_OPTS(OPT)};
 
 static int lookup(const struct SockOpt *t, int n, int optname) {
   for (int i = 0; i < n; ++i)
     if (t[i].linux == optname)
       return *t[i].host;
-  return optname;
+  return 0;
 }
 
 static int unlookup(const struct SockOpt *t, int n, int optname) {
@@ -137,8 +148,10 @@ int __sol2host(int level) {
 /**
  * Turns a socket option name into the host's number for it.
  *
- * Names cosmo doesn't know pass through as they are. `level` is the
- * Linux level, not the value __sol2host() returns.
+ * A name cosmo doesn't know gets 0, as does any level but socket,
+ * tcp, udp, ip and ipv6, since the host would take the Linux number
+ * for some other option. `level` is the Linux level, not the value
+ * __sol2host() returns.
  *
  * @return host option name, or 0 if the host has no such option
  */
@@ -154,8 +167,10 @@ int __sockopt2host(int level, int optname) {
       return lookup(kIp, sizeof(kIp) / sizeof(*kIp), optname);
     case SOL_IPV6:
       return lookup(kIpv6, sizeof(kIpv6) / sizeof(*kIpv6), optname);
+    case SOL_UDP:
+      return lookup(kUdp, sizeof(kUdp) / sizeof(*kUdp), optname);
     default:
-      return optname;
+      return 0;
   }
 }
 
@@ -174,7 +189,41 @@ int __sockopt2linux(int level, int optname) {
       return unlookup(kIp, sizeof(kIp) / sizeof(*kIp), optname);
     case SOL_IPV6:
       return unlookup(kIpv6, sizeof(kIpv6) / sizeof(*kIpv6), optname);
+    case SOL_UDP:
+      return unlookup(kUdp, sizeof(kUdp) / sizeof(*kUdp), optname);
     default:
       return optname;
+  }
+}
+
+bool __is_pmtudisc(int level, int optname) {
+  return (level == SOL_IP && optname == IP_MTU_DISCOVER) ||
+         (level == SOL_IPV6 && optname == IPV6_MTU_DISCOVER);
+}
+
+// windows numbers its PMTUD_STATE values not set, do, dont, probe
+int __pmtudisc2nt(int v) {
+  switch (v) {
+    case IP_PMTUDISC_DONT:
+      return 2;
+    case IP_PMTUDISC_WANT:
+      return 0;
+    case IP_PMTUDISC_DO:
+      return 1;
+    default:
+      return 3;
+  }
+}
+
+int __pmtudisc2linux_nt(int v) {
+  switch (v) {
+    case 1:
+      return IP_PMTUDISC_DO;
+    case 2:
+      return IP_PMTUDISC_DONT;
+    case 3:
+      return IP_PMTUDISC_PROBE;
+    default:
+      return IP_PMTUDISC_WANT;
   }
 }

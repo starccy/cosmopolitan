@@ -6,6 +6,7 @@
 #define IP_HDRINCL         3
 #define IP_OPTIONS         4
 #define IP_PKTINFO         8
+#define IP_MTU_DISCOVER    10
 #define IP_RECVTTL         12
 #define IP_RECVTOS         13
 #define IP_MTU             14
@@ -17,5 +18,12 @@
 
 #define IP_DEFAULT_MULTICAST_TTL  1
 #define IP_DEFAULT_MULTICAST_LOOP 1
+
+#define IP_PMTUDISC_DONT      0
+#define IP_PMTUDISC_WANT      1
+#define IP_PMTUDISC_DO        2
+#define IP_PMTUDISC_PROBE     3
+#define IP_PMTUDISC_INTERFACE 4
+#define IP_PMTUDISC_OMIT      5
 
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_IP_H_ */

@@ -34,6 +34,8 @@ textwindows int sys_bind_nt(struct Fd *f, const void *addr, uint32_t addrsize) {
   // a packet socket binds to an interface, not an address
   if (f->family == AF_PACKET)
     return sys_bind_packet_nt(f, addr, addrsize);
+  if (__udg_nt(f))
+    return __udg_bind_nt(f, addr, addrsize);
 
   // normalize unix socket filenames
   struct sockaddr_un sun;

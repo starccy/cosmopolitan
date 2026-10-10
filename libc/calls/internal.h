@@ -13,12 +13,17 @@
 
 COSMOPOLITAN_C_START_
 
+extern int __fgpgrp;
+
 #define kIoMotion ((const int8_t[3]){1, 0, 0})
 
 extern const struct Fd kEmptyFd;
 
 struct Fd;
+struct iovec;
 void __scm_forget_nt(struct Fd *);
+void __udg_close_nt(struct Fd *);
+ssize_t __scm_msgpipe_read_nt(int, const struct iovec *, size_t, uint64_t);
 int __reservefd(int);
 int __reservefd_unlocked(int);
 void __releasefd(int);
@@ -27,6 +32,7 @@ int __ensurefds_unlocked(int);
 void __printfds(struct Fd *, size_t);
 int __sigcheck(sigset_t, bool);
 struct Fd;
+struct iovec;
 #define __EFD_TIMERFD 0x10000  // evflags: the eventfd is a timerfd
 #define __EFD_INOTIFY 0x20000  // evflags: the eventfd is an inotify
 uint64_t __eventfd_take(struct Fd *);
@@ -57,6 +63,7 @@ void EchoConsoleNt(const char *, size_t, bool);
 int IsWindowsExecutable(int64_t, const char16_t *);
 int IsWindowsExecutableName(const char16_t *);
 void InterceptTerminalCommands(const char *, size_t);
+void AnswerCursorPositionQuery(void);
 void sys_console_sync_nt(void);
 void sys_read_nt_wipe_keystrokes(void);
 int __generate_pid(atomic_ulong **);

@@ -25,17 +25,48 @@
 #include "libc/nt/struct/linger.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/nt/winsock.h"
+#include "libc/sock/ifname.h"
 #include "libc/sock/internal.h"
+#include "libc/sock/sock.h"
+#include "libc/sock/struct/ifreq.h"
+#include "libc/str/str.h"
 #include "libc/sock/struct/linger.h"
 #include "libc/sock/syscall_fd.internal.h"
 #include "libc/stdio/sysparam.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/ip.h"
+#include "libc/sysv/consts/ipproto.h"
+#include "libc/sysv/consts/ipv6.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
 #if SupportsWindows()
 
 __msabi extern typeof(__sys_setsockopt_nt) *const __imp_setsockopt;
+__msabi extern typeof(__sys_getsockopt_nt) *const __imp_getsockopt;
+
+// options linux takes that winsock refuses with WSAEINVAL, while the
+// socket already is the way they ask for
+textwindows static bool setsockopt_nt_moot(struct Fd *fd, int level,
+                                           int optname, const void *optval,
+                                           uint32_t optlen) {
+  uint32_t v = 0, len = sizeof(v);
+  // an ipv4 option on an ipv6 socket that can't carry ipv4
+  if (level == SOL_IP && fd->family == AF_INET6)
+    return !__imp_getsockopt(fd->handle, IPPROTO_IPV6,
+                             __sockopt2host(SOL_IPV6, IPV6_V6ONLY), &v,
+                             &len) &&
+           v;
+  // IPV6_DONTFRAG after IPV6_MTU_DISCOVER, which decides the bit
+  if (level == SOL_IPV6 && optname == IPV6_DONTFRAG && optval &&
+      optlen >= sizeof(int) &&
+      !__imp_getsockopt(fd->handle, IPPROTO_IPV6,
+                        __sockopt2host(SOL_IPV6, IPV6_MTU_DISCOVER), &v,
+                        &len) &&
+      v)
+    return !!*(const int *)optval == (v != __pmtudisc2nt(IP_PMTUDISC_DONT));
+  return false;
+}
 
 textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
                                   const void *optval, uint32_t optlen) {
@@ -81,10 +112,40 @@ textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
     optlen = sizeof(u.linger);
   }
 
+  // winsock binds a socket to an interface by index, with IP_UNICAST_IF
+  // in network byte order for ipv4 and IPV6_UNICAST_IF for ipv6, which
+  // a dual-stack socket needs both of
+  if (level == SOL_SOCKET && optname == SO_BINDTODEVICE) {
+    char name[IFNAMSIZ] = {0};
+    uint32_t idx = 0, idx4;
+    if (optval)
+      memcpy(name, optval, MIN(optlen, sizeof(name) - 1));
+    if (*name && !(idx = if_nametoindex(name)))
+      return enodev();
+    idx4 = htonl(idx);
+    if (fd->family == AF_INET6) {
+      if (__imp_setsockopt(fd->handle, IPPROTO_IPV6, 31, &idx, sizeof(idx)) ==
+          -1)
+        return __winsockerr();
+      __imp_setsockopt(fd->handle, IPPROTO_IP, 31, &idx4, sizeof(idx4));
+      return 0;
+    }
+    if (__imp_setsockopt(fd->handle, IPPROTO_IP, 31, &idx4, sizeof(idx4)) == -1)
+      return __winsockerr();
+    return 0;
+  }
+
   // winsock has no SO_REUSEPORT and its SO_REUSEADDR already lets a
   // port be bound again
   if (level == SOL_SOCKET && optname == SO_REUSEPORT)
     return 0;
+
+  int pmtud;
+  if (__is_pmtudisc(level, optname) && optval && optlen >= sizeof(int)) {
+    pmtud = __pmtudisc2nt(*(const int *)optval);
+    optval = &pmtud;
+    optlen = sizeof(pmtud);
+  }
 
   int hopt = __sockopt2host(level, optname);
   if (!hopt)
@@ -92,6 +153,11 @@ textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
   if (__imp_setsockopt(fd->handle, __sol2host(level), hopt, optval, optlen) !=
       -1)
     return 0;
+  int err = WSAGetLastError();
+  if (err == WSAEINVAL &&
+      setsockopt_nt_moot(fd, level, optname, optval, optlen))
+    return 0;
+  WSASetLastError(err);
   if (WSAGetLastError() == WSAEINVAL && fd->connecting == 1 && optval &&
       optlen == sizeof(int) &&
       __sockopt_park(fd->handle, level, optname, *(const int *)optval))

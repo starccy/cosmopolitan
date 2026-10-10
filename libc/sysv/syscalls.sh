@@ -313,7 +313,7 @@ scall	sys_timerfd_create	0xfffffffffffff11b	0x055	globl # no wrapper
 scall	sys_timerfd_settime	0xfffffffffffff11e	0x056	globl # no wrapper
 scall	sys_timerfd_gettime	0xfffffffffffff11f	0x057	globl # no wrapper
 #──────────────────────RHEL 6.0 LIMIT──────────────────────────────── # ←┬─ modern glibc needs rhel6+ c. 2011
-scall	sys_recvmmsg		0x1dbffffffffff12b	0x0f3	globl #  ├─ end of life 2024-06-30 (extended)
+scall	sys_recvmmsg		0x1dbffffffffff92b	0x8f3	globl #  ├─ end of life 2024-06-30 (extended)
 scall	sys_fanotify_init	0xfffffffffffff12c	0x106	globl #  ├─ last distro with the original gnome desktop
 scall	sys_fanotify_mark	0xfffffffffffff12d	0x107	globl #  └─ apple and google condemn the gplv3/gccrtev3
 scall	sys_prlimit		0xfffffffffffff12e	0x105	globl # a.k.a. prlimit64()
@@ -321,7 +321,7 @@ scall	sys_name_to_handle_at	0xfffffffffffff12f	0x108	globl
 scall	sys_open_by_handle_at	0xfffffffffffff130	0x109	globl
 scall	sys_clock_adjtime	0xfffffffffffff131	0x10a	globl # no wrapper
 scall	sys_syncfs		0xfffffffffffff132	0x10b	globl # no wrapper
-#scall	sendmmsg		0x1dcffffffffff133	0x10d	globl
+scall	sys_sendmmsg		0x1dcffffffffff933	0x90d	globl
 scall	sys_setns		0xfffffffffffff134	0x10c	globl # no wrapper
 scall	sys_getcpu		0xfffffffffffff135	0x0a8	globl # no wrapper
 scall	sys_process_vm_readv	0xfffffffffffff136	0x10e	globl # no wrapper

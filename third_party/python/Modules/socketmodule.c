@@ -466,6 +466,7 @@ http://cvsweb.netbsd.org/bsdweb.cgi/src/lib/libc/net/getaddrinfo.c.diff?r1=1.82&
 /* Addressing includes */
 
 #ifdef AF_CAN
+enum { kPyAfCan = AF_CAN };
 #undef AF_CAN
 #endif
 
@@ -6672,8 +6673,8 @@ PyInit__socket(void)
     PyModule_AddStringConstant(m, "BDADDR_LOCAL", "00:00:00:FF:FF:FF");
 #endif
 
-    if (AF_CAN) PyModule_AddIntMacro(m, AF_CAN); /* Controller Area Network */
-    if (PF_CAN) PyModule_AddIntMacro(m, PF_CAN);
+    PyModule_AddIntConstant(m, "AF_CAN", kPyAfCan); /* Controller Area Network */
+    PyModule_AddIntConstant(m, "PF_CAN", kPyAfCan);
     if (PF_RDS) PyModule_AddIntMacro(m, PF_RDS);
     if (AF_PACKET) PyModule_AddIntMacro(m, AF_PACKET);
     if (PF_PACKET) PyModule_AddIntMacro(m, PF_PACKET);

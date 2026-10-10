@@ -85,9 +85,13 @@ ssize_t recvfrom(int fd, void *buf, size_t size, int flags,
       if (rc != -1 && addrsize == sizeof(addr)) {
         addrsize = 0;
       }
-    } else if (__isfdkind(fd, kFdFile) && !opt_out_srcaddr) { /* socketpair */
+    } else if (__sockpair_nt(__get_pib()->fds.p + fd) &&
+               __isfdkind(fd, kFdFile)) {
+      // a message pair has no addresses, so the peer is unnamed, which
+      // linux reports as a zero length
       if (!flags) {
         rc = sys_read_nt(fd, (struct iovec[]){{buf, size}}, 1, -1);
+        addrsize = 0;
       } else {
         rc = einval();
       }
@@ -103,8 +107,9 @@ ssize_t recvfrom(int fd, void *buf, size_t size, int flags,
       if (IsBsd()) {
         __convert_bsd_to_sockaddr(&addr);
       }
-      __write_sockaddr(&addr, opt_out_srcaddr, opt_inout_srcaddrsize);
-    } else {
+      __write_sockaddr(&addr, IsWindows() ? 0 : addrsize, opt_out_srcaddr,
+                       opt_inout_srcaddrsize);
+    } else if (opt_inout_srcaddrsize) {
       *opt_inout_srcaddrsize = 0;
     }
   }

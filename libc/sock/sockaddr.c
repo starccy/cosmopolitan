@@ -34,6 +34,8 @@ uint8_t __get_sockaddr_len(const struct sockaddr_storage *addr) {
     return sizeof(struct sockaddr_in6);
   } else if (addr->ss_family == AF_UNIX) {
     struct sockaddr_un *sun = (struct sockaddr_un *)addr;
+    if (!sun->sun_path[0])
+      return sizeof(sun->sun_family);  // unnamed
     return sizeof(sun->sun_family) +
            strnlen(sun->sun_path, sizeof(sun->sun_path)) + 1;
   } else {
@@ -62,9 +64,13 @@ void __convert_sockaddr_to_bsd(struct sockaddr_storage *addr) {
   pun->bsd.sa_len = len;
 }
 
-// copies sockaddr from internal memory to user's buffer
-void __write_sockaddr(const struct sockaddr_storage *addr, void *out_addr,
-                      uint32_t *inout_addrsize) {
+// copies sockaddr from internal memory to user's buffer. `len` is the
+// size the kernel reported, or 0 when there's none to go by. it decides
+// for AF_UNIX, whose path isn't always a string: linux's abstract names
+// start with a nul and may hold more of them, and an unnamed socket is
+// just the family
+void __write_sockaddr(const struct sockaddr_storage *addr, uint32_t len,
+                      void *out_addr, uint32_t *inout_addrsize) {
   if (!out_addr)
     return;
   if (!inout_addrsize)
@@ -73,6 +79,8 @@ void __write_sockaddr(const struct sockaddr_storage *addr, void *out_addr,
   if (insize)
     bzero(out_addr, insize);
   uint32_t outsize = __get_sockaddr_len(addr);
+  if (len && addr->ss_family == AF_UNIX)
+    outsize = MIN(len, sizeof(struct sockaddr_un));
   uint32_t copysize = MIN(insize, outsize);
   if (copysize)
     memcpy(out_addr, addr, copysize);
