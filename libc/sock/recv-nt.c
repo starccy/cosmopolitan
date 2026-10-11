@@ -145,9 +145,15 @@ textwindows static bool __recv_nt_commit(const struct iovec *iov,
 
 textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
                                 uint32_t flags) {
+  int e = errno;
   ssize_t rc = sys_recv_nt_impl(fd, iov, iovlen, flags);
   if (rc == -1 && errno == EFAULT && __recv_nt_commit(iov, iovlen))
     rc = sys_recv_nt_impl(fd, iov, iovlen, flags);
+  // winsock fails a receive after shutdown(SHUT_RD), linux reads eof
+  if (rc == -1 && errno == ESHUTDOWN) {
+    errno = e;
+    rc = 0;
+  }
   if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
     _weaken(__epoll_rearm_in)(fd);
   return rc;

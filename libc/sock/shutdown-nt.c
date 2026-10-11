@@ -17,20 +17,24 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/dce.h"
+#include "libc/nt/thread.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/syscall_fd.internal.h"
+#include "libc/sysv/consts/shut.h"
 #if SupportsWindows()
 
 __msabi extern typeof(__sys_shutdown_nt) *const __imp_shutdown;
 
 textwindows int sys_shutdown_nt(struct Fd *fd, int how) {
-  if (__imp_shutdown(fd->handle, how) != -1) {
-    return 0;
-  } else {
+  if (__imp_shutdown(fd->handle, how) == -1)
     return __winsockerr();
-  }
+  // cancels the socket's pending i/o, on dup()'d descriptors as well;
+  // a cancelled receive starts over and reads eof, a send starts over
+  if (how == SHUT_RD || how == SHUT_RDWR)
+    CancelIoEx(fd->handle, 0);
+  return 0;
 }
 
 #endif /* __x86_64__ */
