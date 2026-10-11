@@ -19,6 +19,8 @@ const char *__rewriteunixpath(const char *, char *) libcesque;
 int __mkntpath(const char *, char16_t[static PATH_MAX]) libcesque;
 int __mkntpathat(int, const char *, char16_t[static 1024]) libcesque;
 int __mkunixpath(const char16_t *, char[static PATH_MAX]) libcesque;
+int __mkunixpath_raw(const char16_t *, char[static PATH_MAX]) libcesque;
+int __tmpunfixpath(char[static PATH_MAX], int) libcesque;
 bool __nt_issymlink(const char16_t *) libcesque;
 int __unc_fixpath(const char *, char *, size_t);
 int __unc_cwd(char *, size_t);

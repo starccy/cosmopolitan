@@ -30,6 +30,7 @@
 #include "libc/nt/struct/win32finddata.h"
 #include "libc/nt/systeminfo.h"
 #include "libc/str/str.h"
+#include "libc/str/tab.h"
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
@@ -397,7 +398,7 @@ textwindows static const char *__tmpdirpath(size_t *len) {
     uint32_t n = GetTempPath(PATH_MAX, dir16);
     if (!n || n >= PATH_MAX)
       return 0;
-    int m = __mkunixpath(dir16, tmp);
+    int m = __mkunixpath_raw(dir16, tmp);
     if (m <= 0 || m >= PATH_MAX - 1)
       return 0;
     if (tmp[m - 1] != '/')
@@ -407,6 +408,29 @@ textwindows static const char *__tmpdirpath(size_t *len) {
   }
   *len = dirlen;
   return dir;
+}
+
+// the inverse of __tmpfixpath(): a unix path `p` of length `n` that's
+// the host's temp directory or under it becomes "/tmp" or under it, so
+// a path the system hands back (a socket's name, the current directory,
+// what realpath() resolves to) reads the way it was given. returns the
+// new length
+textwindows int __tmpunfixpath(char p[static PATH_MAX], int n) {
+  size_t dirlen;
+  const char *dir = __tmpdirpath(&dirlen);
+  if (!dir || dirlen < 2)
+    return n;
+  size_t k = dirlen - 1;  // without the trailing slash
+  if ((size_t)n < k || (p[k] && p[k] != '/'))
+    return n;
+  for (size_t i = 0; i < k; ++i)
+    if (kToLower[p[i] & 255] != kToLower[dir[i] & 255])
+      return n;
+  if (n - k + 4 >= PATH_MAX)
+    return n;
+  memmove(p + 4, p + k, n - k + 1);
+  memcpy(p, "/tmp", 4);
+  return n - k + 4;
 }
 
 // "/tmp" and everything under it is the host's temp directory, which
@@ -562,7 +586,8 @@ textwindows static int __checkdotbase(int64_t dirhand, char base[PATH_MAX],
     } else if (n >= PATH_MAX) {
       rc = enametoolong();
     } else {
-      rc = __mkunixpath(base16, base);
+      // the "/tmp" rewrite already happened, so no folding back
+      rc = __mkunixpath_raw(base16, base);
     }
   }
   CloseHandle(h);

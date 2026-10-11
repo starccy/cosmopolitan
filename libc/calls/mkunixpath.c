@@ -32,6 +32,15 @@
  */
 textwindows int __mkunixpath(const char16_t *path,
                              char path8[static PATH_MAX]) {
+  int n = __mkunixpath_raw(path, path8);
+  if (n > 0)
+    n = __tmpunfixpath(path8, n);
+  return n;
+}
+
+// __mkunixpath() without folding the temp directory back into "/tmp"
+textwindows int __mkunixpath_raw(const char16_t *path,
+                                 char path8[static PATH_MAX]) {
 
   // convert utf-16 to utf-8
   // we can't modify `buf` until we're certain of success
