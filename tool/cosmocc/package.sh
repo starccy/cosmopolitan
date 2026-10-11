@@ -240,6 +240,10 @@ mkdir -p "$OUTDIR/bin/"
 cp tool/cosmocc/README.md "$OUTDIR/"
 cp tool/cosmocc/LICENSE.* "$OUTDIR/"
 
+# host values of every runtime constant, what rust-ape's audit compares against
+mkdir -p "$OUTDIR/libc/sysv/"
+cp libc/sysv/consts.sh "$OUTDIR/libc/sysv/"
+
 mkdir -p "$OUTDIR/include/"
 mkdir -p "$OUTDIR/include/libc/integral/"
 cp -R libc/isystem/* "$OUTDIR/include/"
