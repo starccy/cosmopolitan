@@ -17,6 +17,7 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/sock/struct/sockaddr.h"
+#include "libc/dce.h"
 #include "libc/macros.h"
 #include "libc/sock/sock.h"
 #include "libc/sock/struct/sockaddr.h"
@@ -68,9 +69,13 @@ void __convert_sockaddr_to_bsd(struct sockaddr_storage *addr) {
 // size the kernel reported, or 0 when there's none to go by. it decides
 // for AF_UNIX, whose path isn't always a string: linux's abstract names
 // start with a nul and may hold more of them, and an unnamed socket is
-// just the family
+// just the family. bsd has no abstract names, and its length leaves out
+// the path's nul and is 16 for an unnamed socket, so there the path is
+// measured instead
 void __write_sockaddr(const struct sockaddr_storage *addr, uint32_t len,
                       void *out_addr, uint32_t *inout_addrsize) {
+  if (IsBsd())
+    len = 0;
   if (!out_addr)
     return;
   if (!inout_addrsize)

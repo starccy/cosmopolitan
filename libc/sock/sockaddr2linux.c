@@ -69,7 +69,9 @@ void sockaddr2linux(const union sockaddr_storage_bsd *addr, uint32_t addrsize,
           out_addr->sun.sun_family = AF_UNIX;
           if (len)
             memcpy(out_addr->sun.sun_path, addr->sun.sun_path, len);
-          *inout_addrsize = sizeof(out_addr->sun.sun_family) + len + 1;
+          // an unnamed socket is just the family
+          *inout_addrsize =
+              sizeof(out_addr->sun.sun_family) + (len ? len + 1 : 0);
         }
       }
     }

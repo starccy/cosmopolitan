@@ -77,7 +77,7 @@ ssize_t sendto(int fd, const void *buf, size_t size, int flags,
     int hflags = __msg2host(flags);
     if (hflags == -1) {
       rc = einval();
-    } else if (!IsBsd() || !opt_addr) {
+    } else if (!IsBsd() || !opt_addr || !addrsize) {
       rc = sys_sendto(fd, buf, size, hflags, opt_addr, addrsize);
     } else if (!(rc = sockaddr2bsd(opt_addr, addrsize, &bsd, &bsdaddrsize))) {
       rc = sys_sendto(fd, buf, size, hflags, &bsd, bsdaddrsize);

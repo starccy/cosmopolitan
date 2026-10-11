@@ -70,10 +70,14 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
     } else if (IsBsd() && (msg->msg_name || msg->msg_control)) {
       rc = 0;
       memcpy(&msg2, msg, sizeof(msg2));
-      if (msg->msg_name) {
+      // linux takes a zero length as no address, whatever msg_name is
+      if (msg->msg_name && msg->msg_namelen) {
         if (!(rc = sockaddr2bsd(msg->msg_name, msg->msg_namelen, &bsd,
                                 &msg2.msg_namelen)))
           msg2.msg_name = &bsd.sa;
+      } else {
+        msg2.msg_name = 0;
+        msg2.msg_namelen = 0;
       }
       if (!rc && msg->msg_control) {
         // the bsd layout is never bigger than the linux one
