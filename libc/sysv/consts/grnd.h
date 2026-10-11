@@ -3,5 +3,6 @@
 
 #define GRND_NONBLOCK 1
 #define GRND_RANDOM   2
+#define GRND_INSECURE 4
 
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_GRND_H_ */

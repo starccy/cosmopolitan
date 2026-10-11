@@ -110,6 +110,14 @@ static ssize_t GetDevUrandom(char *p, size_t n, unsigned f) {
   return rc;
 }
 
+// linux before 5.6, which doesn't know GRND_INSECURE
+static ssize_t GetRandomInsecure(char *p, size_t n, unsigned f) {
+  ssize_t rc = sys_getrandom(p, n, (f & ~GRND_INSECURE) | GRND_NONBLOCK);
+  if (rc == -1 && errno == EAGAIN)
+    rc = GetDevUrandom(p, n, 0);
+  return rc;
+}
+
 ssize_t __getrandom(void *p, size_t n, unsigned f) {
   ssize_t rc;
   if (IsWindows()) {
@@ -120,7 +128,9 @@ ssize_t __getrandom(void *p, size_t n, unsigned f) {
       rc = GetRandomBsd(p, n, GetRandomEntropy);
     } else {
       BEGIN_CANCELATION_POINT;
-      rc = sys_getrandom(p, n, f);
+      rc = sys_getrandom(p, n, IsLinux() ? f : f & ~GRND_INSECURE);
+      if (rc == -1 && errno == EINVAL && (f & GRND_INSECURE))
+        rc = GetRandomInsecure(p, n, f);
       END_CANCELATION_POINT;
     }
   } else if (IsFreebsd() || IsNetbsd()) {
@@ -172,6 +182,8 @@ ssize_t __getrandom(void *p, size_t n, unsigned f) {
  * - `GRND_NONBLOCK` when you want to elevate the insecurity of your
  *   random data
  *
+ * - `GRND_INSECURE` to never block, even before the pool is initialized
+ *
  * - `GRND_RANDOM` if you want to have the best possible chance your
  *   program will freeze and the system operator is paged to address
  *   the outage by driving to the data center and jiggling the mouse
@@ -188,7 +200,8 @@ ssize_t __getrandom(void *p, size_t n, unsigned f) {
  */
 ssize_t getrandom(void *p, size_t n, unsigned f) {
   ssize_t rc;
-  if (f & ~(GRND_RANDOM | GRND_NONBLOCK)) {
+  if ((f & ~(GRND_RANDOM | GRND_NONBLOCK | GRND_INSECURE)) ||
+      (f & (GRND_RANDOM | GRND_INSECURE)) == (GRND_RANDOM | GRND_INSECURE)) {
     rc = einval();
   } else if (n && kisdangerous(p)) {
     rc = efault();
