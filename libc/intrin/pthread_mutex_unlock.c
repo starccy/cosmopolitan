@@ -117,7 +117,9 @@ dontinline static errno_t pthread_mutex_unlock_impl(pthread_mutex_t *mutex) {
 
   // check if mutex isn't held by calling thread
   if (MUTEX_TYPE(word) == PTHREAD_MUTEX_ERRORCHECK || IsModeDbg()) {
-    if (__deadlock_tracked(mutex) == 0) {
+    if ((MUTEX_TYPE(word) == PTHREAD_MUTEX_ERRORCHECK
+             ? __deadlock_tracked_notrap(mutex)
+             : __deadlock_tracked(mutex)) == 0) {
       if (IsModeDbg() && MUTEX_TYPE(word) != PTHREAD_MUTEX_ERRORCHECK) {
         kprintf("error: unlock mutex not owned by calling thread: %t\n", mutex);
         DebugBreak();

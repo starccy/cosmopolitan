@@ -25,34 +25,55 @@
 
 static pthread_mutex_t mu;
 
-int main() {
+// exit codes are base + n, so a failure says which mutex it was
+static void check(pthread_mutex_t *mu, int base) {
   pthread_mutexattr_t attr;
   if (pthread_mutexattr_init(&attr))
-    exit(10);
+    exit(base + 0);
   if (pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK))
-    exit(11);
-  if (pthread_mutex_init(&mu, &attr))
-    exit(12);
+    exit(base + 1);
+  if (pthread_mutex_init(mu, &attr))
+    exit(base + 2);
   if (pthread_mutexattr_destroy(&attr))
-    exit(13);
+    exit(base + 3);
 
   // unlocking a mutex that was never locked => EPERM
-  if (pthread_mutex_unlock(&mu) != EPERM)
-    exit(14);
+  if (pthread_mutex_unlock(mu) != EPERM)
+    exit(base + 4);
 
-  if (pthread_mutex_lock(&mu))
-    exit(15);
+  if (pthread_mutex_lock(mu))
+    exit(base + 5);
 
   // the owner relocking it => EDEADLK instead of a hang
-  if (pthread_mutex_lock(&mu) != EDEADLK)
-    exit(16);
+  if (pthread_mutex_lock(mu) != EDEADLK)
+    exit(base + 6);
 
-  if (pthread_mutex_unlock(&mu))
-    exit(17);
+  if (pthread_mutex_unlock(mu))
+    exit(base + 7);
 
   // unlocking again, now that it's free => EPERM
-  if (pthread_mutex_unlock(&mu) != EPERM)
-    exit(18);
+  if (pthread_mutex_unlock(mu) != EPERM)
+    exit(base + 8);
 
-  pthread_mutex_destroy(&mu);
+  // waiting on a condition without holding the mutex => EPERM
+  pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+  struct timespec ts = {0};
+  if (pthread_cond_timedwait(&cv, mu, &ts) != EPERM)
+    exit(base + 9);
+
+  pthread_mutex_destroy(mu);
+}
+
+int main() {
+  check(&mu, 10);
+
+  // not in static memory, where only the error checking type tracks it
+  pthread_mutex_t *heap = malloc(sizeof(pthread_mutex_t));
+  if (!heap)
+    exit(1);
+  check(heap, 20);
+  free(heap);
+
+  pthread_mutex_t stack;
+  check(&stack, 30);
 }

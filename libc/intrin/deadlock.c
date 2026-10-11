@@ -203,6 +203,20 @@ ABI static bool __deadlock_visit(void *lock, struct VisitedLock *visited,
  *     certainly not owned by calling thread, and -1 if we're uncertain
  */
 ABI int __deadlock_tracked(void *lock) {
+  int owned = __deadlock_tracked_notrap(lock);
+  if (!owned && !is_static_memory(lock))
+    return -1;
+  return owned;
+}
+
+/**
+ * Same for a lock tracked with `notrap`, like an error checking mutex,
+ * which is tracked wherever it lives.
+ *
+ * @return 1 if lock is certainly owned by calling thread, 0 if lock is
+ *     certainly not owned by calling thread, and -1 if we're uncertain
+ */
+ABI int __deadlock_tracked_notrap(void *lock) {
   int full = 1;
   int owned = 0;
   struct CosmoTib *tib = __deadlock_tls();
@@ -211,8 +225,6 @@ ABI int __deadlock_tracked(void *lock) {
     owned |= tib->tib_locks[i] == lock;
   }
   if (full)
-    return -1;
-  if (!owned && !is_static_memory(lock))
     return -1;
   return owned;
 }

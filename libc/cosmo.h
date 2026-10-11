@@ -43,6 +43,7 @@ int cosmo_stack_getmaxstacks(void) libcesque;
 
 int __deadlock_check(void *, int) libcesque;
 int __deadlock_tracked(void *) libcesque;
+int __deadlock_tracked_notrap(void *) libcesque;
 void __deadlock_record(void *, int) libcesque;
 void __deadlock_track(void *, int) libcesque;
 void __deadlock_untrack(void *) libcesque;
