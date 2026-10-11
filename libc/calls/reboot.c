@@ -21,6 +21,8 @@
 #include "libc/dce.h"
 #include "libc/nt/system.h"
 #include "libc/runtime/runtime.h"
+#include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/reboot.h"
 #include "libc/sysv/errfuns.h"
 
 #define kNtShutdownForceOthers   1
@@ -30,6 +32,36 @@
 
 int32_t sys_reboot_linux(int32_t, int32_t, int32_t) asm("sys_reboot");
 int32_t sys_reboot_bsd(int32_t, const char *) asm("sys_reboot");
+
+__HOSTCONST(unsigned, RB_AUTOBOOT);
+__HOSTCONST(unsigned, RB_POWER_OFF);
+__HOSTCONST(unsigned, RB_HALT_SYSTEM);
+__HOSTCONST(unsigned, RB_SW_SUSPEND);
+__HOSTCONST(unsigned, RB_KEXEC);
+__HOSTCONST(unsigned, RB_ENABLE_CAD);
+__HOSTCONST(unsigned, RB_DISABLE_CAD);
+__HOSTCONST(unsigned, RB_NOSYNC);
+
+static const struct {
+  unsigned linux;
+  const unsigned *host;
+} kReboot[] = {
+    {RB_AUTOBOOT, &__host_RB_AUTOBOOT},        //
+    {RB_POWER_OFF, &__host_RB_POWER_OFF},      //
+    {RB_HALT_SYSTEM, &__host_RB_HALT_SYSTEM},  //
+    {RB_SW_SUSPEND, &__host_RB_SW_SUSPEND},    //
+    {RB_KEXEC, &__host_RB_KEXEC},              //
+    {RB_ENABLE_CAD, &__host_RB_ENABLE_CAD},    //
+    {RB_DISABLE_CAD, &__host_RB_DISABLE_CAD},  //
+};
+
+// the host's number for a linux reboot command, -1 when it has none
+static int64_t reboot2host(unsigned howto) {
+  for (int i = 0; i < sizeof(kReboot) / sizeof(*kReboot); ++i)
+    if (howto == kReboot[i].linux)
+      return *kReboot[i].host == 0xffffffffu ? -1 : *kReboot[i].host;
+  return -1;
+}
 
 /**
  * Reboots system.
@@ -51,24 +83,26 @@ int32_t sys_reboot_bsd(int32_t, const char *) asm("sys_reboot");
  */
 int reboot(int howto) {
   bool ok, immediately;
+  int64_t cmd;
   if (howto != -1) {
-    if (!(howto & 0x20000000)) {
+    if (!(howto & RB_NOSYNC)) {
       sync();
       immediately = false;
     } else {
-      howto &= ~0x20000000;
+      howto &= ~RB_NOSYNC;
       immediately = true;
     }
+    if (IsLinux())
+      return sys_reboot_linux(0xFEE1DEAD, 0x28121969, howto);
+    if ((cmd = reboot2host(howto)) == -1)
+      return einval();
     if (!IsWindows()) {
-      if (IsLinux()) {
-        return sys_reboot_linux(0xFEE1DEAD, 0x28121969, howto);
-      } else {
-        return sys_reboot_bsd(howto, 0);
-      }
+      return sys_reboot_bsd(cmd | (immediately ? __host_RB_NOSYNC : 0), 0);
     } else {
-      if (howto == 0xD000FCE2u) {
+      if (howto == RB_SW_SUSPEND) {
         ok = !!SetSuspendState(0, 0, 0);
       } else {
+        howto = cmd;
         howto |= kNtShutdownForceSelf;
         howto |= kNtShutdownForceOthers;
         howto |= kNtShutdownHybrid;
