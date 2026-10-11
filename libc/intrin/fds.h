@@ -61,6 +61,7 @@ struct Fd {
   void *udg;         // unix datagram on windows, see unixdgram-nt.c
   void *pty;         // pseudoconsole on windows, see pty.internal.h
   bool ptymaster;
+  bool devzero;  // windows: a kFdDevRandom that is /dev/zero
   char syncio;  // windows disk file: 0 not known yet, 1 synchronous, 2 not
   char exec;    // windows disk file: 0 name doesn't say, 1 not exec, 2 exec
   long fionbio;     // windows socket: the handle FIONBIO was last set on

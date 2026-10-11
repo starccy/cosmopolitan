@@ -127,7 +127,8 @@ int pfs_self_fds(struct pfs_fdent **out) {
         snprintf(e->text, sizeof e->text, "/dev/null");
         break;
       case kFdDevRandom:
-        snprintf(e->text, sizeof e->text, "/dev/urandom");
+        snprintf(e->text, sizeof e->text,
+                 f->devzero ? "/dev/zero" : "/dev/urandom");
         break;
       case kFdZip:
         snprintf(e->text, sizeof e->text, "/zip");

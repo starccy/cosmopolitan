@@ -1192,7 +1192,10 @@ textwindows static ssize_t ReadBuffer(int fd, void *data, size_t size,
     return 0;
 
   if (f->kind == kFdDevRandom) {
-    ProcessPrng(data, size);
+    if (f->devzero)
+      bzero(data, size);
+    else
+      ProcessPrng(data, size);
     return size;
   }
 

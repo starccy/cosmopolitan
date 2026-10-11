@@ -919,6 +919,11 @@ static void *__maps_pickaddr(size_t size) {
 static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
                          int64_t off) {
 
+  // /dev/zero on windows maps as anonymous memory, the way linux does it
+  if (IsWindows() && !(flags & MAP_ANONYMOUS) && __isfdkind(fd, kFdDevRandom) &&
+      __get_pib()->fds.p[fd].devzero)
+    flags |= MAP_ANONYMOUS;
+
   // validate file map args
   if (flags & MAP_ANONYMOUS) {
     // some operating systems will complain unless we do this

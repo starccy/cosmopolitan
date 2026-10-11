@@ -345,6 +345,10 @@ textwindows static int sys_open_nt_dispatch(int dirfd, const char *file,
       return sys_open_nt_special(fd, flags, mode, kFdDevNull, u"NUL");
     if (!strcmp(file + 5, "urandom") || !strcmp(file + 5, "random"))
       return sys_open_nt_no_handle(fd, flags, mode, kFdDevRandom);
+    if (!strcmp(file + 5, "zero")) {
+      __get_pib()->fds.p[fd].devzero = true;
+      return sys_open_nt_no_handle(fd, flags, mode, kFdDevRandom);
+    }
     if (!strcmp(file + 5, "stdin"))
       return sys_open_nt_dup(fd, flags, mode, STDIN_FILENO);
     if (!strcmp(file + 5, "stdout"))

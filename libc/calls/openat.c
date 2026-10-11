@@ -78,6 +78,7 @@
  * - `/dev/null` using `CreateFile(u"NUL")`
  * - `/dev/random` using ProcessPrng()
  * - `/dev/urandom` using ProcessPrng()
+ * - `/dev/zero`, reading zeros
  * - `/dev/stdin` using `dup(0)`
  * - `/dev/stdout` using `dup(1)`
  * - `/dev/stderr` using `dup(2)`

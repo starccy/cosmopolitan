@@ -79,7 +79,8 @@ textwindows int sys_fstatat_nt(int dirfd, const char *path, struct stat *st,
       return sys_fstat_nt_char(kFdConsole, st);
     } else if (!strcmp(path + 5, "null")) {
       return sys_fstat_nt_char(kFdDevNull, st);
-    } else if (!strcmp(path + 5, "random") || !strcmp(path + 5, "urandom")) {
+    } else if (!strcmp(path + 5, "random") || !strcmp(path + 5, "urandom") ||
+               !strcmp(path + 5, "zero")) {
       return sys_fstat_nt_char(kFdDevRandom, st);
     } else if (!strcmp(path + 5, "stdin")) {
       return sys_fstat_nt(STDIN_FILENO, st);
