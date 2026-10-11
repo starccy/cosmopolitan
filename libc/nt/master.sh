@@ -27,6 +27,7 @@ imp	''							FindNextFileW						kernel32	2
 imp	''							FlushFileBuffers					kernel32	1
 imp	''							FlushViewOfFile						kernel32	2
 imp	''							GenerateConsoleCtrlEvent				kernel32	2
+imp	''							GetConsoleProcessList					kernel32	2
 imp	''							GetCurrentDirectoryW					kernel32	2
 imp	''							GetExitCodeProcess					kernel32	2
 imp	''							GetFileAttributesW					kernel32	1
@@ -35,6 +36,7 @@ imp	''							LockFileEx						kernel32	6
 imp	''							MapViewOfFileEx						kernel32	6
 imp	''							MapViewOfFileExNuma					kernel32	7
 imp	''							MoveFileExW						kernel32	3
+imp	''							OpenFileMappingW					kernel32	3
 imp	''							OpenProcess						kernel32	3
 imp	''							ReOpenFile						kernel32	4	# TODO(jart): 6.2 and higher
 imp	''							RemoveDirectoryW					kernel32	1

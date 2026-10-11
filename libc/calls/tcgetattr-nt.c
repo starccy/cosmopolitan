@@ -25,6 +25,7 @@
 #include "libc/dce.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/nomultics.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/nt/console.h"
 #include "libc/nt/enum/consolemodeflags.h"
 #include "libc/str/str.h"
@@ -58,6 +59,8 @@ textwindows int tcgetattr_nt(int fd, struct termios *tio) {
   memcpy(tio->c_cc, __ttyconf.c_cc, NCCS);
   tio->c_iflag = IUTF8;
   tio->c_lflag = ECHOE;
+  if (__pgrp_tostop())
+    tio->c_lflag |= TOSTOP;
   tio->c_cflag = CS8 | CREAD | B38400;
   tio->_c_ispeed = B38400;
   tio->_c_ospeed = B38400;

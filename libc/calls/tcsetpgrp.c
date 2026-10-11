@@ -22,12 +22,15 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
+#include "libc/calls/struct/sigset.internal.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/proc/proc.h"
 #include "libc/sysv/pib.h"
 #include "libc/nt/console.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/sig.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 
@@ -48,13 +51,24 @@ int tcsetpgrp(int fd, int pgrp) {
   if (__isfdkind(fd, kFdZip)) {
     rc = enotty();
   } else if (IsWindows() || IsMetal()) {
+    if (IsWindows() && __isfdkind(fd, kFdConsole) && _weaken(__ttystop_nt)) {
+      sigset_t m = __sig_block();
+      rc = _weaken(__ttystop_nt)(SIGTTOU, m);
+      __sig_unblock(m);
+      if (rc == -1)
+        goto done;
+    }
     if (sys_isatty(fd)) {
       __fgpgrp = pgrp;
+      if (IsWindows() && __isfdkind(fd, kFdConsole) &&
+          _weaken(__pgrp_set_foreground))
+        _weaken(__pgrp_set_foreground)(pgrp);
       // the terminal belongs to another group now, so ^Z typed on the
       // console is theirs: a thread of ours watches for it meanwhile
       if (IsWindows() && __isfdkind(fd, kFdConsole) &&
           _weaken(__jobctl_foreground))
-        _weaken(__jobctl_foreground)(pgrp == __get_pib()->pgid ? 0 : pgrp);
+        _weaken(__jobctl_foreground)(
+            pgrp == _weaken(__pgrp_self)() ? 0 : pgrp);
       rc = 0;
     } else {
       rc = -1;  // ebadf, enotty
@@ -62,6 +76,7 @@ int tcsetpgrp(int fd, int pgrp) {
   } else {
     rc = sys_ioctl(fd, __ioctl2host(TIOCSPGRP), &pgrp);
   }
+done:
   STRACE("tcsetpgrp(%d, %d) → %d% m", fd, pgrp, rc);
   return rc;
 }

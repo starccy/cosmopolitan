@@ -106,6 +106,10 @@ textwindows void sys_vfork_nt_exec(intptr_t hProcess) {
   if (pid) {
     self->proc->pid = pid;
     self->pid = pid;
+    if (self->proc->pgid == placeholder)
+      self->proc->pgid = pid;
+    if (self->pgid == placeholder)
+      self->pgid = pid;
     char16_t path[128];
     UnmapViewOfFile(self->sigpending);
     self->sigpending = &__fake_process_signals;

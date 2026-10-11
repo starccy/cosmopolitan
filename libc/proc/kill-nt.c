@@ -25,6 +25,7 @@
 #include "libc/errno.h"
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/dll.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/strace.h"
 #include "libc/macros.h"
 #include "libc/mem/alloca.h"
@@ -62,6 +63,29 @@ textwindows static bool sys_kill_nt_post(int pid, int sig) {
   return owned;
 }
 
+// a group member that isn't our child, which is a cosmo program taking
+// the signal through its file, or a host program, stopped and continued
+// by suspending it, or terminated
+textwindows static void sys_kill_nt_member(struct PgrpMember *m, int sig) {
+  if (m->cosmo && sig != 9 && sys_kill_nt_post(m->pid, sig))
+    return;
+  if (!sig || sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH)
+    return;
+  bool stop = sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN ||
+              sig == SIGTTOU;
+  int64_t h;
+  if (!(h = OpenProcess(kNtProcessTerminate | kNtProcessSuspendResume, false,
+                        m->winpid)))
+    return;
+  if (stop)
+    NtSuspendProcess(h);
+  else if (sig == SIGCONT)
+    NtResumeProcess(h);
+  else
+    TerminateProcess(h, sig);
+  CloseHandle(h);
+}
+
 textwindows int sys_kill_nt(int pid, int sig) {
 
   // validate api usage
@@ -72,22 +96,33 @@ textwindows int sys_kill_nt(int pid, int sig) {
   if (pid == -1)
     return einval();
 
-  // a process group is what the process table says it is: our direct
-  // children that setpgid() put in it, and ourselves when it's ours.
-  // each member then goes the single process way below, so a native
-  // one is suspended by a stop signal rather than terminated
+  // a process group is our direct children in it, as the process table
+  // says, and every process on our console whose published group it is
+  // or, for a host program, whose nearest published ancestor's it is
   if (pid <= 0) {
-    int pgid = pid ? -pid : __get_pib()->pgid;
-    int n, pids[64];
-    bool self = pgid == __get_pib()->pgid;
+    int pgid = pid ? -pid : __pgrp_self();
+    int n, m, pids[64];
+    struct PgrpMember mem[64];
+    bool self = pgid == __pgrp_self();
     n = __proc_group_pids(pgid, pids, ARRAYLEN(pids));
-    if (!n && !self)
+    m = __pgrp_members(pgid, mem, ARRAYLEN(mem));
+    for (int i = 0; i < m; ++i)
+      if (mem[i].pid == getpid())
+        self = true;
+    if (!n && !m && !self)
       return esrch();
     if (!sig)
       return 0;  // ability check passes
     BLOCK_SIGNALS;
     for (int i = 0; i < n; ++i)
       sys_kill_nt(pids[i], sig);
+    for (int i = 0; i < m; ++i) {
+      bool child = mem[i].pid == getpid();
+      for (int j = 0; j < n && !child; ++j)
+        child = pids[j] == mem[i].pid;
+      if (!child)
+        sys_kill_nt_member(mem + i, sig);
+    }
     ALLOW_SIGNALS;
     if (self)
       return raise(sig);

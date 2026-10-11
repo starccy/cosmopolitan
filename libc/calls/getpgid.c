@@ -20,6 +20,7 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/weaken.h"
 #include "libc/proc/proc.h"
 #include "libc/sysv/pib.h"
@@ -32,10 +33,11 @@ int getpgid(int pid) {
   if (!IsWindows()) {
     rc = sys_getpgid(pid);
   } else if (!pid || pid == __get_pib()->pid) {
-    rc = __get_pib()->pgid;
-  } else if (!_weaken(__proc_getpgid) ||
-             (rc = _weaken(__proc_getpgid)(pid)) == -1) {
-    // not a child of ours, so as far as we know it leads its own group
+    rc = _weaken(__pgrp_self) ? _weaken(__pgrp_self)() : __get_pib()->pgid;
+  } else if ((!_weaken(__proc_getpgid) ||
+              (rc = _weaken(__proc_getpgid)(pid)) == -1) &&
+             (!_weaken(__pgrp_of) || (rc = _weaken(__pgrp_of)(pid)) == -1)) {
+    // a process that published no group leads its own, as far as we know
     rc = pid;
   }
   STRACE("%s(%d) → %d% m", "getpgid", pid, rc);

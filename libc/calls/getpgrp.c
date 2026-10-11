@@ -20,6 +20,8 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/sysv/pib.h"
 
 /**
@@ -32,7 +34,7 @@ int getpgrp(void) {
   if (!IsWindows()) {
     rc = sys_getpgid(0);
   } else {
-    rc = __get_pib()->pgid;
+    rc = _weaken(__pgrp_self) ? _weaken(__pgrp_self)() : __get_pib()->pgid;
   }
   STRACE("%s() → %d% m", "getpgrp", rc);
   return rc;

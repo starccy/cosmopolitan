@@ -20,6 +20,7 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/weaken.h"
 #include "libc/proc/proc.h"
 #include "libc/sysv/errfuns.h"
@@ -32,6 +33,8 @@ static int sys_setpgid_nt(int pid, int pgid) {
   struct CosmoPib *pib = __get_pib();
   if (!pid || pid == pib->pid) {
     pib->pgid = pgid ? pgid : pib->pid;
+    if (_weaken(__pgrp_self_set))
+      _weaken(__pgrp_self_set)(pib->pgid);
     // a vfork()'d child's table entry is its own to update
     if (__get_tls_win32()->tib_vfork && pib->proc)
       pib->proc->pgid = pib->pgid;

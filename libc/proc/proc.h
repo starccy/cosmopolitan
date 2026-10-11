@@ -30,6 +30,9 @@ struct Proc {
   intptr_t hProcess2;
   intptr_t hStopEvent;
   intptr_t hSigGuard;
+  intptr_t hPgrp;
+  struct PgrpEntry *pgrp;
+  int pgrppid;
   struct Dll elem;
   struct Dll stopelem;
   struct rusage ru;

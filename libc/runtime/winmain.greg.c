@@ -26,6 +26,7 @@
 #include "libc/intrin/dll.h"
 #include "libc/intrin/maps.h"
 #include "libc/intrin/nomultics.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/weaken.h"
 #include "libc/limits.h"
 #include "libc/macros.h"
@@ -462,6 +463,7 @@ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
   WinGetPpid(pib);
   if (!(pib->sigpending = __sig_own_process(pib->pid)))
     pib->sigpending = &__fake_process_signals;
+  __pgrp_own();
   if (!WinMainCwd(pib))
     return 9;
   atomic_store_explicit(pib->sigpending, 0, memory_order_release);

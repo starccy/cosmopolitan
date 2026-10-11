@@ -31,6 +31,7 @@ uint32_t sys_getuid_nt(void);
 int __ensurefds_unlocked(int);
 void __printfds(struct Fd *, size_t);
 int __sigcheck(sigset_t, bool);
+int __ttystop_nt(int, sigset_t);
 struct Fd;
 struct iovec;
 #define __EFD_TIMERFD 0x10000  // evflags: the eventfd is a timerfd

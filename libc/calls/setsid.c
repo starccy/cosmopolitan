@@ -20,6 +20,8 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/nt/enum/processcreationflags.h"
 #include "libc/sysv/pib.h"
 
@@ -44,6 +46,8 @@ int setsid(void) {
     __get_pib()->dwCreationFlags |= kNtCreateNoWindow | kNtDetachedProcess;
     rc = getpid();
     __get_pib()->pgid = rc;
+    if (_weaken(__pgrp_self_set))
+      _weaken(__pgrp_self_set)(rc);
   }
   STRACE("setsid() → %d% m", rc);
   return rc;

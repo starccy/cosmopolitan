@@ -22,7 +22,9 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
 #include "libc/sysv/pib.h"
 #include "libc/nt/console.h"
 #include "libc/sysv/consts/termios.h"
@@ -50,7 +52,12 @@ int tcgetpgrp(int fd) {
   } else if (IsBsd()) {
     rc = sys_ioctl(fd, TIOCGPGRP_bsd, &pgrp);
   } else if (sys_isatty(fd)) {
-    pgrp = rc = __fgpgrp ? __fgpgrp : __get_pib()->pgid;
+    if (!__isfdkind(fd, kFdConsole) || !_weaken(__pgrp_foreground) ||
+        !(pgrp = _weaken(__pgrp_foreground)()))
+      pgrp = __fgpgrp                  ? __fgpgrp
+             : _weaken(__pgrp_self) ? _weaken(__pgrp_self)()
+                                    : __get_pib()->pgid;
+    rc = pgrp;
   } else {
     rc = -1;  // ebadf, enotty
   }

@@ -30,6 +30,7 @@
 #include "libc/intrin/fds.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/nomultics.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/weaken.h"
 #include "libc/nt/console.h"
 #include "libc/nt/enum/consolemodeflags.h"
@@ -165,7 +166,11 @@ textwindows ssize_t sys_write_nt(int fd, const struct iovec *iov, size_t iovlen,
                                  ssize_t opt_offset) {
   ssize_t rc;
   sigset_t m = __sig_block();
-  rc = sys_write_nt2(fd, iov, iovlen, opt_offset, m);
+  if (__get_pib()->fds.p[fd].kind == kFdConsole && __pgrp_tostop() &&
+      __ttystop_nt(SIGTTOU, m) == -1)
+    rc = -1;
+  else
+    rc = sys_write_nt2(fd, iov, iovlen, opt_offset, m);
   __sig_unblock(m);
   if (_weaken(__epoll_rearm_out)) {
     size_t want = 0;

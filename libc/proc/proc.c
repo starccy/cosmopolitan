@@ -28,6 +28,7 @@
 #include "libc/intrin/dll.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/maps.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/strace.h"
 #include "libc/nt/accounting.h"
 #include "libc/nt/enum/accessmask.h"
@@ -232,6 +233,26 @@ textwindows static void __proc_unguard(struct Proc *pr, bool exited) {
   }
 }
 
+// the group entry of a child; a vfork()'d one has its pid at execve()
+textwindows static struct PgrpEntry *__proc_pgrp(struct Proc *pr) {
+  if (pr->isvfork)
+    return 0;
+  if (pr->pid != pr->pgrppid) {
+    __pgrp_unpublish(pr->hPgrp, pr->pgrp);
+    pr->pgrp = 0;
+    pr->pgrppid = pr->pid;
+    pr->hPgrp = __pgrp_publish(pr->pid, pr->pgid, &pr->pgrp);
+  }
+  return pr->pgrp;
+}
+
+textwindows static void __proc_unpgrp(struct Proc *pr) {
+  __pgrp_unpublish(pr->hPgrp, pr->pgrp);
+  pr->hPgrp = 0;
+  pr->pgrp = 0;
+  pr->pgrppid = 0;
+}
+
 // multiple threads can wait on a process
 // it's important that only one calls this
 textwindows int __proc_harvest(struct Proc *pr, bool iswait4) {
@@ -346,6 +367,7 @@ textwindows dontinstrument static uint32_t __proc_worker(void *arg) {
         if (pr->hProcess2)
           CloseHandle(pr->hProcess2);
         __proc_unguard(pr, true);
+        __proc_unpgrp(pr);
       }
     }
 
@@ -511,7 +533,8 @@ textwindows struct Proc *__proc_new(void) {
  */
 textwindows void __proc_add(struct Proc *proc) {
   if (!proc->pgid)
-    proc->pgid = __get_pib()->pgid;
+    proc->pgid = __pgrp_self();
+  __proc_pgrp(proc);
   dll_make_first(&__proc.list, &proc->elem);
   SetEvent(__proc.hLifeChurn);
 }
@@ -601,7 +624,10 @@ textwindows int __proc_setpgid(int pid, int pgid) {
   for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
     struct Proc *pr = PROC_CONTAINER(e);
     if (pid == pr->pid) {
+      struct PgrpEntry *pe;
       pr->pgid = pgid ? pgid : pid;
+      if ((pe = __proc_pgrp(pr)))
+        atomic_store_explicit(&pe->pgid, pr->pgid, memory_order_release);
       rc = 0;
       break;
     }
@@ -620,6 +646,9 @@ textwindows int __proc_getpgid(int pid) {
   for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
     struct Proc *pr = PROC_CONTAINER(e);
     if (pid == pr->pid) {
+      struct PgrpEntry *pe;
+      if ((pe = __proc_pgrp(pr)))
+        pr->pgid = atomic_load_explicit(&pe->pgid, memory_order_acquire);
       rc = pr->pgid;
       break;
     }

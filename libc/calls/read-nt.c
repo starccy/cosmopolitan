@@ -1269,8 +1269,10 @@ textwindows ssize_t sys_read_nt(int fd, const struct iovec *iov, size_t iovlen,
   ssize_t rc = -3;
   sigset_t m = __sig_block();
   struct Fd *f = __get_pib()->fds.p + fd;
-  if (opt_offset == -1 && f->kind == kFdFile && (f->mode & 0170000) == 0140000 &&
-      _weaken(__scm_msgpipe_read_nt))
+  if (f->kind == kFdConsole && __ttystop_nt(SIGTTIN, m) == -1)
+    rc = -1;
+  else if (opt_offset == -1 && f->kind == kFdFile &&
+           (f->mode & 0170000) == 0140000 && _weaken(__scm_msgpipe_read_nt))
     // a SOCK_DGRAM or SOCK_SEQPACKET socketpair, where a message may carry
     // descriptors, see libc/sock/scmrights-nt.c
     rc = _weaken(__scm_msgpipe_read_nt)(fd, iov, iovlen, m);

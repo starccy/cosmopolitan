@@ -25,6 +25,7 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/directmap.h"
 #include "libc/intrin/dll.h"
@@ -503,6 +504,7 @@ textwindows int sys_fork_nt(void) {
     sys_fork_nt_child();
     __get_pib()->pid = child_pid;
     __get_pib()->sigpending = __sig_own_process(child_pid);
+    __pgrp_own();
     __get_pib()->hStopEvent = hStopEvent;
     __get_pib()->hStopChurn = __proc.hStopChurn;
     rc = 0;

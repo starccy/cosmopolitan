@@ -23,12 +23,15 @@
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/ttydefaults.h"
 #include "libc/dce.h"
+#include "libc/calls/struct/sigset.internal.h"
 #include "libc/intrin/fds.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/nomultics.h"
 #include "libc/nt/console.h"
 #include "libc/nt/enum/consolemodeflags.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/baud.internal.h"
+#include "libc/sysv/consts/sig.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 #if SupportsWindows()
@@ -44,6 +47,14 @@ textwindows int tcsetattr_nt(int fd, int opt, const struct termios *tio) {
     return 0;
   if (!__isfdkind(fd, kFdConsole))
     return enotty();
+
+  // a background group stops first
+  sigset_t m = __sig_block();
+  int rc = __ttystop_nt(SIGTTOU, m);
+  __sig_unblock(m);
+  if (rc == -1)
+    return -1;
+  __pgrp_set_tostop(!!(tio->c_lflag & TOSTOP));
 
   // then completely ignore it
   hInput = GetConsoleInputHandle();

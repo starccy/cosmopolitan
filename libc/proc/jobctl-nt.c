@@ -30,13 +30,13 @@
 /**
  * @fileoverview Job control on the Windows console.
  *
- * A terminal driver sends SIGTSTP to the foreground process group when
- * ^Z is typed. The console has no such thing, and a cosmo program only
- * sees ^Z when it reads the console itself. So while tcsetpgrp() has
- * given the terminal to another group, a thread here watches the
- * console input buffer for ^Z, takes it out, and sends SIGTSTP to the
- * children in that group, which kill() stops whether they're cosmo
- * programs or native ones.
+ * A terminal driver sends SIGINT, SIGQUIT or SIGTSTP to the foreground
+ * process group when ^C, ^\ or ^Z is typed. The console has no such
+ * thing, and a cosmo program only sees those keys when it reads the
+ * console itself. So while tcsetpgrp() has given the terminal to another
+ * group, a thread here watches the console input buffer for them, takes
+ * them out, and signals that group, which kill() stops whether they're
+ * cosmo programs or native ones.
  */
 
 #define STACK_SIZE 65536
@@ -50,26 +50,46 @@ static struct {
   intptr_t wake;
 } __jobctl;
 
-textwindows static bool IsSuspendKey(const struct NtInputRecord *r) {
-  return r->EventType == kNtKeyEvent &&
-         r->Event.KeyEvent.uChar.UnicodeChar == __ttyconf.vsusp;
+// the signal a key record stands for, or 0
+textwindows static int SignalKey(const struct NtInputRecord *r) {
+  if (r->EventType != kNtKeyEvent || !r->Event.KeyEvent.bKeyDown)
+    return 0;
+  int c = r->Event.KeyEvent.uChar.UnicodeChar;
+  if (!c)
+    return 0;
+  if (c == __ttyconf.vintr)
+    return SIGINT;
+  if (c == __ttyconf.vquit)
+    return SIGQUIT;
+  if (c == __ttyconf.vsusp)
+    return SIGTSTP;
+  return 0;
 }
 
-// whether a ^Z keystroke is waiting in the console input buffer
-textwindows static bool SuspendKeyPending(int64_t cin) {
+textwindows static bool IsSignalKey(const struct NtInputRecord *r) {
+  return r->EventType == kNtKeyEvent &&
+         (r->Event.KeyEvent.uChar.UnicodeChar == __ttyconf.vintr ||
+          r->Event.KeyEvent.uChar.UnicodeChar == __ttyconf.vquit ||
+          r->Event.KeyEvent.uChar.UnicodeChar == __ttyconf.vsusp) &&
+         r->Event.KeyEvent.uChar.UnicodeChar;
+}
+
+// the first signal key waiting in the console input buffer, or 0
+textwindows static int SignalKeyPending(int64_t cin) {
+  int sig;
   uint32_t n;
   struct NtInputRecord r[64];
   if (!PeekConsoleInput(cin, r, ARRAYLEN(r), &n))
-    return false;
+    return 0;
   for (uint32_t i = 0; i < n; ++i)
-    if (IsSuspendKey(r + i))
-      return true;
-  return false;
+    if ((sig = SignalKey(r + i)))
+      return sig;
+  return 0;
 }
 
-// takes every ^Z out of the console input buffer, leaving the rest of
-// the input in order for whoever reads it next
-textwindows static void RemoveSuspendKeys(int64_t cin) {
+// takes every signal key out of the console input buffer, leaving the
+// rest of the input in order for whoever reads it next
+textwindows static void RemoveSignalKeys(int64_t cin) {
   uint32_t n, got, kept = 0, cap = 256;
   struct NtInputRecord *keep, *more;
   if (!(keep = HeapAlloc(GetProcessHeap(), 0, cap * sizeof(*keep))))
@@ -87,7 +107,7 @@ textwindows static void RemoveSuspendKeys(int64_t cin) {
       break;
     uint32_t base = kept;
     for (uint32_t i = 0; i < got; ++i)
-      if (!IsSuspendKey(keep + base + i))
+      if (!IsSignalKey(keep + base + i))
         keep[kept++] = keep[base + i];
   }
   if (kept)
@@ -95,19 +115,19 @@ textwindows static void RemoveSuspendKeys(int64_t cin) {
   HeapFree(GetProcessHeap(), 0, keep);
 }
 
-textwindows static void EchoSuspendKey(void) {
+textwindows static void EchoSignalKey(int sig) {
   if (!(__ttyconf.magic & kTtySilence) && !(__ttyconf.magic & kTtyEchoRaw)) {
-    char b[2] = {'^', __ttyconf.vsusp ^ 0100};
+    int c = sig == SIGINT    ? __ttyconf.vintr
+            : sig == SIGQUIT ? __ttyconf.vquit
+                             : __ttyconf.vsusp;
+    char b[2] = {'^', c ^ 0100};
     WriteFile(GetConsoleOutputHandle(), b, 2, 0, 0);
   }
 }
 
-textwindows static void StopForeground(int pgid) {
-  int n, pids[64];
-  n = __proc_group_pids(pgid, pids, ARRAYLEN(pids));
-  STRACE("^Z on the console: stopping group %d, %d children", pgid, n);
-  for (int i = 0; i < n; ++i)
-    sys_kill_nt(pids[i], SIGTSTP);
+textwindows static void SignalForeground(int pgid, int sig) {
+  STRACE("%G key on the console: signalling group %d", sig, pgid);
+  sys_kill_nt(-pgid, sig);
 }
 
 textwindows dontinstrument static uint32_t __jobctl_worker(void *arg) {
@@ -138,14 +158,15 @@ textwindows dontinstrument static uint32_t __jobctl_worker(void *arg) {
       backoff = 10;
       continue;
     }
-    if ((__ttyconf.magic & kTtyNoIsigs) || !SuspendKeyPending(cin)) {
+    int sig;
+    if ((__ttyconf.magic & kTtyNoIsigs) || !(sig = SignalKeyPending(cin))) {
       SleepEx(backoff, false);
       backoff = MIN(backoff * 2, 100);
       continue;
     }
-    RemoveSuspendKeys(cin);
-    EchoSuspendKey();
-    StopForeground(fg);
+    RemoveSignalKeys(cin);
+    EchoSignalKey(sig);
+    SignalForeground(fg, sig);
     backoff = 10;
   }
   return 0;

@@ -40,6 +40,7 @@
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/maps.h"
 #include "libc/intrin/nomultics.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/log/libfatal.internal.h"
@@ -891,6 +892,11 @@ __msabi HAIRY bool32 __sig_console(uint32_t dwCtrlType) {
   // otherwise we need to wait until read-nt.c discovers that keystroke.
   struct CosmoTib tls;
   __bootstrap_tls(&tls, __builtin_frame_address(0));
+
+  // the keyboard only signals the foreground group
+  if ((dwCtrlType == kNtCtrlCEvent || dwCtrlType == kNtCtrlBreakEvent) &&
+      __pgrp_background())
+    return true;
 
   // ensure that ^C or ^\ gets printed to console appropriately
   if (_weaken(EchoConsoleNt)) {
