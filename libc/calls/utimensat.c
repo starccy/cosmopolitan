@@ -30,8 +30,7 @@
  * have that timestamp set to the current time, or `UTIME_OMIT` to have
  * that timestamp not be modified.
  *
- * XNU only has microsecond (1e-6) accuracy and there's no
- * `dirfd`-relative support. Windows only has hectonanosecond (1e-7)
+ * Windows only has hectonanosecond (1e-7)
  * accuracy. RHEL5 doesn't support `dirfd` or `flags` and will truncate
  * timestamps to seconds.
  *
@@ -44,7 +43,7 @@
  * @param flags can have `AT_SYMLINK_NOFOLLOW`
  * @return 0 on success, or -1 w/ errno
  * @raise EINVAL if `flags` had an unrecognized value
- * @raise EINVAL on XNU or RHEL5 when any `flags` are used
+ * @raise EINVAL on RHEL5 when any `flags` are used
  * @raise EPERM if pledge() is in play without `fattr` promise
  * @raise EACCES if unveil() is in play and `path` isn't unveiled
  * @raise EINVAL if `ts` specifies a nanosecond value that's out of range
@@ -53,7 +52,7 @@
  * @raise EBADF if `dirfd` isn't a valid fd or `AT_FDCWD`
  * @raise EFAULT if `path` or `ts` memory was invalid
  * @raise EROFS if `path` is on read-only filesystem (e.g. zipos)
- * @raise ENOTSUP on XNU or RHEL5 when `dirfd` isn't `AT_FDCWD`
+ * @raise ENOTSUP on RHEL5 when `dirfd` isn't `AT_FDCWD`
  * @raise ENOSYS on bare metal
  * @asyncsignalsafe
  */

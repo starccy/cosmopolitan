@@ -598,7 +598,7 @@ scall	sys_proc_info		0xfffffffff2150fff	0xfff	globl
 #scall	sendmsg_x		0xfffffffff21e1fff	0xfff	globl
 #scall	sendto_nocancel		0xfffffffff219dfff	0xfff	globl
 #scall	setattrlist		0xfffffffff20ddfff	0xfff	globl
-#scall	setattrlistat		0xfffffffff220cfff	0xfff	globl
+scall	sys_setattrlistat	0xfffffffff220cfff	0xfff	globl hidden
 #scall	setprivexec		0xfffffffff2098fff	0xfff	globl
 #scall	setsgroups		0xfffffffff211ffff	0xfff	globl
 #scall	settid			0xfffffffff211dfff	0xfff	globl

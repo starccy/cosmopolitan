@@ -42,7 +42,9 @@ int __utimens(int fd, const char *path, const struct timespec ts[2],
              (path && (_weaken(__zipos_parseuri) &&
                        _weaken(__zipos_parseuri)(path, &zipname) != -1))) {
     rc = erofs();
-  } else if (IsXnu() || (IsLinux() && !__is_linux_2_6_23())) {
+  } else if (IsXnu()) {
+    rc = sys_utimensat_xnu(fd, path, ts, flags);
+  } else if (IsLinux() && !__is_linux_2_6_23()) {
     rc = sys_utimensat_old(fd, path, ts, flags);
   } else if (IsLinux() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     rc = sys_utimensat(fd, path, ts, flags);
