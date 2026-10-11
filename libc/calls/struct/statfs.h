@@ -15,9 +15,13 @@ struct statfs {       /* cosmo abi */
   int64_t f_namelen;  /* maximum length of filenames */
   int64_t f_frsize;   /* fragment size */
   int64_t f_flags;    /* mount flags of filesystem 2.6.36 */
-  int64_t f_spare[4]; /* end of linux abi */
-  uint32_t f_owner;
-  char f_fstypename[16];
+  union { /* bsd fields in linux's spare words, 120 bytes like musl */
+    int64_t f_spare[4];
+    struct {
+      uint32_t f_owner;
+      char f_fstypename[16];
+    };
+  };
 };
 
 int statfs(const char *, struct statfs *) libcesque;

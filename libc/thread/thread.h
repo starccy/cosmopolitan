@@ -126,13 +126,13 @@ typedef struct pthread_barrier_s {
   int _pshared;
 } pthread_barrier_t;
 
-typedef struct pthread_attr_s {
+typedef struct pthread_attr_s { /* 56 bytes like musl */
   char __detachstate;
   char __inheritsched;
   char __havesigmask;
+  char __contentionscope;
   int __schedparam;
   int __schedpolicy;
-  int __contentionscope;
   int __sigaltstacksize;
   uint64_t __sigmask;
   size_t __guardsize;
