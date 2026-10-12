@@ -385,6 +385,7 @@ static int sys_epoll_wait_kq(int kq, struct epoll_event *out, int maxevents,
 
 #define EPOLL_ARM_IN  1u
 #define EPOLL_ARM_OUT 2u
+#define EPOLL_ARM_HUP 4u
 
 #define EPOLL_KEY_WAKE    1  // set changed, or a signal wants the waiter
 #define EPOLL_KEY_AFD     2  // overlapped is the entry
@@ -410,6 +411,7 @@ static int sys_epoll_wait_kq(int kq, struct epoll_event *out, int maxevents,
 #define kNtFileOpen               1
 #define kNtFileSynchronousIo      0x00000030u
 #define kNtStatusEndOfFile        0xC0000011u
+#define kNtStatusBufferOverflow   0x80000005u
 #define kNtStatusPipeDisconnected 0xC00000B0u
 #define kNtStatusPipeClosing      0xC00000B1u
 #define kNtStatusPipeBroken       0xC000014Bu
@@ -490,8 +492,16 @@ static pthread_mutex_t g_epoll_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static uint32_t EpollDirs(const struct EpollEntry *e) {
   if (!(e->events & (EPOLLET | EPOLLONESHOT)))
-    return EPOLL_ARM_IN | EPOLL_ARM_OUT;
+    return EPOLL_ARM_IN | EPOLL_ARM_OUT | EPOLL_ARM_HUP;
   return e->armed;
+}
+
+// a peer that went away is an input event on linux, whichever
+// directions were still armed
+static uint32_t EpollWithHup(uint32_t ev) {
+  if (ev & EPOLLRDHUP)
+    ev |= EPOLLIN | EPOLLRDNORM;
+  return ev;
 }
 
 // the events the registration may report right now
@@ -504,6 +514,8 @@ static uint32_t EpollMask(const struct EpollEntry *e) {
     m |= EPOLL_IN_BITS;
   if (dirs & EPOLL_ARM_OUT)
     m |= EPOLL_OUT_BITS;
+  if (dirs & EPOLL_ARM_HUP)
+    m |= EPOLLRDHUP;
   return (e->events | EPOLLERR | EPOLLHUP) & m;
 }
 
@@ -583,6 +595,8 @@ static void EpollDisarm(struct EpollEntry *e, uint32_t ev) {
         e->armed &= ~EPOLL_ARM_IN;
       if (ev & EPOLL_OUT_BITS)
         e->armed &= ~EPOLL_ARM_OUT;
+      if (ev & EPOLLRDHUP)
+        e->armed &= ~EPOLL_ARM_HUP;
     }
   }
 }
@@ -696,6 +710,7 @@ textwindows static void EpollIssueSock(struct EpollEntry *e, uint32_t mask) {
                                       kNtIoctlAfdPoll, &e->info,
                                       sizeof(e->info), &e->info,
                                       sizeof(e->info));
+  STRACE("afd poll fd %d mask %#x → %#x", e->fd, mask, st);
   if (st == kNtStatusSuccess || st == kNtStatusPending) {
     e->pending = true;
     e->polled = mask;
@@ -727,6 +742,12 @@ textwindows static void EpollIssuePipe(struct EpollEntry *e) {
     return;
   }
   uint32_t err = GetLastError();
+  if (err == kNtErrorMoreData) {
+    // a message mode pipe answers a zero byte read this way when a
+    // message is waiting
+    EpollGot(e->set, e, EPOLLIN | EPOLLRDNORM);
+    return;
+  }
   if (err == kNtErrorBrokenPipe || err == kNtErrorHandleEof ||
       err == kNtErrorPipeNotConnected || err == kNtErrorNoData) {
     EpollGot(e->set, e, EPOLLHUP);
@@ -738,6 +759,7 @@ textwindows static void EpollIssuePipe(struct EpollEntry *e) {
 textwindows static void EpollCancel(struct EpollEntry *e) {
   if (!e->pending || e->cancelled)
     return;
+  STRACE("epoll cancel fd %d", e->fd);
   e->cancelled = true;
   if (e->kind == kEpollSock) {
     struct NtIoStatusBlock iosb;
@@ -820,7 +842,7 @@ textwindows static void EpollComplete(struct EpollSet *s,
   } else {
     NtStatus st = e->ov.Internal;
     if (st == kNtStatusCancelled) {
-    } else if (NtSuccess(st)) {
+    } else if (NtSuccess(st) || st == kNtStatusBufferOverflow) {
       ev = EPOLLIN | EPOLLRDNORM;
     } else if (st == kNtStatusPipeBroken || st == kNtStatusEndOfFile ||
                st == kNtStatusPipeDisconnected || st == kNtStatusPipeClosing) {
@@ -830,6 +852,13 @@ textwindows static void EpollComplete(struct EpollSet *s,
     }
   }
   ev &= EpollMask(e);
+  ev = EpollWithHup(ev);
+  STRACE("epoll completion fd %d status %#x afd %#x → %#x", e->fd,
+         e->kind == kEpollSock ? e->iosb.Status : e->ov.Internal,
+         e->kind == kEpollSock && e->info.NumberOfHandles
+             ? e->info.Handles[0].Events
+             : 0,
+         ev);
   if (ev) {
     EpollGot(s, e, ev);
   } else {
@@ -929,7 +958,7 @@ textwindows static int EpollAdd(struct EpollSet *s, int fd,
   e->handle = f->handle;
   e->events = ev->events;
   e->data = ev->data.u64;
-  e->armed = EPOLL_ARM_IN | EPOLL_ARM_OUT;
+  e->armed = EPOLL_ARM_IN | EPOLL_ARM_OUT | EPOLL_ARM_HUP;
   e->kind = kEpollPoll;
   dll_init(&e->elem);
   dll_init(&e->ready);
@@ -1115,7 +1144,10 @@ textwindows static int sys_epoll_create_nt(int flags) {
     __releasefd(fd);
     return -1;
   }
-  if (!(port = CreateIoCompletionPort(-1, 0, 0, 0))) {
+  // the concurrency limit of a port holds back a dequeue while that
+  // many threads that took a packet earlier are still running, so with
+  // more busy epoll_wait() callers than cores nothing comes out at all
+  if (!(port = CreateIoCompletionPort(-1, 0, 0, INT32_MAX))) {
     free(s);
     __releasefd(fd);
     return __winerr();
@@ -1266,7 +1298,7 @@ textwindows static int sys_epoll_ctl_nt(int epfd, int op, int fd,
       } else {
         e->events = ev->events;
         e->data = ev->data.u64;
-        e->armed = EPOLL_ARM_IN | EPOLL_ARM_OUT;
+        e->armed = EPOLL_ARM_IN | EPOLL_ARM_OUT | EPOLL_ARM_HUP;
         ++e->epoch;
         EpollUpdate(e);
       }
@@ -1322,6 +1354,7 @@ textwindows static int EpollScanMisc(struct EpollSet *s, struct epoll_event *out
             ev = 0;
           } else {
             ev = PollToEpoll(pfds[i].revents) & m;
+            ev = EpollWithHup(ev);
           }
           break;
         }
@@ -1329,6 +1362,7 @@ textwindows static int EpollScanMisc(struct EpollSet *s, struct epoll_event *out
     }
     if (!ev)
       continue;
+    STRACE("epoll_wait fd %d → %#x (misc)", e->fd, ev);
     out[got].events = ev;
     out[got].data.u64 = e->data;
     ++got;
@@ -1363,6 +1397,8 @@ textwindows static uint32_t EpollFresh(struct EpollEntry *e, uint32_t ev,
       fresh |= EPOLL_IN_BITS;
     if (p.revents & POLLWRNORM_)
       fresh |= EPOLL_OUT_BITS;
+    if (p.revents & POLLHUP_)
+      fresh |= EPOLLRDHUP;
     return ev & fresh;
   }
   if (e->kind == kEpollPipe && !(ev & (EPOLLERR | EPOLLHUP))) {
@@ -1385,11 +1421,13 @@ textwindows static int EpollScanReady(struct EpollSet *s,
   while (got < maxevents && (d = dll_first(batch))) {
     struct EpollEntry *e = DLL_CONTAINER(struct EpollEntry, ready, d);
     uint32_t ev = e->got & EpollMask(e);
+    ev = EpollWithHup(ev);
     dll_remove(&batch, d);
     e->got = 0;
     if (ev)
       ev = EpollFresh(e, ev, pass);
     if (ev) {
+      STRACE("epoll_wait fd %d → %#x", e->fd, ev);
       out[got].events = ev;
       out[got].data.u64 = e->data;
       ++got;
