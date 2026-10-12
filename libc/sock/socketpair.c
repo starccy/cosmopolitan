@@ -50,6 +50,10 @@ int socketpair(int family, int type, int protocol, int sv[2]) {
     if (seqpacket)
       type = (type & (SOCK_CLOEXEC | SOCK_NONBLOCK)) | SOCK_DGRAM;
     int rc = sys_socketpair(__af2host(family), type, protocol, sv);
+    if (rc != -1) {
+      __tcphint_reset(sv[0]);
+      __tcphint_reset(sv[1]);
+    }
     if (rc != -1 && IsXnu() && family == AF_UNIX &&
         (seqpacket || base == SOCK_DGRAM)) {
       __xnu_unix_setup(sv[0], seqpacket, true);

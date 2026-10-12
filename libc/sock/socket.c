@@ -51,6 +51,7 @@ int socket(int family, int type, int protocol) {
     rc = eafnosupport();
   } else if (!IsWindows()) {
     rc = sys_socket(hfam, type, protocol);
+    __tcphint_reset(rc);
     if (rc != -1 && IsXnu() && family == AF_UNIX &&
         (type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) == SOCK_DGRAM)
       __xnu_unix_setup(rc, false, false);

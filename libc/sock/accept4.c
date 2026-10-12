@@ -63,6 +63,7 @@ int accept4(int fd, struct sockaddr *opt_out_addr, uint32_t *opt_inout_addrsize,
     rc = enotsock();
   } else if (!IsWindows()) {
     rc = sys_accept4(fd, &ss, &size, flags);
+    __tcphint_reset(rc);
   } else if (!__isfdopen(fd)) {
     rc = ebadf();
   } else if (__isfdkind(fd, kFdSocket)) {

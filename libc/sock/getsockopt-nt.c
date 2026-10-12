@@ -31,6 +31,8 @@
 #include "libc/str/str.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/so.h"
+#include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/ipv6.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/errno.h"
@@ -58,6 +60,18 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
   if (in_optlen >= sizeof(int) &&
       __sockopt_lookup(fd->handle, level, optname, &parked)) {
     *(int *)out_opt_optval = parked;
+    *inout_optlen = sizeof(int);
+    return 0;
+  }
+
+  if ((level == SOL_SOCKET && optname == SO_REUSEPORT) ||
+      (level == SOL_IPV6 && optname == IPV6_TCLASS)) {
+    if (level == SOL_IPV6 && fd->family != AF_INET6)
+      return enoprotoopt();
+    if (in_optlen < sizeof(int))
+      return einval();
+    *(int *)out_opt_optval =
+        optname == SO_REUSEPORT ? fd->reuseport : fd->tclass;
     *inout_optlen = sizeof(int);
     return 0;
   }

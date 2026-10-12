@@ -115,6 +115,7 @@ ssize_t __winsock_block(int64_t, uint32_t, bool, uint32_t, uint64_t,
 struct msghdr;
 bool __scm_stream_nt(struct Fd *);
 bool __scm_msgpipe_nt(struct Fd *);
+bool __tcphint(int, int);
 void __xnu_unix_setup(int, bool, bool);
 void __xnu_unix_passcred(int, bool);
 int __xnu_unix_cred(int);
@@ -126,6 +127,11 @@ ssize_t __xnu_unix_sendto(int, const void *, size_t, int, const void *,
                           uint32_t);
 ssize_t __xnu_unix_recvmsg(int, void *, int);
 ssize_t __xnu_unix_sendmsg(int, const void *, int);
+int __tcphint_set(int, int, const void *, uint32_t);
+int __tcphint_get(int, int, void *, uint32_t *);
+void __tcphint_reset(int);
+void __sockbuf_set(int, int);
+bool __sockbuf_set_p(int, int);
 
 struct ucred;
 struct cmsghdr;

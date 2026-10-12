@@ -137,8 +137,22 @@ textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
 
   // winsock has no SO_REUSEPORT and its SO_REUSEADDR already lets a
   // port be bound again
-  if (level == SOL_SOCKET && optname == SO_REUSEPORT)
+  if (level == SOL_SOCKET && optname == SO_REUSEPORT) {
+    if (optlen < sizeof(int))
+      return einval();
+    fd->reuseport = !!*(const int *)optval;
     return 0;
+  }
+
+  // winsock has no IPV6_TCLASS; the value is kept for getsockopt()
+  if (level == SOL_IPV6 && optname == IPV6_TCLASS) {
+    if (fd->family != AF_INET6)
+      return enoprotoopt();
+    if (optlen < sizeof(int))
+      return einval();
+    fd->tclass = *(const int *)optval;
+    return 0;
+  }
 
   int pmtud;
   if (__is_pmtudisc(level, optname) && optval && optlen >= sizeof(int)) {

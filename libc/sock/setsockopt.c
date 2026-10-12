@@ -107,6 +107,8 @@ int setsockopt(int fd, int level, int optname, const void *optval,
     rc = efault();
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
+  } else if (__tcphint(level, optname)) {
+    rc = __tcphint_set(fd, optname, optval, optlen);
   } else if (__credopt(level, optname)) {
     rc = __credopt_set(fd, optname, optval, optlen);
   } else if (IsXnu() && level == SOL_SOCKET && optname == SO_BINDTODEVICE) {
@@ -148,6 +150,10 @@ int setsockopt(int fd, int level, int optname, const void *optval,
   } else {
     rc = enotsock();
   }
+
+  if (!rc && !IsLinux() && level == SOL_SOCKET &&
+      (optname == SO_SNDBUF || optname == SO_RCVBUF))
+    __sockbuf_set(fd, optname);
 
 #if SYSDEBUG
   if (!(rc == -1 && errno == EFAULT)) {

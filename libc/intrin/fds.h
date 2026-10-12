@@ -77,6 +77,11 @@ struct Fd {
   uint32_t credleft;  // windows unix stream: bytes left of that message
   void *fifo;       // windows fifo: its registry, see fifo-nt.c
   long fifow;       // windows fifo opened O_RDWR: the write end
+  bool quickack;    // off linux: TCP_QUICKACK as set, see tcphint.c
+  int deferaccept;  // off linux: TCP_DEFER_ACCEPT as set
+  bool reuseport;   // windows socket: SO_REUSEPORT as set
+  char sockbuf;     // off linux: 1 SO_SNDBUF set, 2 SO_RCVBUF set, 3 both
+  uint8_t tclass;   // windows socket: IPV6_TCLASS as set
   char syncio;  // windows disk file: 0 not known yet, 1 synchronous, 2 not
   char exec;    // windows disk file: 0 name doesn't say, 1 not exec, 2 exec
   long fionbio;     // windows socket: the handle FIONBIO was last set on

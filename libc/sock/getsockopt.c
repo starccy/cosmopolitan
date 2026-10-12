@@ -79,6 +79,8 @@ int getsockopt(int fd, int level, int optname, void *out_opt_optval,
     rc = enoprotoopt();  // see libc/sysv/consts.sh
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
+  } else if (__tcphint(level, optname)) {
+    rc = __tcphint_get(fd, optname, out_opt_optval, out_optlen);
   } else if (__credopt(level, optname)) {
     rc = __credopt_get(fd, optname, out_opt_optval, out_optlen);
   } else if (IsXnu() && __is_pmtudisc(level, optname)) {
@@ -123,6 +125,11 @@ int getsockopt(int fd, int level, int optname, void *out_opt_optval,
   } else {
     rc = enotsock();
   }
+
+  if (!rc && !IsLinux() && level == SOL_SOCKET &&
+      (optname == SO_SNDBUF || optname == SO_RCVBUF) && out_opt_optval &&
+      out_optlen && *out_optlen == sizeof(int) && __sockbuf_set_p(fd, optname))
+    *(int *)out_opt_optval *= 2;
 
 #if SYSDEBUG
   if (out_opt_optval && out_optlen && rc != -1) {
