@@ -43,16 +43,18 @@ int socketpair(int family, int type, int protocol, int sv[2]) {
   if (family == AF_UNSPEC)
     family = AF_UNIX;
   if (!IsWindows()) {
+    int base = type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK);
+    // xnu has no SOCK_SEQPACKET for AF_UNIX, so a datagram pair stands in
+    // for one, see unixpair-xnu.c
+    bool seqpacket = IsXnu() && family == AF_UNIX && base == SOCK_SEQPACKET;
+    if (seqpacket)
+      type = (type & (SOCK_CLOEXEC | SOCK_NONBLOCK)) | SOCK_DGRAM;
     int rc = sys_socketpair(__af2host(family), type, protocol, sv);
-    // xnu has no SOCK_SEQPACKET for AF_UNIX. a stream pair carries the
-    // same bytes, just without the record boundaries
-    if (rc == -1 && IsXnu() && family == AF_UNIX &&
-        (type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) == SOCK_SEQPACKET &&
-        (errno == EPROTONOSUPPORT || errno == ESOCKTNOSUPPORT ||
-         errno == EPROTOTYPE))
-      rc = sys_socketpair(__af2host(family),
-                          (type & (SOCK_CLOEXEC | SOCK_NONBLOCK)) | SOCK_STREAM,
-                          protocol, sv);
+    if (rc != -1 && IsXnu() && family == AF_UNIX &&
+        (seqpacket || base == SOCK_DGRAM)) {
+      __xnu_unix_setup(sv[0], seqpacket, true);
+      __xnu_unix_setup(sv[1], seqpacket, true);
+    }
     return rc;
   } else {
     return sys_socketpair_nt(family, type, protocol, sv);

@@ -26,6 +26,7 @@
 #include "libc/macros.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
+#include "libc/sock/struct/msghdr.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/errfuns.h"
 
@@ -65,7 +66,9 @@ ssize_t send(int fd, const void *buf, size_t size, int flags) {
     rc = enotsock();
   } else if (!IsWindows()) {
     int hflags = __msg2host(flags);
-    if (hflags != -1) {
+    if (IsXnu()) {
+      rc = __xnu_unix_sendto(fd, buf, size, flags, 0, 0);
+    } else if (hflags != -1) {
       rc = sys_sendto(fd, buf, size, hflags, 0, 0);
     } else {
       rc = einval();
@@ -73,6 +76,12 @@ ssize_t send(int fd, const void *buf, size_t size, int flags) {
   } else if (__isfdopen(fd)) {
     if (__isfdkind(fd, kFdSocket)) {
       rc = sys_send_nt(fd, (struct iovec[]){{(void *)buf, size}}, 1, flags);
+    } else if (__scm_msgpipe_nt(__get_pib()->fds.p + fd)) {
+      rc = __scm_msgpipe_send_nt(
+          fd,
+          &(struct msghdr){.msg_iov = &(struct iovec){(void *)buf, size},
+                           .msg_iovlen = 1},
+          flags);
     } else if (__isfdkind(fd, kFdFile)) {
       if (flags) {
         rc = einval();

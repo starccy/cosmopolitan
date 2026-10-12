@@ -35,6 +35,13 @@
 #include "libc/sysv/pib.h"
 #include "libc/vga/vga.internal.h"
 
+// a write for __xnu_unix_send(), which shapes it like linux's
+static ssize_t XnuWrite(struct XnuIo *a, int flags) {
+  if (a->iovlen == 1)
+    return sys_write(a->fd, a->iov[0].iov_base, a->iov[0].iov_len);
+  return sys_writev(a->fd, a->iov, a->iovlen);
+}
+
 static size_t SumIovecBytes(const struct iovec *iov, int iovlen) {
   size_t count = 0;
   for (int i = 0; i < iovlen; ++i)
@@ -87,7 +94,10 @@ static ssize_t writev_impl(int fd, const struct iovec *iov, int iovlen) {
   if (__isfdkind(fd, kFdEvent))
     return __eventfd_write(fd, iov[0].iov_base, iovlen ? iov[0].iov_len : 0);
 
-  if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
+  if (IsXnu() && _weaken(__xnu_unix_send)) {
+    return _weaken(__xnu_unix_send)(fd, 0, XnuWrite,
+                                    &(struct XnuIo){fd, iov, iovlen});
+  } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     if (iovlen == 1) {
       return sys_write(fd, iov[0].iov_base, iov[0].iov_len);
     } else {

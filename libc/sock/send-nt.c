@@ -138,8 +138,9 @@ textwindows static ssize_t sys_send_nt_impl(int fd, const struct iovec *iov,
   return rc;
 }
 
-textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
-                                uint32_t flags) {
+// a send as is, with no frame naming the sender, see scmrights-nt.c
+textwindows ssize_t __winsock_send_nt(int fd, const struct iovec *iov,
+                                      size_t iovlen, uint32_t flags) {
   ssize_t rc = sys_send_nt_impl(fd, iov, iovlen, flags);
   if (_weaken(__epoll_rearm_out)) {
     size_t want = 0;
@@ -149,6 +150,16 @@ textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
       _weaken(__epoll_rearm_out)(fd);
   }
   return rc;
+}
+
+textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
+                                uint32_t flags) {
+  struct Fd *f = __get_pib()->fds.p + fd;
+  if (__scm_stream_nt(f) && f->credpid != __get_pib()->pid)
+    return __scm_send_nt(
+        fd, &(struct msghdr){.msg_iov = (void *)iov, .msg_iovlen = iovlen},
+        flags);
+  return __winsock_send_nt(fd, iov, iovlen, flags);
 }
 
 #endif /* __x86_64__ */

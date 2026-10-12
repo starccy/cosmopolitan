@@ -20,6 +20,7 @@ struct PgrpMember {
 void __pgrp_own(void);
 int __pgrp_self(void);
 int __pgrp_of(int);
+int __pid_of_winpid(unsigned);
 void __pgrp_self_set(int);
 intptr_t __pgrp_publish(int, int, struct PgrpEntry **);
 intptr_t __pgrp_alias(unsigned, int);

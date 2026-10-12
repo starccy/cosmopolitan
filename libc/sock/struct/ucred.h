@@ -1,0 +1,13 @@
+#ifndef COSMOPOLITAN_LIBC_SOCK_STRUCT_UCRED_H_
+#define COSMOPOLITAN_LIBC_SOCK_STRUCT_UCRED_H_
+COSMOPOLITAN_C_START_
+
+/* what SO_PEERCRED and SCM_CREDENTIALS carry */
+struct ucred {
+  int32_t pid;
+  uint32_t uid;
+  uint32_t gid;
+};
+
+COSMOPOLITAN_C_END_
+#endif /* COSMOPOLITAN_LIBC_SOCK_STRUCT_UCRED_H_ */

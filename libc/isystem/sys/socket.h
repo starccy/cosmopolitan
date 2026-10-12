@@ -6,6 +6,7 @@
 #include "libc/sock/struct/linger.h"
 #include "libc/sock/struct/msghdr.h"
 #include "libc/sock/struct/sockaddr.h"
+#include "libc/sock/struct/ucred.h"
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/limits.h"
 #include "libc/sysv/consts/msg.h"

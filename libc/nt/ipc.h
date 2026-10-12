@@ -84,6 +84,7 @@ bool32 TransactNamedPipe(int64_t hNamedPipe, void *lpInBuffer,
                          uint32_t nOutBufferSize, uint32_t *lpBytesRead,
                          struct NtOverlapped *lpOverlapped);
 
+bool32 GetNamedPipeServerProcessId(int64_t Pipe, uint32_t *ServerProcessId);
 bool32 GetNamedPipeInfo(int64_t hNamedPipe, uint32_t *opt_out_lpFlags,
                         uint32_t *opt_out_lpOutBufferSize,
                         uint32_t *opt_out_lpInBufferSize,

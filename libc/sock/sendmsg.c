@@ -22,6 +22,7 @@
 #include "libc/calls/struct/iovec.h"
 #include "libc/calls/struct/iovec.internal.h"
 #include "libc/dce.h"
+#include "libc/errno.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/kprintf.h"
@@ -37,6 +38,9 @@
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/sock.h"
+#include "libc/sock/struct/cmsghdr.h"
+#include "libc/sysv/consts/scm.h"
+#include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -79,6 +83,12 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
         msg2.msg_name = 0;
         msg2.msg_namelen = 0;
       }
+      // SCM_CREDENTIALS doesn't go to the host, see passcred.c
+      if (!rc && msg->msg_control)
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(msg); c && !rc;
+             c = CMSG_NXTHDR(msg, c))
+          if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_CREDENTIALS)
+            rc = __cred_check(c);
       if (!rc && msg->msg_control) {
         // the bsd layout is never bigger than the linux one
         size_t bytes = msg->msg_controllen;
@@ -92,9 +102,19 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
         msg2.msg_controllen = n > 0 ? n : 0;
       }
       if (!rc)
-        rc = sys_sendmsg(fd, &msg2, hflags);
+        rc = IsXnu() ? __xnu_unix_sendmsg(fd, &msg2, flags)
+                     : sys_sendmsg(fd, &msg2, hflags);
+      if (rc == -1 && errno == EISCONN && IsXnu() && msg->msg_name &&
+          msg->msg_namelen) {
+        ssize_t r = __xnu_unix_sendto_connected(fd, msg, flags);
+        if (r != -2)
+          rc = r;
+        else
+          errno = EISCONN;
+      }
     } else {
-      rc = sys_sendmsg(fd, msg, hflags);
+      rc = IsXnu() ? __xnu_unix_sendmsg(fd, msg, flags)
+                   : sys_sendmsg(fd, msg, hflags);
     }
   } else if (__isfdopen(fd)) {
     if (msg->msg_control && msg->msg_controllen) {
@@ -106,7 +126,7 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
         rc = __udg_sendto_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
                              msg->msg_name, msg->msg_namelen, msg);
       } else if (__scm_msgpipe_nt(__get_pib()->fds.p + fd)) {
-        rc = __scm_msgpipe_send_nt(fd, msg);
+        rc = __scm_msgpipe_send_nt(fd, msg, flags);
       } else if (__isfdkind(fd, kFdSocket) &&
                  __get_pib()->fds.p[fd].type != SOCK_STREAM &&
                  __get_pib()->fds.p[fd].family != AF_UNIX) {
@@ -118,7 +138,7 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
       rc = sys_sendto_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
                          msg->msg_name, msg->msg_namelen);
     } else if (__scm_msgpipe_nt(__get_pib()->fds.p + fd)) {
-      rc = __scm_msgpipe_send_nt(fd, msg);  // iovecs make one message
+      rc = __scm_msgpipe_send_nt(fd, msg, flags);  // iovecs make one message
     } else if (__isfdkind(fd, kFdFile)) {  // e.g. socketpair
       rc = sys_write_nt(fd, msg->msg_iov, msg->msg_iovlen, -1);
     } else {

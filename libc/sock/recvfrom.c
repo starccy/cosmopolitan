@@ -73,7 +73,9 @@ ssize_t recvfrom(int fd, void *buf, size_t size, int flags,
     rc = enotsock();
   } else if (!IsWindows()) {
     int hflags = __msg2host(flags);
-    if (hflags != -1) {
+    if (IsXnu()) {
+      rc = __xnu_unix_recvfrom(fd, buf, size, flags, &addr, &addrsize);
+    } else if (hflags != -1) {
       rc = sys_recvfrom(fd, buf, size, hflags, &addr, &addrsize);
     } else {
       rc = einval();
@@ -89,12 +91,9 @@ ssize_t recvfrom(int fd, void *buf, size_t size, int flags,
                __isfdkind(fd, kFdFile)) {
       // a message pair has no addresses, so the peer is unnamed, which
       // linux reports as a zero length
-      if (!flags) {
-        rc = sys_read_nt(fd, (struct iovec[]){{buf, size}}, 1, -1);
-        addrsize = 0;
-      } else {
-        rc = einval();
-      }
+      rc = sys_recv_msgpipe_nt(fd, (struct iovec[]){{buf, size}}, 1, flags, 0,
+                               false);
+      addrsize = 0;
     } else {
       rc = enotsock();
     }
@@ -109,6 +108,11 @@ ssize_t recvfrom(int fd, void *buf, size_t size, int flags,
       }
       __write_sockaddr(&addr, IsWindows() ? 0 : addrsize, opt_out_srcaddr,
                        opt_inout_srcaddrsize);
+      // linux gives an unnamed sender no address at all, where getpeername()
+      // says sizeof(sa_family_t)
+      if (IsBsd() && addr.ss_family == AF_UNIX &&
+          !((struct sockaddr_un *)&addr)->sun_path[0] && opt_inout_srcaddrsize)
+        *opt_inout_srcaddrsize = 0;
     } else if (opt_inout_srcaddrsize) {
       *opt_inout_srcaddrsize = 0;
     }

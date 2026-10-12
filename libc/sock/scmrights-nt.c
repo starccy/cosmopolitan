@@ -1,13 +1,19 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/state.internal.h"
+#include "libc/calls/struct/sigset.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/struct/iovec.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/fds.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/mem/mem.h"
 #include "libc/nt/enum/processaccess.h"
 #include "libc/nt/files.h"
+#include "libc/nt/enum/accessmask.h"
+#include "libc/nt/enum/fileinfobyhandleclass.h"
+#include "libc/nt/events.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/iovec.h"
@@ -30,6 +36,7 @@
 #include "libc/sysv/consts/msg.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/scm.h"
+#include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/sock.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
@@ -59,6 +66,16 @@
  * SOCK_DGRAM and SOCK_SEQPACKET pairs are message mode named pipes on NT
  * (socketpair-nt.c), where one message is one write. Their frame goes in
  * front of the data in the same message, and reads look for it there.
+ *
+ * The sender of what a receive returns, for SO_PASSCRED: a socket comes
+ * from a process (Fd::credpid), the one that made it or accepted it. A
+ * peer's SIO_AF_UNIX_GETPEERPID names that process, and for a pair it's
+ * the one that called socketpair(). Anyone else, a fork()ed child say,
+ * puts a frame with its pid in front of each message it sends, but only
+ * to a receiver that turned SO_PASSCRED on, since a host program at the
+ * other end would take the frame for data. The receiver says so with a
+ * named event under a key both ends work out: the pipe's name for a
+ * pair, the two addresses of a stream socket.
  */
 
 #define SIO_AF_UNIX_GETPEERPID 0x58000100u
@@ -73,7 +90,7 @@ struct ScmHead {
   uint32_t nfds;
   uint32_t datalen;
   uint32_t srcpid;  // 0 when the handles are already the receiver's
-  uint32_t reserved;
+  int32_t credpid;  // the sending process when it isn't the usual one
 };
 
 struct ScmEntry {
@@ -250,10 +267,21 @@ textwindows static int64_t ScmTake(int64_t src, int64_t h) {
   return mine;
 }
 
+// a copy of a handle the frame carries, which stays in the frame
+textwindows static int64_t ScmCopy(int64_t src, int64_t h) {
+  int64_t mine;
+  if (!DuplicateHandle(src ? src : GetCurrentProcess(), h, GetCurrentProcess(),
+                       &mine, 0, false, kNtDuplicateSameAccess))
+    return -1;
+  return mine;
+}
+
+// installs a frame's descriptors on f. with `copy` the frame keeps its
+// handles, for MSG_PEEK
 textwindows static void ScmInstall(struct Fd *f, uint32_t n,
                                    const struct ScmEntry *e,
                                    const struct NtWsaProtocolInfo *pi,
-                                   uint32_t srcpid) {
+                                   uint32_t srcpid, bool copy) {
   int64_t src = 0;
   bool ours = !srcpid || srcpid == GetCurrentProcessId();
   if (!ours && !(src = OpenProcess(kNtProcessDupHandle, false, srcpid)))
@@ -263,7 +291,7 @@ textwindows static void ScmInstall(struct Fd *f, uint32_t n,
     int cap = (q ? q->cap : 0) + n + 8;
     struct ScmQueue *nq = realloc(q, sizeof(*q) + cap * sizeof(int));
     if (!nq) {
-      for (uint32_t i = 0; i < n; ++i)
+      for (uint32_t i = 0; i < n && !copy; ++i)
         if (e[i].handle) {
           if (src)
             DuplicateHandle(src, e[i].handle, 0, 0, 0, false,
@@ -288,14 +316,15 @@ textwindows static void ScmInstall(struct Fd *f, uint32_t n,
       // winsock provider knows it; a raw DuplicateHandle would let
       // recv/send through but leave WSAPoll() answering ENOTSOCK
       handle = WSASocket(-1, -1, -1, &pi[sk++], 0, kNtWsaFlagOverlapped);
-      if (e[i].handle)
+      if (e[i].handle && !copy)
         CloseHandle(e[i].handle);  // the raw copy kept for other takers
       if (handle == -1)
         continue;
     } else {
       if (e[i].kind == kFdSocket)
         ++sk;
-      if ((handle = ScmTake(src, e[i].handle)) == -1)
+      if ((handle = copy ? ScmCopy(src, e[i].handle)
+                         : ScmTake(src, e[i].handle)) == -1)
         continue;
     }
     int fd = __reservefd(-1);
@@ -330,11 +359,14 @@ textwindows static void ScmInstall(struct Fd *f, uint32_t n,
 }
 
 // consumes a frame that sits at the front of the queue and installs
-// its descriptors. returns how many data bytes belong to the message
+// its descriptors. returns how many data bytes belong to the message,
+// whose sender it notes for SO_PASSCRED
 textwindows static ssize_t ScmTakeFrame(struct Fd *f, uint64_t waitmask) {
   struct ScmHead head;
   if (ScmRecvAll(f->handle, &head, sizeof(head), waitmask) == -1)
     return -1;
+  f->credfrom = head.credpid;
+  f->credleft = head.datalen;
   if (head.nfds > SCM_MAX_FD)
     return eproto();
   if (head.nfds) {
@@ -361,7 +393,7 @@ textwindows static ssize_t ScmTakeFrame(struct Fd *f, uint64_t waitmask) {
         return -1;
       }
     }
-    ScmInstall(f, head.nfds, ents, pi, head.srcpid);
+    ScmInstall(f, head.nfds, ents, pi, head.srcpid, false);
     free(pi);
     free(ents);
   }
@@ -399,23 +431,30 @@ textwindows ssize_t __scm_recv_nt(struct Fd *f, const struct iovec *iov,
     if (got <= 0)
       return got;
     size_t partial, want = got;
-    ssize_t off = ViewFind(iov, iovlen, got, 0, &partial);
-    if (off > 0) {
-      want = off;
-    } else if (off < 0 && partial) {
-      want = got - partial;
-      if (!want) {
-        // everything queued so far could be the start of a frame
-        unsigned char magic[SCM_MAGIC_LEN];
-        ssize_t n = ScmPeek(f->handle, magic, SCM_MAGIC_LEN,
-                            partial >= 2 ? 200 : 20, waitmask);
-        if (n == -1)
-          return -1;
-        if ((size_t)n == SCM_MAGIC_LEN &&
-            !memcmp(magic, kScmMagic, SCM_MAGIC_LEN)) {
-          off = 0;
-        } else {
-          want = got;
+    ssize_t off = -1;
+    if (f->credleft) {
+      // the rest of a framed message, from its sender
+      want = MIN(want, f->credleft);
+    } else {
+      f->credfrom = 0;
+      off = ViewFind(iov, iovlen, got, 0, &partial);
+      if (off > 0) {
+        want = off;
+      } else if (off < 0 && partial) {
+        want = got - partial;
+        if (!want) {
+          // everything queued so far could be the start of a frame
+          unsigned char magic[SCM_MAGIC_LEN];
+          ssize_t n = ScmPeek(f->handle, magic, SCM_MAGIC_LEN,
+                              partial >= 2 ? 200 : 20, waitmask);
+          if (n == -1)
+            return -1;
+          if ((size_t)n == SCM_MAGIC_LEN &&
+              !memcmp(magic, kScmMagic, SCM_MAGIC_LEN)) {
+            off = 0;
+          } else {
+            want = got;
+          }
         }
       }
     }
@@ -437,29 +476,54 @@ textwindows ssize_t __scm_recv_nt(struct Fd *f, const struct iovec *iov,
                                  f->rcvtimeo, waitmask, ScmRecvIovStart, &take);
     if (rc == -1 && errno == kNtErrorHandleEof)
       rc = 0;
+    if (rc > 0 && !peek)
+      f->credleft -= MIN((size_t)rc, f->credleft);
     return rc;
   }
 }
 
 /**
- * Hands queued descriptors to a recvmsg() caller through msg_control.
+ * The process at the other end: for a stream socket the one the peer
+ * comes from, for a pair the one that made it. 0 when there's none.
+ */
+textwindows int __scm_peer_pid_nt(struct Fd *f) {
+  uint32_t pid = 0, br;
+  if (__scm_msgpipe_nt(f)) {
+    if (f->credpid)
+      return f->credpid;
+    GetNamedPipeServerProcessId(f->handle, &pid);
+  } else if (f->kind == kFdSocket && f->family == AF_UNIX &&
+             f->type == SOCK_STREAM) {
+    if (WSAIoctl(f->handle, SIO_AF_UNIX_GETPEERPID, 0, 0, &pid, sizeof(pid),
+                 &br, 0, 0) == -1)
+      pid = 0;
+  }
+  return pid ? __pid_of_winpid(pid) : 0;
+}
+
+/**
+ * Hands queued descriptors to a recvmsg() caller through msg_control,
+ * after the sender's credentials when SO_PASSCRED asks for them.
  */
 textwindows void __scm_take_nt(struct Fd *f, struct msghdr *msg, bool cloexec) {
+  size_t off = 0;
+  if (f->passcred)
+    off = __cred_cmsg(msg, f->credfrom ? f->credfrom : __scm_peer_pid_nt(f));
   struct ScmQueue *q = f->scm;
   if (!q || !q->n) {
-    msg->msg_controllen = 0;
+    msg->msg_controllen = off;
     return;
   }
-  size_t space = msg->msg_controllen;
+  size_t space = msg->msg_controllen - off;
   size_t fit = space >= CMSG_LEN(0) ? (space - CMSG_LEN(0)) / sizeof(int) : 0;
   if (fit > (size_t)q->n)
     fit = q->n;
   if (!fit) {
-    msg->msg_controllen = 0;
+    msg->msg_controllen = off;
     msg->msg_flags |= MSG_CTRUNC;
     return;
   }
-  struct cmsghdr *c = msg->msg_control;
+  struct cmsghdr *c = (struct cmsghdr *)((char *)msg->msg_control + off);
   c->cmsg_len = CMSG_LEN(fit * sizeof(int));
   c->cmsg_level = SOL_SOCKET;
   c->cmsg_type = SCM_RIGHTS;
@@ -472,7 +536,7 @@ textwindows void __scm_take_nt(struct Fd *f, struct msghdr *msg, bool cloexec) {
   memmove(q->fds, q->fds + fit, (q->n - fit) * sizeof(int));
   q->n -= fit;
   size_t used = CMSG_SPACE(fit * sizeof(int));
-  msg->msg_controllen = used <= space ? used : c->cmsg_len;
+  msg->msg_controllen = off + (used <= space ? used : c->cmsg_len);
   if (q->n)
     msg->msg_flags |= MSG_CTRUNC;
 }
@@ -514,12 +578,116 @@ textwindows bool __scm_msgpipe_nt(struct Fd *f) {
 }
 
 // the descriptors a message's SCM_RIGHTS carry, into list; -1 w/ errno
+__msabi extern typeof(__sys_getsockname_nt) *const __imp_getsockname;
+__msabi extern typeof(__sys_getpeername_nt) *const __imp_getpeername;
+
+// the path in an address winsock gave back, which may be empty
+textwindows static size_t ScmSunPath(const char *addr, uint32_t len,
+                                     const char **path) {
+  *path = addr + 2;
+  return len > 2 ? strnlen(addr + 2, len - 2) : 0;
+}
+
+textwindows static uint64_t ScmHash(uint64_t h, const void *p, size_t n) {
+  for (size_t i = 0; i < n; ++i)
+    h = (h ^ ((const unsigned char *)p)[i]) * 0x100000001b3;
+  return h;
+}
+
+// the event a receiver with SO_PASSCRED makes, see the top of this file
+textwindows static bool ScmCredName(struct Fd *f, char16_t name[64]) {
+  uint64_t h = 0xcbf29ce484222325;
+  if (__scm_msgpipe_nt(f)) {
+    struct {
+      uint32_t n;
+      char16_t s[128];
+    } ni;
+    if (!GetFileInformationByHandleEx(f->handle, kNtFileNameInfo, &ni,
+                                      sizeof(ni)))
+      return false;
+    h = ScmHash(h, ni.s, ni.n);
+  } else {
+    char a[128], b[128];
+    uint32_t al = sizeof(a), bl = sizeof(b);
+    if (__imp_getsockname(f->handle, a, &al))
+      al = 0;
+    if (__imp_getpeername(f->handle, b, &bl))
+      bl = 0;
+    const char *pa, *pb;
+    size_t na = ScmSunPath(a, al, &pa), nb = ScmSunPath(b, bl, &pb);
+    int c = memcmp(pa, pb, MIN(na, nb));
+    if (c > 0 || (!c && na > nb)) {
+      const char *pt = pa;
+      size_t nt = na;
+      pa = pb, na = nb;
+      pb = pt, nb = nt;
+    }
+    h = ScmHash(h, pa, na);
+    h = ScmHash(h, "", 1);
+    h = ScmHash(h, pb, nb);
+  }
+  static const char16_t kPrefix[] = u"Local\\cosmo.passcred.";
+  memcpy(name, kPrefix, sizeof(kPrefix));
+  char16_t *p = name + ARRAYLEN(kPrefix) - 1;
+  for (int i = 16; i--;)
+    *p++ = "0123456789abcdef"[(h >> (i * 4)) & 15];
+  *p = 0;
+  return true;
+}
+
+/**
+ * Lets the senders at the other end of f know that it wants to be told
+ * who they are, see the top of this file.
+ */
+textwindows void __scm_passcred_nt(struct Fd *f) {
+  static struct {
+    atomic_int lock;
+    int n;
+    uint64_t made[64];
+  } g;
+  char16_t name[64];
+  if (!(__scm_msgpipe_nt(f) || __scm_stream_nt(f)) || !ScmCredName(f, name))
+    return;
+  uint64_t key = ScmHash(0, name, 64);
+  while (atomic_exchange_explicit(&g.lock, 1, memory_order_acquire))
+    SleepEx(0, false);
+  bool made = false;
+  for (int i = 0; i < g.n; ++i)
+    made |= g.made[i] == key;
+  if (!made && g.n < ARRAYLEN(g.made))
+    g.made[g.n++] = key;
+  atomic_store_explicit(&g.lock, 0, memory_order_release);
+  // held until this process exits
+  if (!made)
+    CreateEvent(0, true, false, name);
+}
+
+// this process's pid when its messages need a frame to say who sent
+// them, 0 when the receiver will know or doesn't care
+textwindows static int32_t ScmCredPid(struct Fd *f) {
+  int pid = __get_pib()->pid;
+  if (f->credpid == pid)
+    return 0;
+  char16_t name[64];
+  int64_t h;
+  if (!ScmCredName(f, name) || !(h = OpenEvent(kNtSynchronize, false, name)))
+    return 0;
+  CloseHandle(h);
+  return pid;
+}
+
 textwindows static ssize_t ScmList(const struct msghdr *msg,
                                    int list[SCM_MAX_FD]) {
   size_t n = 0;
   if (!msg->msg_control || !msg->msg_controllen)
     return 0;
   for (struct cmsghdr *c = CMSG_FIRSTHDR(msg); c; c = CMSG_NXTHDR(msg, c)) {
+    // the receiver learns who sent anyway, see the top of this file
+    if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_CREDENTIALS) {
+      if (__cred_check(c) == -1)
+        return -1;
+      continue;
+    }
     if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS ||
         c->cmsg_len < CMSG_LEN(0))
       return einval();
@@ -540,7 +708,8 @@ textwindows static ssize_t ScmList(const struct msghdr *msg,
 // that's this process the handles stay ours, see the top of this file.
 // Returns 0 or -1 w/ errno
 textwindows static int ScmBuild(struct ScmFrame *fr, const int *list, size_t n,
-                                uint32_t pid, size_t datalen, size_t room) {
+                                uint32_t pid, size_t datalen, size_t room,
+                                int32_t credpid) {
   bool keep = pid == GetCurrentProcessId();
   if (keep) {
     fr->proc = GetCurrentProcess();
@@ -567,7 +736,7 @@ textwindows static int ScmBuild(struct ScmFrame *fr, const int *list, size_t n,
   head->nfds = n;
   head->datalen = datalen;
   head->srcpid = keep ? GetCurrentProcessId() : 0;
-  head->reserved = 0;
+  head->credpid = credpid;
   size_t pk = 0;
   for (; fr->made < n; ++fr->made) {
     struct Fd *g = __get_pib()->fds.p + list[fr->made];
@@ -630,27 +799,29 @@ textwindows static void ScmDone(struct ScmFrame *fr, bool sent) {
  * Sends a message with SCM_RIGHTS attached.
  */
 textwindows ssize_t __scm_send_nt(int fd, const struct msghdr *msg, int flags) {
+  struct Fd *f = __get_pib()->fds.p + fd;
   int list[SCM_MAX_FD];
   ssize_t n = ScmList(msg, list);
   if (n == -1)
     return -1;
-  if (!n)
-    return sys_send_nt(fd, msg->msg_iov, msg->msg_iovlen, flags);
+  int32_t credpid = ScmCredPid(f);
+  if (!n && !credpid)
+    return __winsock_send_nt(fd, msg->msg_iov, msg->msg_iovlen, flags);
   size_t datalen = 0;
   for (size_t i = 0; i < msg->msg_iovlen; ++i)
     datalen += msg->msg_iov[i].iov_len;
   if (!datalen)
     return 0;
 
-  struct Fd *f = __get_pib()->fds.p + fd;
-  uint32_t pid = 0, br;
-  if (WSAIoctl(f->handle, SIO_AF_UNIX_GETPEERPID, 0, 0, &pid, sizeof(pid), &br,
-               0, 0) == -1)
+  uint32_t pid = GetCurrentProcessId(), br;
+  if (n && WSAIoctl(f->handle, SIO_AF_UNIX_GETPEERPID, 0, 0, &pid, sizeof(pid),
+                    &br, 0, 0) == -1)
     return __winsockerr();
 
   bool gather = msg->msg_iovlen < 16;
   struct ScmFrame fr;
-  if (ScmBuild(&fr, list, n, pid, datalen, gather ? 0 : datalen) == -1)
+  if (ScmBuild(&fr, list, n, pid, datalen, gather ? 0 : datalen, credpid) ==
+      -1)
     return -1;
   ssize_t rc;
   if (gather) {
@@ -659,14 +830,15 @@ textwindows ssize_t __scm_send_nt(int fd, const struct msghdr *msg, int flags) {
     iov[0].iov_len = fr.hlen;
     for (size_t i = 0; i < msg->msg_iovlen; ++i)
       iov[i + 1] = msg->msg_iov[i];
-    rc = sys_send_nt(fd, iov, msg->msg_iovlen + 1, flags);
+    rc = __winsock_send_nt(fd, iov, msg->msg_iovlen + 1, flags);
   } else {
     unsigned char *p = fr.p + fr.hlen;
     for (size_t i = 0; i < msg->msg_iovlen; ++i) {
       memcpy(p, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
       p += msg->msg_iov[i].iov_len;
     }
-    rc = sys_send_nt(fd, &(struct iovec){fr.p, fr.hlen + datalen}, 1, flags);
+    rc = __winsock_send_nt(fd, &(struct iovec){fr.p, fr.hlen + datalen}, 1,
+                           flags);
   }
   if (rc != -1 && (size_t)rc < fr.hlen) {
     rc = eio();
@@ -691,7 +863,7 @@ textwindows ssize_t __scm_frame_build_nt(struct ScmFrame *fr,
     fr->hlen = 0;
     return n;
   }
-  if (ScmBuild(fr, list, n, pid, datalen, 0) == -1)
+  if (ScmBuild(fr, list, n, pid, datalen, 0, 0) == -1)
     return -1;
   return n;
 }
@@ -723,8 +895,48 @@ textwindows ssize_t __scm_frame_take_nt(struct Fd *f, const unsigned char *buf,
                (const struct NtWsaProtocolInfo *)(buf + sizeof(*h) +
                                                   h->nfds *
                                                       sizeof(struct ScmEntry)),
-               h->srcpid);
+               h->srcpid, false);
   return hlen;
+}
+
+/**
+ * Says what linux does to a write on a socketpair end whose peer is
+ * gone: ECONNREFUSED for SOCK_DGRAM the first time, which leaves it
+ * unconnected, ENOTCONN after that, and EPIPE for SOCK_SEQPACKET. No
+ * SIGPIPE either way.
+ */
+textwindows int __msgpipe_gone_nt(struct Fd *f) {
+  if (f->type != SOCK_DGRAM)
+    return epipe();
+  if (f->peergone)
+    return enotconn();
+  f->peergone = true;
+  return econnrefused();
+}
+
+// one message out on a message mode pipe, MSG_DONTWAIT applying to this
+// call only
+textwindows static ssize_t MsgPipeWrite(int fd, void *p, size_t n, int flags) {
+  struct Fd *f = __get_pib()->fds.p + fd;
+  sigset_t m = __sig_block();
+  ssize_t rc = sys_readwrite_nt_dontwait(fd, p, n, -1, f->handle, m,
+                                         (void *)WriteFile,
+                                         flags & MSG_DONTWAIT);
+  __sig_unblock(m);
+  if (rc == -2) {
+    switch (GetLastError()) {
+      case kNtErrorBrokenPipe:
+      case kNtErrorNoData:
+        rc = __msgpipe_gone_nt(f);
+        break;
+      default:
+        rc = __winerr();
+        break;
+    }
+  }
+  if (rc == -1 && errno == EAGAIN && _weaken(__epoll_rearm_out))
+    _weaken(__epoll_rearm_out)(fd);
+  return rc;
 }
 
 /**
@@ -732,9 +944,26 @@ textwindows ssize_t __scm_frame_take_nt(struct Fd *f, const unsigned char *buf,
  *
  * The iovecs go out as a single write, since each write is a message
  * of its own on a message mode pipe, with a frame in front when the
- * message carries descriptors.
+ * message carries descriptors. `flags` may have MSG_DONTWAIT and
+ * MSG_NOSIGNAL, which changes nothing here; MSG_OOB is EOPNOTSUPP, as
+ * on linux. An address is ignored on SOCK_SEQPACKET, while SOCK_DGRAM
+ * sends there instead of to the peer, from an unnamed socket.
  */
-textwindows ssize_t __scm_msgpipe_send_nt(int fd, const struct msghdr *msg) {
+textwindows ssize_t __scm_msgpipe_send_nt(int fd, const struct msghdr *msg,
+                                          int flags) {
+  if (flags & MSG_OOB)
+    return eopnotsupp();
+  struct Fd *f = __get_pib()->fds.p + fd;
+  if (msg->msg_name && msg->msg_namelen && f->type == SOCK_DGRAM) {
+    int s = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (s == -1)
+      return -1;
+    ssize_t rc = sendmsg(s, msg, flags);
+    int e = errno;
+    close(s);
+    errno = e;
+    return rc;
+  }
   int list[SCM_MAX_FD];
   ssize_t n = ScmList(msg, list);
   if (n == -1)
@@ -742,11 +971,16 @@ textwindows ssize_t __scm_msgpipe_send_nt(int fd, const struct msghdr *msg) {
   size_t datalen = 0;
   for (size_t i = 0; i < msg->msg_iovlen; ++i)
     datalen += msg->msg_iov[i].iov_len;
-  if (!n && msg->msg_iovlen <= 1)
-    return sys_write_nt(fd, msg->msg_iov, msg->msg_iovlen, -1);
+  int32_t credpid = ScmCredPid(f);
+  if (!n && datalen && msg->msg_iovlen == 1 && !credpid)
+    return MsgPipeWrite(fd, msg->msg_iov[0].iov_base, datalen, flags);
+  // an empty message goes out as a bare frame, since PeekNamedPipe() can't
+  // tell an empty message from no message
+  bool framed = n || !datalen || credpid;
   struct ScmFrame fr = {0};
-  if (n) {
-    if (ScmBuild(&fr, list, n, GetCurrentProcessId(), datalen, datalen) == -1)
+  if (framed) {
+    if (ScmBuild(&fr, list, n, GetCurrentProcessId(), datalen, datalen,
+                 credpid) == -1)
       return -1;
   } else if (!(fr.p = malloc(datalen ? datalen : 1))) {
     return enomem();
@@ -756,11 +990,11 @@ textwindows ssize_t __scm_msgpipe_send_nt(int fd, const struct msghdr *msg) {
     memcpy(p, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
     p += msg->msg_iov[i].iov_len;
   }
-  ssize_t rc = sys_write_nt(fd, &(struct iovec){fr.p, fr.hlen + datalen}, 1, -1);
+  ssize_t rc = MsgPipeWrite(fd, fr.p, fr.hlen + datalen, flags);
   if (rc != -1)
     rc = rc > (ssize_t)fr.hlen ? rc - (ssize_t)fr.hlen : 0;
   int e = errno;
-  if (n) {
+  if (framed) {
     ScmDone(&fr, rc != -1);
   } else {
     free(fr.p);
@@ -781,68 +1015,217 @@ textwindows static size_t ScmCopyOut(const struct iovec *iov, size_t iovlen,
   return done;
 }
 
-/**
- * Reads one message from a SOCK_DGRAM or SOCK_SEQPACKET socketpair end.
- *
- * A message with a frame in front has its descriptors installed and
- * queued for recvmsg(), and only its data reaches the caller. Returns
- * -3 when the next message is a plain one, for the ordinary read path.
- */
-textwindows ssize_t __scm_msgpipe_read_nt(int fd, const struct iovec *iov,
-                                          size_t iovlen, uint64_t waitmask) {
+// the rest of a message that didn't fit, read and thrown away; returns
+// how many bytes that was
+textwindows static size_t MsgPipeDrain(int fd, uint64_t waitmask) {
   struct Fd *f = __get_pib()->fds.p + fd;
+  char scratch[512];
+  size_t n = 0;
+  for (;;) {
+    ssize_t rc = sys_readwrite_nt_dontwait(fd, scratch, sizeof(scratch), -1,
+                                           f->handle, waitmask,
+                                           (void *)ReadFile, true);
+    if (rc >= 0)
+      return n + rc;
+    if (rc != -2 || GetLastError() != kNtErrorMoreData)
+      return n;
+    n += sizeof(scratch);
+  }
+}
+
+// closes descriptors a message carried that nobody took, as linux does,
+// returning whether there were any
+textwindows static bool ScmDiscard(struct Fd *f) {
+  struct ScmQueue *q = f->scm;
+  if (!q || !q->n)
+    return false;
+  for (int i = 0; i < q->n; ++i)
+    close(q->fds[i]);
+  q->n = 0;
+  return true;
+}
+
+/**
+ * Receives one message from a SOCK_DGRAM or SOCK_SEQPACKET socketpair
+ * end, the way linux does.
+ *
+ * A message longer than the iovecs is cut short and the rest dropped,
+ * with MSG_TRUNC in `msg->msg_flags`. `flags` may have MSG_PEEK, which
+ * leaves the message queued and hands out copies of its descriptors,
+ * MSG_TRUNC, which returns the full length of the message, and
+ * MSG_DONTWAIT. Descriptors go to `msg`'s control buffer, and those that
+ * don't fit, or have no `msg` to go to, are closed. With the peer gone
+ * and nothing queued, SOCK_SEQPACKET reads end of file while SOCK_DGRAM
+ * has nothing to wait for but a signal.
+ */
+textwindows ssize_t __scm_msgpipe_recv_nt(int fd, const struct iovec *iov,
+                                          size_t iovlen, int flags,
+                                          struct msghdr *msg, bool cloexec,
+                                          uint64_t waitmask) {
+  struct Fd *f = __get_pib()->fds.p + fd;
+  bool dontwait = (flags & MSG_DONTWAIT) || (f->flags & O_NONBLOCK);
   struct ScmHead head;
   uint32_t got, avail, left;
   for (;;) {
-    if (!PeekNamedPipe(f->handle, &head, sizeof(head), &got, &avail, &left))
-      return -3;  // let the ordinary read say what's wrong
-    if (got)
-      break;
-    if (f->flags & O_NONBLOCK)
-      return -3;
+    if (PeekNamedPipe(f->handle, &head, sizeof(head), &got, &avail, &left)) {
+      if (avail)
+        break;
+    } else if (GetLastError() == kNtErrorBrokenPipe) {
+      if (f->type != SOCK_DGRAM)
+        return 0;
+      if (dontwait)
+        return eagain();
+      for (;;)
+        if (ppoll(0, 0, 0, (sigset_t *)&waitmask) == -1)
+          return -1;
+    } else {
+      return __winerr();
+    }
+    if (dontwait)
+      return eagain();
     struct pollfd p = {fd, POLLIN};
-    if (ppoll(&p, 1, 0, &waitmask) == -1)
+    if (ppoll(&p, 1, 0, (sigset_t *)&waitmask) == -1)
       return -1;
-    if (p.revents & (POLLHUP | POLLERR | POLLNVAL))
-      return -3;
   }
-  if (got < sizeof(head) || memcmp(head.magic, kScmMagic, SCM_MAGIC_LEN))
-    return -3;
   size_t size = (size_t)got + left;
-  unsigned char *buf = malloc(size);
+  unsigned char *buf = malloc(size ? size : 1);
   if (!buf)
     return enomem();
-  ssize_t rc = sys_readwrite_nt(fd, buf, size, -1, f->handle, waitmask,
-                                (void *)ReadFile);
-  if (rc < 0) {
-    free(buf);
-    return rc == -2 ? __winerr() : rc;
-  }
-  struct ScmHead *h = (struct ScmHead *)buf;
-  size_t nsock = 0, hlen = 0;
-  if ((size_t)rc >= sizeof(*h) && !memcmp(h->magic, kScmMagic, SCM_MAGIC_LEN) &&
-      h->nfds <= SCM_MAX_FD) {
-    struct ScmEntry *ents = (struct ScmEntry *)(buf + sizeof(*h));
-    hlen = sizeof(*h) + h->nfds * sizeof(struct ScmEntry);
-    if ((size_t)rc >= hlen) {
-      for (uint32_t i = 0; i < h->nfds; ++i)
-        nsock += ents[i].kind == kFdSocket;
-      hlen += nsock * sizeof(struct NtWsaProtocolInfo);
+  ssize_t rc;
+  size_t dropped = 0;
+  if (flags & MSG_PEEK) {
+    if (!PeekNamedPipe(f->handle, buf, size, &got, 0, 0)) {
+      free(buf);
+      return __winerr();
     }
-    if ((size_t)rc >= hlen && (size_t)rc - hlen >= h->datalen) {
-      ScmInstall(f, h->nfds, ents,
-                 (struct NtWsaProtocolInfo *)(buf + sizeof(*h) +
-                                              h->nfds * sizeof(struct ScmEntry)),
-                 h->srcpid);
-      rc = ScmCopyOut(iov, iovlen, buf + hlen, h->datalen);
+    rc = got;
+  } else {
+    rc = sys_readwrite_nt_dontwait(fd, buf, size, -1, f->handle, waitmask,
+                                   (void *)ReadFile, dontwait);
+    if (rc == -2) {
+      // another reader took the message we sized, and the next is longer
+      if (GetLastError() == kNtErrorMoreData) {
+        rc = size;
+        dropped = MsgPipeDrain(fd, waitmask);
+      } else if (GetLastError() == kNtErrorBrokenPipe) {
+        free(buf);
+        return f->type == SOCK_DGRAM ? eagain() : 0;
+      } else {
+        free(buf);
+        return __winerr();
+      }
+    } else if (rc < 0) {
       free(buf);
       return rc;
     }
-    hlen = 0;
   }
-  // another reader got the framed message first and this is some other one
-  rc = ScmCopyOut(iov, iovlen, buf, rc);
+  unsigned char *data = buf;
+  size_t datalen = rc;
+  ssize_t hlen = __scm_frame_take_nt(f, buf, rc, false);
+  struct ScmHead *h = (struct ScmHead *)buf;
+  f->credfrom = 0;
+  if (hlen != -1 && (size_t)rc - hlen >= h->datalen) {
+    f->credfrom = h->credpid;
+    struct ScmEntry *ents = (struct ScmEntry *)(buf + sizeof(*h));
+    if (h->nfds)
+      ScmInstall(f, h->nfds, ents,
+                 (struct NtWsaProtocolInfo *)(ents + h->nfds), h->srcpid,
+                 flags & MSG_PEEK);
+    data = buf + hlen;
+    datalen = h->datalen;
+  }
+  size_t room = 0;
+  for (size_t i = 0; i < iovlen; ++i)
+    room += iov[i].iov_len;
+  size_t copied = ScmCopyOut(iov, iovlen, data, datalen);
   free(buf);
+  datalen += dropped;
+  if (msg) {
+    msg->msg_flags = datalen > room ? MSG_TRUNC : 0;
+    if (msg->msg_control) {
+      __scm_take_nt(f, msg, cloexec);
+    } else {
+      msg->msg_controllen = 0;
+    }
+    if (ScmDiscard(f))
+      msg->msg_flags |= MSG_CTRUNC;
+  } else {
+    ScmDiscard(f);
+  }
+  return (flags & MSG_TRUNC) ? (ssize_t)datalen : (ssize_t)copied;
+}
+
+#define MSGPIPE_BUFSIZE 212992  // linux's default socket buffer
+#define SO_PROTOCOL_linux 38
+#define SO_DOMAIN_linux   39
+
+/**
+ * Answers getsockopt() for a SOCK_DGRAM or SOCK_SEQPACKET socketpair
+ * end, which is a named pipe and not a winsock socket.
+ */
+textwindows int __scm_msgpipe_getsockopt_nt(struct Fd *f, int level,
+                                            int optname, void *optval,
+                                            uint32_t *optlen) {
+  int v;
+  if (level != SOL_SOCKET)
+    return eopnotsupp();
+  switch (optname) {
+    case SO_TYPE:
+      v = f->type ? f->type : SOCK_DGRAM;
+      break;
+    case SO_DOMAIN_linux:
+      v = AF_UNIX;
+      break;
+    case SO_PROTOCOL_linux:
+    case SO_ERROR:
+    case SO_ACCEPTCONN:
+      v = 0;
+      break;
+    case SO_SNDBUF:
+    case SO_RCVBUF:
+      v = MSGPIPE_BUFSIZE;
+      break;
+    default:
+      return enoprotoopt();
+  }
+  if (!optval || !optlen)
+    return efault();
+  uint32_t n = MIN(*optlen, sizeof(v));
+  memcpy(optval, &v, n);
+  *optlen = n;
+  return 0;
+}
+
+/**
+ * Answers setsockopt() for a SOCK_DGRAM or SOCK_SEQPACKET socketpair
+ * end. The buffer sizes are taken and dropped, since the pipe is made
+ * with linux's default already and can't be resized.
+ */
+textwindows int __scm_msgpipe_setsockopt_nt(int level, int optname,
+                                            const void *optval,
+                                            uint32_t optlen) {
+  if (level != SOL_SOCKET)
+    return eopnotsupp();
+  if (optname != SO_SNDBUF && optname != SO_RCVBUF)
+    return enoprotoopt();
+  if (optlen < sizeof(int))
+    return einval();
+  return 0;
+}
+
+/**
+ * Receives one message from a SOCK_DGRAM or SOCK_SEQPACKET socketpair
+ * end for recv(), recvfrom() and recvmsg(), see __scm_msgpipe_recv_nt().
+ */
+textwindows ssize_t sys_recv_msgpipe_nt(int fd, const struct iovec *iov,
+                                        size_t iovlen, int flags,
+                                        struct msghdr *msg, bool cloexec) {
+  sigset_t m = __sig_block();
+  ssize_t rc =
+      __scm_msgpipe_recv_nt(fd, iov, iovlen, flags, msg, cloexec, m);
+  __sig_unblock(m);
+  if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
+    _weaken(__epoll_rearm_in)(fd);
   return rc;
 }
 

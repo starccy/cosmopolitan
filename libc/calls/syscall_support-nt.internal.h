@@ -49,6 +49,11 @@ bool __nt_syncio(struct Fd *) libcesque;
 ssize_t sys_readwrite_nt(int, void *, size_t, ssize_t, int64_t, uint64_t,
                          bool32 (*)(int64_t, void *, uint32_t, uint32_t *,
                                     struct NtOverlapped *));
+ssize_t sys_readwrite_nt_dontwait(int, void *, size_t, ssize_t, int64_t,
+                                  uint64_t,
+                                  bool32 (*)(int64_t, void *, uint32_t,
+                                             uint32_t *, struct NtOverlapped *),
+                                  bool);
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_CALLS_SYSCALL_SUPPORT_NT_INTERNAL_H_ */

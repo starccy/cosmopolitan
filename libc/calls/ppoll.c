@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/calls/cp.internal.h"
+#include "libc/calls/internal.h"
 #include "libc/calls/struct/rlimit.h"
 #include "libc/calls/struct/sigset.h"
 #include "libc/calls/struct/sigset.internal.h"
@@ -27,6 +28,7 @@
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
 #include "libc/limits.h"
 #include "libc/runtime/stack.h"
 #include "libc/sock/struct/pollfd.h"
@@ -96,22 +98,47 @@ static int ppoll_impl(struct pollfd *fds, size_t nfds,
     } else {
       tsp = 0;
     }
-    fdcount = sys_ppoll(fds, nfds, tsp, sigmask2p, 8);
-    if (fdcount == -1 && errno == ENOSYS) {
-      int64_t ms;
-      errno = e;
-      if (timeout) {
-        ms = timespec_tomillis(*timeout);
-        if (ms > INT_MAX)
-          ms = -1;
-      } else {
-        ms = -1;
+    // xnu wakes nobody when the peer of a socketpair(SOCK_SEQPACKET) end
+    // goes away, so a set with one waits in slices that look for that
+    bool sliced = IsXnu() && _weaken(__xnu_unix_poll_sliced) &&
+                  _weaken(__xnu_unix_poll_sliced)(fds2, nfds);
+    struct timespec deadline;
+    if (sliced && tsp)
+      deadline = timespec_add(timespec_mono(), *tsp);
+    for (;;) {
+      struct timespec slice, *sp = tsp;
+      if (sliced) {
+        if (_weaken(__xnu_unix_poll)(fds2, nfds, false)) {
+          slice = (struct timespec){0};
+        } else {
+          slice = timespec_frommillis(50);
+          if (tsp && timespec_cmp(timespec_subz(deadline, timespec_mono()),
+                                  slice) < 0)
+            slice = timespec_subz(deadline, timespec_mono());
+        }
+        sp = &slice;
       }
-      if (sigmask2p)
-        sys_sigprocmask(SIG_SETMASK, sigmask2p, &oldmask);
-      fdcount = sys_poll(fds, nfds, ms);
-      if (sigmask2p)
-        sys_sigprocmask(SIG_SETMASK, &oldmask, 0);
+      fdcount = sys_ppoll(fds, nfds, sp, sigmask2p, 8);
+      if (fdcount == -1 && errno == ENOSYS) {
+        int64_t ms;
+        errno = e;
+        if (sp) {
+          ms = timespec_tomillis(*sp);
+          if (ms > INT_MAX)
+            ms = -1;
+        } else {
+          ms = -1;
+        }
+        if (sigmask2p)
+          sys_sigprocmask(SIG_SETMASK, sigmask2p, &oldmask);
+        fdcount = sys_poll(fds, nfds, ms);
+        if (sigmask2p)
+          sys_sigprocmask(SIG_SETMASK, &oldmask, 0);
+      }
+      if (!sliced || fdcount || (!sp->tv_sec && !sp->tv_nsec) ||
+          _weaken(__xnu_unix_poll)(fds2, nfds, false) ||
+          (tsp && timespec_cmp(timespec_mono(), deadline) >= 0))
+        break;
     }
   } else {
     fdcount = sys_poll_nt(fds, nfds, timeout, sigmask);
@@ -131,6 +158,13 @@ static int ppoll_impl(struct pollfd *fds, size_t nfds,
   // file descriptors exist. However on XNU if none of the meaningful
   // event flags are specified (e.g. POLLIN, POLLOUT) then it doesn't
   // perform the POLLNVAL check that's implied on all other platforms
+  if (IsXnu() && fdcount != -1 && _weaken(__xnu_unix_poll) &&
+      _weaken(__xnu_unix_poll)(fds, nfds, true)) {
+    fdcount = 0;
+    for (size_t i = 0; i < nfds; ++i)
+      fdcount += !!fds[i].revents;
+  }
+
   if (IsXnu() && fdcount != -1) {
     for (size_t i = 0; i < nfds; ++i) {
       if (fds[i].fd >= 0 &&   //

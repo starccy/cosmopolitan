@@ -71,6 +71,7 @@ imp	'ConnectNamedPipe'					ConnectNamedPipe					kernel32	2
 imp	'ContinueDebugEvent'					ContinueDebugEvent					kernel32	3
 imp	'CopyFile'						CopyFileW						kernel32	3
 imp	'CreateEvent'						CreateEventW						kernel32	4
+imp	'OpenEvent'						OpenEventW						kernel32	3
 imp	'CreateEventA'						CreateEventA						kernel32	4
 imp	'CreateEventEx'						CreateEventExW						kernel32	4
 imp	'CreateHardLink'					CreateHardLinkW						kernel32	3
@@ -147,6 +148,7 @@ imp	'GetModuleHandle'					GetModuleHandleA					kernel32	1
 imp	'GetModuleHandleEx'					GetModuleHandleExW					kernel32	3
 imp	'GetModuleHandleW'					GetModuleHandleW					kernel32	1
 imp	'GetNamedPipeInfo'					GetNamedPipeInfo					kernel32	5
+imp	'GetNamedPipeServerProcessId'			GetNamedPipeServerProcessId			kernel32	2
 imp	'GetNumaProcessorNodeEx'				GetNumaProcessorNodeEx					kernel32	2
 imp	'GetNumberOfConsoleInputEvents'				GetNumberOfConsoleInputEvents				kernel32	2
 imp	'GetNumberOfConsoleMouseButtons'			GetNumberOfConsoleMouseButtons				kernel32	1

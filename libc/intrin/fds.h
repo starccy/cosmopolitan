@@ -66,6 +66,15 @@ struct Fd {
   void *pty;         // pseudoconsole on windows, see pty.internal.h
   bool ptymaster;
   bool devzero;  // windows: a kFdDevRandom that is /dev/zero
+  bool peergone;  // windows SOCK_DGRAM pair: ECONNREFUSED already reported
+  bool xnupkt;      // xnu: a socketpair(SOCK_SEQPACKET) end, see unixpair-xnu.c
+  bool xnugone;     // xnu: an AF_UNIX datagram peer gone, not yet told to send
+  bool xnudgram;    // xnu: an AF_UNIX datagram socket made by socket()
+  int64_t xnuino;   // xnu: the inode either of those belongs to
+  bool passcred;    // off linux: SO_PASSCRED as set, see passcred.c
+  int credpid;      // windows unix socket: the pid of the process it's from
+  int credfrom;     // windows unix socket: who sent what's being received
+  uint32_t credleft;  // windows unix stream: bytes left of that message
   void *fifo;       // windows fifo: its registry, see fifo-nt.c
   long fifow;       // windows fifo opened O_RDWR: the write end
   char syncio;  // windows disk file: 0 not known yet, 1 synchronous, 2 not

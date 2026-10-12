@@ -3,6 +3,7 @@
 #include "libc/str/str.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/ip.h"
+#include "libc/sysv/consts/scm.h"
 #include "libc/sysv/consts/sol.h"
 
 /*
@@ -58,6 +59,11 @@ ssize_t __cmsg2bsd(const void *src, size_t srclen, void *dst, size_t dstcap) {
       break;
     size_t payload = h.cmsg_len - sizeof(h);
     const unsigned char *data = s + si + sizeof(h);
+    // checked by sendmsg(), and nothing the host knows
+    if (h.cmsg_level == SOL_SOCKET && h.cmsg_type == SCM_CREDENTIALS) {
+      si += CMSG_ALIGN(h.cmsg_len);
+      continue;
+    }
     // linux takes a one byte IP_TOS, the bsds want an int
     int tos;
     if (h.cmsg_level == SOL_IP && h.cmsg_type == IP_TOS && payload == 1) {

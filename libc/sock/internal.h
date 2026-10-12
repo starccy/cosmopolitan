@@ -115,6 +115,28 @@ ssize_t __winsock_block(int64_t, uint32_t, bool, uint32_t, uint64_t,
 struct msghdr;
 bool __scm_stream_nt(struct Fd *);
 bool __scm_msgpipe_nt(struct Fd *);
+void __xnu_unix_setup(int, bool, bool);
+void __xnu_unix_passcred(int, bool);
+int __xnu_unix_cred(int);
+void __cred_prepend(struct msghdr *, size_t, int);
+bool __xnu_seqpacket(int);
+ssize_t __xnu_unix_sendto_connected(int, const struct msghdr *, int);
+ssize_t __xnu_unix_recvfrom(int, void *, size_t, int, void *, uint32_t *);
+ssize_t __xnu_unix_sendto(int, const void *, size_t, int, const void *,
+                          uint32_t);
+ssize_t __xnu_unix_recvmsg(int, void *, int);
+ssize_t __xnu_unix_sendmsg(int, const void *, int);
+
+struct ucred;
+struct cmsghdr;
+bool __credopt(int, int);
+int __credopt_set(int, int, const void *, uint32_t);
+int __credopt_get(int, int, void *, uint32_t *);
+size_t __cred_cmsg(struct msghdr *, int);
+int __cred_check(const struct cmsghdr *);
+int __scm_peer_pid_nt(struct Fd *);
+void __scm_passcred_nt(struct Fd *);
+int __xnu_unix_peer_pid(int, struct ucred *);
 
 // an SCM_RIGHTS frame built for a datagram, unixdgram-nt.c's use of
 // what scmrights-nt.c does for streams and socketpairs
@@ -148,8 +170,13 @@ ssize_t __winsock_sendto_nt(int, const struct iovec *, size_t, uint32_t,
                             const void *, uint32_t, void *, uint32_t);
 ssize_t __winsock_recvfrom_nt(int, const struct iovec *, size_t, uint32_t,
                               void *, uint32_t *, struct NtMsgHdr *);
-ssize_t __scm_msgpipe_send_nt(int, const struct msghdr *);
+ssize_t __scm_msgpipe_send_nt(int, const struct msghdr *, int);
+int __scm_msgpipe_getsockopt_nt(struct Fd *, int, int, void *, uint32_t *);
+int __scm_msgpipe_setsockopt_nt(int, int, const void *, uint32_t);
+ssize_t sys_recv_msgpipe_nt(int, const struct iovec *, size_t, int,
+                            struct msghdr *, bool);
 ssize_t __scm_send_nt(int, const struct msghdr *, int);
+ssize_t __winsock_send_nt(int, const struct iovec *, size_t, uint32_t);
 ssize_t __scm_recv_nt(struct Fd *, const struct iovec *, size_t, uint32_t,
                       bool, uint64_t);
 void __scm_take_nt(struct Fd *, struct msghdr *, bool);

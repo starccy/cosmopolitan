@@ -23,6 +23,7 @@
 #include "libc/sock/sock.h"
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/host.internal.h"
+#include "libc/sysv/consts/sock.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -50,6 +51,9 @@ int socket(int family, int type, int protocol) {
     rc = eafnosupport();
   } else if (!IsWindows()) {
     rc = sys_socket(hfam, type, protocol);
+    if (rc != -1 && IsXnu() && family == AF_UNIX &&
+        (type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) == SOCK_DGRAM)
+      __xnu_unix_setup(rc, false, false);
   } else {
     rc = sys_socket_nt(family, type, protocol);
   }

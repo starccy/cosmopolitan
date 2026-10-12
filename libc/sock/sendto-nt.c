@@ -90,6 +90,8 @@ textwindows static ssize_t sys_sendto_nt_impl(int fd, const struct iovec *iov,
   if (__udg_nt(__get_pib()->fds.p + fd))
     return __udg_sendto_nt(fd, iov, iovlen, flags, opt_in_addr, in_addrsize,
                            0);
+  if (!in_addrsize && __scm_stream_nt(__get_pib()->fds.p + fd))
+    return sys_send_nt(fd, iov, iovlen, flags);
 
   // normalize unix socket filenames
   struct sockaddr_un sun;

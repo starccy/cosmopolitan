@@ -54,7 +54,9 @@
 #include "libc/nt/memory.h"
 #include "libc/nt/nt/file.h"
 #include "libc/nt/runtime.h"
+#include "libc/nt/enum/fileinformationclass.h"
 #include "libc/nt/struct/afd.h"
+#include "libc/nt/struct/filepipelocalinformation.h"
 #include "libc/nt/struct/iostatusblock.h"
 #include "libc/nt/struct/objectattributes.h"
 #include "libc/nt/struct/pollfd.h"
@@ -66,6 +68,7 @@
 #include "libc/runtime/runtime.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/struct/pollfd.h"
+#include "libc/sysv/consts/sock.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/errfuns.h"
@@ -309,6 +312,27 @@ textwindows static int sys_poll_nt_probe(struct pollfd *fds, int *indices,
 // This function is used to implement poll() and select(). You may poll
 // on sockets, files and the console at the same time. We also poll for
 // both signals and posix thread cancelation, while the poll is polling
+// a SOCK_DGRAM or SOCK_SEQPACKET socketpair end, answered the way linux
+// does: writable while the pipe has room or the peer is gone, and a gone
+// peer hangs up SOCK_SEQPACKET, which then reads end of file
+textwindows static short sys_poll_nt_msgpipe(struct Fd *f, int64_t h,
+                                             short ev) {
+  struct NtFilePipeLocalInformation pi;
+  struct NtIoStatusBlock io;
+  if (NtQueryInformationFile(h, &io, &pi, sizeof(pi),
+                             kNtFilePipeLocalInformation))
+    return POLLERR_;
+  bool gone = pi.NamedPipeState == 4;  // FILE_PIPE_CLOSING_STATE
+  short r = 0;
+  if (pi.ReadDataAvailable)
+    r |= POLLRDNORM_;
+  if (gone && f->type != SOCK_DGRAM)
+    r |= POLLRDNORM_ | POLLHUP_;
+  if (pi.WriteQuotaAvailable || gone)
+    r |= POLLWRNORM_;
+  return (r & ev) | (r & POLLHUP_);
+}
+
 textwindows static int sys_poll_nt_actual_impl(
     struct pollfd *fds, uint64_t nfds, struct timespec deadline,
     struct timespec started, sigset_t waitmask, struct sys_pollfd_nt *sockfds,
@@ -422,6 +446,11 @@ textwindows static int sys_poll_nt_actual_impl(
         if ((fds[fi].events & POLLRDNORM_) &&
             !WaitForSingleObject(filehands[i], 0))
           fds[fi].revents |= POLLRDNORM_;
+      } else if (kind == kFdFile &&
+                 (__get_pib()->fds.p[fds[fi].fd].mode & 0170000) == 0140000) {
+        gotpipe = true;
+        fds[fi].revents = sys_poll_nt_msgpipe(__get_pib()->fds.p + fds[fi].fd,
+                                              filehands[i], ev);
       } else if ((ev & POLLWRNORM_) && !(ev & POLLRDNORM_)) {
         fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
       } else if (GetFileType(filehands[i]) == kNtFileTypePipe) {
@@ -606,6 +635,11 @@ textwindows static int sys_poll_nt_actual_impl(
               fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
               break;
           }
+        } else if ((__get_pib()->fds.p[fds[fi].fd].mode & 0170000) ==
+                       0140000 &&
+                   __get_pib()->fds.p[fds[fi].fd].kind == kFdFile) {
+          fds[fi].revents = sys_poll_nt_msgpipe(
+              __get_pib()->fds.p + fds[fi].fd, filehands[wi], fds[fi].events);
         } else if (GetFileType(filehands[wi]) == kNtFileTypePipe) {
           if ((fds[fi].events & POLLRDNORM_) &&
               (__get_pib()->fds.p[fds[fi].fd].flags & O_ACCMODE) != O_WRONLY) {

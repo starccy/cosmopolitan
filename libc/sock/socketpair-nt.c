@@ -44,7 +44,7 @@
 #if SupportsWindows()
 
 // reads on a message pair look for descriptors in front of the data
-__static_yoink("__scm_msgpipe_read_nt");
+__static_yoink("__scm_msgpipe_recv_nt");
 
 textwindows static bool ExchangeAll(int fd, void *buf, size_t n,
                                     bool writing) {
@@ -166,7 +166,7 @@ textwindows static int sys_socketpair_nt_impl(int family, int type, int proto,
   }
   if ((hpipe = CreateNamedPipe(
            pipename, kNtPipeAccessDuplex | kNtFileFlagOverlapped, mode, 1,
-           65536, 65536, 0, &kNtIsInheritable)) == -1) {
+           212992, 212992, 0, &kNtIsInheritable)) == -1) {
     __releasefd(writer);
     __releasefd(reader);
     return -1;
@@ -175,6 +175,13 @@ textwindows static int sys_socketpair_nt_impl(int family, int type, int proto,
   h1 = CreateFile(pipename, kNtGenericWrite | kNtGenericRead,
                   kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete,
                   &kNtIsInheritable, kNtOpenExisting, kNtFileFlagOverlapped, 0);
+  // the end CreateFile() opens reads bytes, running messages together,
+  // unless told otherwise
+  uint32_t readmode = kNtPipeReadmodeMessage;
+  if (h1 != -1 && !SetNamedPipeHandleState(h1, &readmode, 0, 0)) {
+    CloseHandle(h1);
+    h1 = -1;
+  }
 
   __fds_lock();
 
@@ -183,13 +190,19 @@ textwindows static int sys_socketpair_nt_impl(int family, int type, int proto,
     __get_pib()->fds.p[reader].kind = kFdFile;
     __get_pib()->fds.p[reader].flags = O_RDWR | oflags;
     __get_pib()->fds.p[reader].mode = 0140444;
+    __get_pib()->fds.p[reader].family = AF_UNIX;
+    __get_pib()->fds.p[reader].type = type;
     __get_pib()->fds.p[reader].handle = hpipe;
+    __get_pib()->fds.p[reader].credpid = __get_pib()->pid;
     __get_pib()->fds.p[reader].was_created_during_vfork = __vforked;
 
     __get_pib()->fds.p[writer].kind = kFdFile;
     __get_pib()->fds.p[writer].flags = O_RDWR | oflags;
     __get_pib()->fds.p[writer].mode = 0140222;
+    __get_pib()->fds.p[writer].family = AF_UNIX;
+    __get_pib()->fds.p[writer].type = type;
     __get_pib()->fds.p[writer].handle = h1;
+    __get_pib()->fds.p[writer].credpid = __get_pib()->pid;
     __get_pib()->fds.p[writer].was_created_during_vfork = __vforked;
 
     sv[0] = reader;

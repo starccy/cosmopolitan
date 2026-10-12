@@ -117,6 +117,7 @@ textwindows static int sys_accept_nt_impl(struct Fd *f,
   __get_pib()->fds.p[client].sndtimeo = f->sndtimeo;
   __get_pib()->fds.p[client].rcvtimeo = f->rcvtimeo;
   __get_pib()->fds.p[client].handle = handle;
+  __get_pib()->fds.p[client].credpid = __get_pib()->pid;
   __get_pib()->fds.p[client].kind = kFdSocket;
   __get_pib()->fds.p[client].was_created_during_vfork = __vforked;
   return client;

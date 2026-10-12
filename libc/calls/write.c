@@ -31,6 +31,13 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
+// a write for __xnu_unix_send(), which shapes it like linux's
+static ssize_t XnuWrite(struct XnuIo *a, int flags) {
+  if (a->iovlen == 1)
+    return sys_write(a->fd, a->iov[0].iov_base, a->iov[0].iov_len);
+  return sys_writev(a->fd, a->iov, a->iovlen);
+}
+
 /**
  * Writes data to file descriptor.
  *
@@ -83,6 +90,10 @@ ssize_t write(int fd, const void *buf, size_t size) {
     rc = ebadf();  // posix specifies this when not open()'d for writing
   } else if (__isfdkind(fd, kFdEvent)) {
     rc = __eventfd_write(fd, buf, size);
+  } else if (IsXnu() && _weaken(__xnu_unix_send)) {
+    rc = _weaken(__xnu_unix_send)(
+        fd, 0, XnuWrite,
+        &(struct XnuIo){fd, &(struct iovec){(void *)buf, size}, 1});
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     rc = sys_write(fd, buf, size);
   } else if (fd >= __get_pib()->fds.n) {

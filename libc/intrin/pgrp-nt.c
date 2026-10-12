@@ -126,6 +126,22 @@ textwindows static bool Lookup(uint32_t winpid, int *pid, int *pgid,
   return *pgid != 0;
 }
 
+// the cosmo pid of the process whose win32 pid is `winpid`, which differs
+// from it after an execve(); `winpid` itself when nothing says otherwise
+textwindows int __pid_of_winpid(uint32_t winpid) {
+  bool existed;
+  intptr_t h;
+  struct PgrpEntry *e;
+  int pid = winpid;
+  if (winpid && (e = MapEntry(winpid, false, &h, &existed))) {
+    int p = atomic_load_explicit(&e->pid, memory_order_acquire);
+    if (p > 0)
+      pid = p;
+    UnmapEntry(e, h);
+  }
+  return pid;
+}
+
 // the group of the process published as `pid`, or -1
 textwindows int __pgrp_of(int pid) {
   bool existed;

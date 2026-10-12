@@ -59,6 +59,10 @@ int bind(int fd, const struct sockaddr *addr, uint32_t addrsize) {
     rc = enotsock();
   } else if (!IsWindows()) {
     rc = sys_bind(fd, addr, addrsize);
+    // SO_PASSCRED set before the socket had a name
+    if (!rc && IsXnu() && fd < __get_pib()->fds.n &&
+        __get_pib()->fds.p[fd].passcred)
+      __xnu_unix_passcred(fd, true);
   } else if (!__isfdopen(fd)) {
     rc = ebadf();
   } else if (__isfdkind(fd, kFdSocket)) {

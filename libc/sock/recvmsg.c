@@ -40,11 +40,36 @@
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/sock.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/sysv/pib.h"
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/msg.h"
 #include "libc/sysv/consts/scm.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/calls/calls.h"
+
+// xnu's MSG_PEEK hands back SCM_RIGHTS without making descriptors of
+// them, which reads as fd 0, so they're dropped as if they hadn't fit
+static bool recvmsg_drop_rights(struct msghdr *msg) {
+  char *p = msg->msg_control;
+  size_t n = msg->msg_controllen, r = 0, w = 0;
+  bool dropped = false;
+  while (r + sizeof(struct cmsghdr) <= n) {
+    struct cmsghdr *c = (struct cmsghdr *)(p + r);
+    size_t len = c->cmsg_len, step = CMSG_ALIGN(len);
+    if (len < sizeof(struct cmsghdr) || len > n - r)
+      break;
+    if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+      dropped = true;
+    } else {
+      memmove(p + w, p + r, MIN(step, n - r));
+      w += MIN(step, n - r);
+    }
+    r += step;
+  }
+  if (dropped)
+    msg->msg_controllen = w;
+  return dropped;
+}
 
 /**
  * Sends a message from a socket.
@@ -91,6 +116,7 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
     if (hflags == -1) {
       rc = einval();
     } else if (IsBsd()) {
+      size_t cap = msg->msg_controllen;
       // the bsd msghdr has a 32-bit msg_controllen with msg_flags right
       // after it, where linux has a 64-bit msg_controllen
       memcpy(&msg2, msg, sizeof(msg2));
@@ -99,12 +125,19 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
         msg2.msg_name = &bsd.sa;
         msg2.msg_namelen = sizeof(bsd);
       }
-      if ((rc = sys_recvmsg(fd, &msg2, hflags)) != -1) {
+      if ((rc = IsXnu() ? __xnu_unix_recvmsg(fd, &msg2, flags)
+                        : sys_recvmsg(fd, &msg2, hflags)) != -1) {
         int bsdflags = msg2.msg_controllen >> 32;
         msg2.msg_controllen = (uint32_t)msg2.msg_controllen;
-        if (msg->msg_name)
+        if (msg->msg_name) {
           sockaddr2linux(&bsd, msg2.msg_namelen, msg->msg_name,
                          &msg->msg_namelen);
+          // linux gives an unnamed sender no address at all
+          if (msg2.msg_namelen < 2 ||
+              (bsd.sa.sa_family == __af2host(AF_UNIX) &&
+               msg->msg_namelen <= 2))
+            msg->msg_namelen = 0;
+        }
         if (msg->msg_control) {
           // the linux layout grows, so convert out of a copy
           size_t bytes = msg2.msg_controllen;
@@ -124,6 +157,14 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
         // xnu hands back the flags it was called with as well
         msg->msg_flags = __msg2linux(bsdflags) &
                          (MSG_TRUNC | MSG_CTRUNC | MSG_OOB);
+        if (IsXnu() && (flags & MSG_PEEK) && msg->msg_control &&
+            recvmsg_drop_rights(msg))
+          msg->msg_flags |= MSG_CTRUNC;
+        // SO_PASSCRED, see passcred.c
+        int pid;
+        if (IsXnu() && fd < __get_pib()->fds.n &&
+            __get_pib()->fds.p[fd].passcred && (pid = __xnu_unix_cred(fd)))
+          __cred_prepend(msg, cap, pid);
       }
     } else {
       rc = sys_recvmsg(fd, msg, hflags);
@@ -152,23 +193,13 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
         }
       }
     } else if (__sockpair_nt(f) && __isfdkind(fd, kFdFile)) {
-      if (!flags) {
-        if ((got = sys_read_nt(fd, msg->msg_iov, msg->msg_iovlen, -1)) !=
-            -1) {
-          msg->msg_flags = 0;
-          if (msg->msg_name)
-            msg->msg_namelen = 0;  // the peer is unnamed
-          if (msg->msg_control && __scm_msgpipe_nt(f)) {
-            __scm_take_nt(f, msg, cloexec);
-          } else {
-            msg->msg_controllen = 0;
-          }
-          rc = got;
-        } else {
-          rc = -1;
-        }
+      if ((got = sys_recv_msgpipe_nt(fd, msg->msg_iov, msg->msg_iovlen, flags,
+                                     msg, cloexec)) != -1) {
+        if (msg->msg_name)
+          msg->msg_namelen = 0;  // the peer is unnamed
+        rc = got;
       } else {
-        rc = einval();  // flags not supported on nt
+        rc = -1;
       }
     } else {
       rc = enotsock();

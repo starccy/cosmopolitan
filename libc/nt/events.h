@@ -54,6 +54,8 @@ int64_t RegisterEventSource(const char16_t *lpUNCServerName,
                             const char16_t *lpSourceName);
 int32_t DeregisterEventSource(uint64_t handle);
 
+int64_t OpenEvent(uint32_t dwDesiredAccess, bool32 bInheritHandle,
+                  const char16_t *lpName);
 int64_t CreateEvent(const struct NtSecurityAttributes *opt_lpEventAttributes,
                     bool32 bManualReset, bool32 bInitialState,
                     const char16_t *opt_lpName);

@@ -36,6 +36,13 @@
 #include "libc/procfs/procfs.internal.h"
 #undef read
 
+// a read for __xnu_unix_recv(), which shapes it like linux's
+static ssize_t XnuRead(struct XnuIo *a, int flags) {
+  if (a->iovlen == 1)
+    return sys_read(a->fd, a->iov[0].iov_base, a->iov[0].iov_len);
+  return sys_readv(a->fd, a->iov, a->iovlen);
+}
+
 /**
  * Reads data from file descriptor.
  *
@@ -88,6 +95,10 @@ ssize_t read(int fd, void *buf, size_t size) {
         &(struct iovec){buf, size}, 1, -1);
   } else if (__isfdkind(fd, kFdEvent)) {
     rc = __eventfd_read(fd, buf, size);
+  } else if (IsXnu() && _weaken(__xnu_unix_recv)) {
+    rc = _weaken(__xnu_unix_recv)(
+        fd, 0, XnuRead,
+        &(struct XnuIo){fd, &(struct iovec){buf, size}, 1});
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     rc = sys_read(fd, buf, size);
   } else if (fd >= __get_pib()->fds.n) {

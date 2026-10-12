@@ -38,6 +38,13 @@
 #include "libc/sysv/pib.h"
 #include "libc/procfs/procfs.internal.h"
 
+// a read for __xnu_unix_recv(), which shapes it like linux's
+static ssize_t XnuRead(struct XnuIo *a, int flags) {
+  if (a->iovlen == 1)
+    return sys_read(a->fd, a->iov[0].iov_base, a->iov[0].iov_len);
+  return sys_readv(a->fd, a->iov, a->iovlen);
+}
+
 static size_t SumIovecBytes(const struct iovec *iov, int iovlen) {
   size_t count = 0;
   for (int i = 0; i < iovlen; ++i)
@@ -93,6 +100,9 @@ static ssize_t readv_impl(int fd, const struct iovec *iov, int iovlen) {
         iovlen, -1);
   } else if (__isfdkind(fd, kFdEvent)) {
     return __eventfd_read(fd, iov[0].iov_base, iovlen ? iov[0].iov_len : 0);
+  } else if (IsXnu() && _weaken(__xnu_unix_recv)) {
+    return _weaken(__xnu_unix_recv)(fd, 0, XnuRead,
+                                    &(struct XnuIo){fd, iov, iovlen});
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     if (iovlen == 1) {
       return sys_read(fd, iov[0].iov_base, iov[0].iov_len);

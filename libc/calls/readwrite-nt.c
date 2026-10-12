@@ -100,6 +100,20 @@ sys_readwrite_nt(int fd, void *data, size_t size, ssize_t offset,
                  int64_t handle, sigset_t waitmask,
                  bool32 ReadOrWriteFile(int64_t, void *, uint32_t, uint32_t *,
                                         struct NtOverlapped *)) {
+  return sys_readwrite_nt_dontwait(fd, data, size, offset, handle, waitmask,
+                                   ReadOrWriteFile, false);
+}
+
+/**
+ * Same as sys_readwrite_nt(), but `dontwait` makes this one call
+ * non-blocking whatever O_NONBLOCK says, like MSG_DONTWAIT.
+ */
+textwindows ssize_t sys_readwrite_nt_dontwait(
+    int fd, void *data, size_t size, ssize_t offset, int64_t handle,
+    sigset_t waitmask,
+    bool32 ReadOrWriteFile(int64_t, void *, uint32_t, uint32_t *,
+                           struct NtOverlapped *),
+    bool dontwait) {
 
   // note: caller is responsible for size not exceeding 0x7ffff000
   struct Fd *f = __get_pib()->fds.p + fd;
@@ -179,7 +193,7 @@ sys_readwrite_nt(int fd, void *data, size_t size, ssize_t offset,
     struct NtOverlapped overlap = {.hEvent = event, .Pointer = offset};
     bool32 ok = ReadOrWriteFile(handle, data, size, 0, &overlap);
     if (!ok && GetLastError() == kNtErrorIoPending) {
-      if (f->flags & O_NONBLOCK) {
+      if (dontwait || (f->flags & O_NONBLOCK)) {
         // immediately back out of blocking i/o if non-blocking
         CancelIoEx(handle, &overlap);
         got_eagain = true;

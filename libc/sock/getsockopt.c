@@ -28,6 +28,7 @@
 #include "libc/sysv/consts/ip.h"
 #include "libc/sysv/consts/ipproto.h"
 #include "libc/sysv/consts/so.h"
+#include "libc/sysv/consts/sock.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/consts/tcp.h"
 #include "libc/sysv/errfuns.h"
@@ -78,6 +79,8 @@ int getsockopt(int fd, int level, int optname, void *out_opt_optval,
     rc = enoprotoopt();  // see libc/sysv/consts.sh
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
+  } else if (__credopt(level, optname)) {
+    rc = __credopt_get(fd, optname, out_opt_optval, out_optlen);
   } else if (IsXnu() && __is_pmtudisc(level, optname)) {
     int df;
     uint32_t len = sizeof(df);
@@ -96,6 +99,10 @@ int getsockopt(int fd, int level, int optname, void *out_opt_optval,
     } else {
       rc = enoprotoopt();
     }
+    if (!rc && IsXnu() && level == SOL_SOCKET && optname == SO_TYPE &&
+        out_opt_optval && *out_optlen >= sizeof(int) &&
+        *(int *)out_opt_optval == SOCK_DGRAM && __xnu_seqpacket(fd))
+      *(int *)out_opt_optval = SOCK_SEQPACKET;
     if (!rc && !IsLinux() && level == SOL_SOCKET && optname == SO_ERROR &&
         out_opt_optval && out_optlen && *out_optlen >= sizeof(int) &&
         *(int *)out_opt_optval)
@@ -110,6 +117,9 @@ int getsockopt(int fd, int level, int optname, void *out_opt_optval,
   } else if (__isfdkind(fd, kFdSocket)) {
     rc = sys_getsockopt_nt(&__get_pib()->fds.p[fd], level, optname,
                            out_opt_optval, out_optlen);
+  } else if (__scm_msgpipe_nt(&__get_pib()->fds.p[fd])) {
+    rc = __scm_msgpipe_getsockopt_nt(&__get_pib()->fds.p[fd], level, optname,
+                                     out_opt_optval, out_optlen);
   } else {
     rc = enotsock();
   }

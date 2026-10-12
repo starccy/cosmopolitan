@@ -17,6 +17,7 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/fifo.internal.h"
+#include "libc/sock/struct/msghdr.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/pty.internal.h"
 #include "libc/calls/sig.internal.h"
@@ -134,6 +135,10 @@ textwindows static ssize_t sys_write_nt_impl(int fd, void *data, size_t size,
     //   return edquot(); /* handled by consts.sh */
     case kNtErrorBrokenPipe:  // broken pipe
     case kNtErrorNoData:      // closing named pipe
+      // a SOCK_DGRAM or SOCK_SEQPACKET socketpair end, where linux raises
+      // no SIGPIPE
+      if ((f->mode & 0170000) == 0140000 && _weaken(__msgpipe_gone_nt))
+        return _weaken(__msgpipe_gone_nt)(f);
       RaiseSignal(SIGPIPE);
       return epipe();
     case kNtErrorAccessDenied:  // write doesn't return EACCESS
@@ -180,6 +185,13 @@ textwindows static ssize_t sys_write_nt2(int fd, const struct iovec *iov,
 textwindows ssize_t sys_write_nt(int fd, const struct iovec *iov, size_t iovlen,
                                  ssize_t opt_offset) {
   ssize_t rc;
+  struct Fd *f = __get_pib()->fds.p + fd;
+  // a socketpair message from a process that has to say it sent it
+  if (f->kind == kFdFile && (f->mode & 0170000) == 0140000 &&
+      f->credpid != __get_pib()->pid && opt_offset == -1 &&
+      _weaken(__scm_msgpipe_send_nt))
+    return _weaken(__scm_msgpipe_send_nt)(
+        fd, &(struct msghdr){.msg_iov = (void *)iov, .msg_iovlen = iovlen}, 0);
   sigset_t m = __sig_block();
   if (__get_pib()->fds.p[fd].kind == kFdConsole && __pgrp_tostop() &&
       __ttystop_nt(SIGTTOU, m) == -1)

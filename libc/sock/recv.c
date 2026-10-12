@@ -67,7 +67,9 @@ ssize_t recv(int fd, void *buf, size_t size, int flags) {
     flags &= __MSG_NAMED;
   BEGIN_CANCELATION_POINT;
 
-  if ((flags & (MSG_WAITALL | MSG_PEEK)) == (MSG_WAITALL | MSG_PEEK)) {
+  if (!IsLinux() && (flags & (MSG_WAITALL | MSG_PEEK)) == (MSG_WAITALL | MSG_PEEK) &&
+      !(IsWindows() && __isfdopen(fd) &&
+        __scm_msgpipe_nt(__get_pib()->fds.p + fd))) {
     // this is possible on some OSes like Linux but it breaks FreeBSD
     // and Windows will raise EOPNOTSUPP when it gets passed together
     return einval();
@@ -75,7 +77,9 @@ ssize_t recv(int fd, void *buf, size_t size, int flags) {
     rc = enotsock();
   } else if (!IsWindows()) {
     int hflags = __msg2host(flags);
-    if (hflags != -1) {
+    if (IsXnu()) {
+      rc = __xnu_unix_recvfrom(fd, buf, size, flags, 0, 0);
+    } else if (hflags != -1) {
       rc = sys_recvfrom(fd, buf, size, hflags, 0, 0);
     } else {
       rc = einval();
@@ -83,6 +87,9 @@ ssize_t recv(int fd, void *buf, size_t size, int flags) {
   } else if (__isfdopen(fd)) {
     if (__isfdkind(fd, kFdSocket)) {
       rc = sys_recv_nt(fd, (struct iovec[]){{buf, size}}, 1, flags);
+    } else if (__scm_msgpipe_nt(__get_pib()->fds.p + fd)) {
+      rc = sys_recv_msgpipe_nt(fd, (struct iovec[]){{buf, size}}, 1, flags, 0,
+                               false);
     } else if (__isfdkind(fd, kFdFile)) {
       if (flags) {
         rc = einval();

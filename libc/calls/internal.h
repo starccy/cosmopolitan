@@ -23,7 +23,29 @@ struct Fd;
 struct iovec;
 void __scm_forget_nt(struct Fd *);
 void __udg_close_nt(struct Fd *);
-ssize_t __scm_msgpipe_read_nt(int, const struct iovec *, size_t, uint64_t);
+struct msghdr;
+struct pollfd;
+// what a read or write for __xnu_unix_recv() or __xnu_unix_send()
+// moves: iovecs, with a host address for recvfrom() and sendto(), or a
+// host msghdr for recvmsg() and sendmsg()
+struct XnuIo {
+  int fd;
+  const struct iovec *iov;
+  int iovlen;
+  void *addr;
+  uint32_t *addrsize;
+  void *msg;
+};
+ssize_t __xnu_unix_recv(int, int, ssize_t (*)(struct XnuIo *, int),
+                        struct XnuIo *);
+ssize_t __xnu_unix_send(int, int, ssize_t (*)(struct XnuIo *, int),
+                        struct XnuIo *);
+int __xnu_unix_poll(struct pollfd *, size_t, bool);
+bool __xnu_unix_poll_sliced(const struct pollfd *, size_t);
+int __msgpipe_gone_nt(struct Fd *);
+ssize_t __scm_msgpipe_send_nt(int, const struct msghdr *, int);
+ssize_t __scm_msgpipe_recv_nt(int, const struct iovec *, size_t, int,
+                              struct msghdr *, bool, uint64_t);
 int __reservefd(int);
 int __reservefd_unlocked(int);
 void __releasefd(int);

@@ -107,6 +107,8 @@ int setsockopt(int fd, int level, int optname, const void *optval,
     rc = efault();
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
+  } else if (__credopt(level, optname)) {
+    rc = __credopt_set(fd, optname, optval, optlen);
   } else if (IsXnu() && level == SOL_SOCKET && optname == SO_BINDTODEVICE) {
     rc = setsockopt_xnu_bindtodevice(fd, optval, optlen);
   } else if (IsXnu() && __is_pmtudisc(level, optname)) {
@@ -141,6 +143,8 @@ int setsockopt(int fd, int level, int optname, const void *optval,
   } else if (__isfdkind(fd, kFdSocket)) {
     rc = sys_setsockopt_nt(&__get_pib()->fds.p[fd], level, optname, optval,
                            optlen);
+  } else if (__scm_msgpipe_nt(&__get_pib()->fds.p[fd])) {
+    rc = __scm_msgpipe_setsockopt_nt(level, optname, optval, optlen);
   } else {
     rc = enotsock();
   }

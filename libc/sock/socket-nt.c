@@ -61,6 +61,7 @@ textwindows int sys_socket_nt(int family, int type, int protocol) {
     __get_pib()->fds.p[fd].family = family;
     __get_pib()->fds.p[fd].type = truetype;
     __get_pib()->fds.p[fd].protocol = protocol;
+    __get_pib()->fds.p[fd].credpid = __get_pib()->pid;
     __get_pib()->fds.p[fd].kind = kFdSocket;
     __get_pib()->fds.p[fd].flags = oflags;
     __get_pib()->fds.p[fd].mode = 0140666;

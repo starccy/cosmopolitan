@@ -22,12 +22,14 @@
 #include "libc/calls/struct/iovec.h"
 #include "libc/calls/struct/iovec.internal.h"
 #include "libc/dce.h"
+#include "libc/errno.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/strace.h"
 #include "libc/macros.h"
 #include "libc/sock/internal.h"
 #include "libc/sock/sock.h"
+#include "libc/sock/struct/msghdr.h"
 #include "libc/sock/struct/sockaddr.h"
 #include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/str/str.h"
@@ -77,15 +79,39 @@ ssize_t sendto(int fd, const void *buf, size_t size, int flags,
     int hflags = __msg2host(flags);
     if (hflags == -1) {
       rc = einval();
+    } else if (IsXnu() && (!opt_addr || !addrsize)) {
+      rc = __xnu_unix_sendto(fd, buf, size, flags, 0, 0);
     } else if (!IsBsd() || !opt_addr || !addrsize) {
       rc = sys_sendto(fd, buf, size, hflags, opt_addr, addrsize);
     } else if (!(rc = sockaddr2bsd(opt_addr, addrsize, &bsd, &bsdaddrsize))) {
-      rc = sys_sendto(fd, buf, size, hflags, &bsd, bsdaddrsize);
+      rc = IsXnu() ? __xnu_unix_sendto(fd, buf, size, flags, &bsd, bsdaddrsize)
+                   : sys_sendto(fd, buf, size, hflags, &bsd, bsdaddrsize);
+      if (rc == -1 && errno == EISCONN && IsXnu()) {
+        ssize_t r = __xnu_unix_sendto_connected(
+            fd,
+            &(struct msghdr){.msg_name = (void *)opt_addr,
+                             .msg_namelen = addrsize,
+                             .msg_iov = &(struct iovec){(void *)buf, size},
+                             .msg_iovlen = 1},
+            flags);
+        if (r != -2)
+          rc = r;
+        else
+          errno = EISCONN;
+      }
     }
   } else if (__isfdopen(fd)) {
     if (__isfdkind(fd, kFdSocket)) {
       rc = sys_sendto_nt(fd, (struct iovec[]){{(void *)buf, size}}, 1, flags,
                          opt_addr, addrsize);
+    } else if (__scm_msgpipe_nt(__get_pib()->fds.p + fd)) {
+      rc = __scm_msgpipe_send_nt(
+          fd,
+          &(struct msghdr){.msg_name = (void *)opt_addr,
+                           .msg_namelen = opt_addr ? addrsize : 0,
+                           .msg_iov = &(struct iovec){(void *)buf, size},
+                           .msg_iovlen = 1},
+          flags);
     } else if (__isfdkind(fd, kFdFile)) {
       if (flags) {
         rc = einval();

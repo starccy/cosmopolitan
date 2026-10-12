@@ -4,7 +4,9 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
+#include "libc/calls/calls.h"
 #include "libc/intrin/fds.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/limits.h"
 #include "libc/macros.h"
 #include "libc/mem/mem.h"
@@ -66,7 +68,8 @@
 #define UDG_MAX_DGRAM 65507
 #define UDG_CACHE_MS  1000
 
-#define UDG_SCM 1  // head.flags: an SCM_RIGHTS frame follows the name
+#define UDG_SCM  1  // head.flags: an SCM_RIGHTS frame follows the name
+#define UDG_CRED 2  // head.flags: the sender's pid follows the head
 
 __msabi extern typeof(__sys_bind_nt) *const __imp_bind;
 __msabi extern typeof(__sys_getsockname_nt) *const __imp_getsockname;
@@ -473,7 +476,9 @@ textwindows ssize_t __udg_sendto_nt(int fd, const struct iovec *iov,
   ssize_t nfds = 0;
   if (msg && (nfds = __scm_frame_build_nt(&fr, msg, pid, datalen)) == -1)
     return -1;
-  size_t hlen = sizeof(struct UdgHead) + u->boundlen + fr.hlen;
+  int32_t credpid = getpid();
+  size_t hlen =
+      sizeof(struct UdgHead) + sizeof(credpid) + u->boundlen + fr.hlen;
   if (hlen + datalen > UDG_MAX_DGRAM) {
     if (nfds)
       __scm_frame_done_nt(&fr, false);
@@ -489,9 +494,11 @@ textwindows ssize_t __udg_sendto_nt(int fd, const struct iovec *iov,
   memcpy(head->magic, kUdgMagic, sizeof(kUdgMagic));
   head->srcpid = GetCurrentProcessId();
   head->srclen = u->boundlen;
-  head->flags = nfds ? UDG_SCM : 0;
+  head->flags = (nfds ? UDG_SCM : 0) | UDG_CRED;
   head->pad = 0;
   unsigned char *p = buf + sizeof(*head);
+  memcpy(p, &credpid, sizeof(credpid));
+  p += sizeof(credpid);
   memcpy(p, u->bound, u->boundlen);
   p += u->boundlen;
   if (nfds) {
@@ -555,7 +562,9 @@ textwindows ssize_t __udg_recv_nt(int fd, const struct iovec *iov,
                 (size_t)rc >= sizeof(*head) &&
                 !memcmp(head->magic, kUdgMagic, sizeof(kUdgMagic)) &&
                 head->srclen <= UDG_PATH_MAX &&
-                sizeof(*head) + head->srclen <= (size_t)rc;
+                sizeof(*head) + (head->flags & UDG_CRED ? 4 : 0) +
+                        head->srclen <=
+                    (size_t)rc;
     if (!ours) {
       // not from one of us: thrown away, which a peek has to do itself
       if (flags & MSG_PEEK)
@@ -564,6 +573,12 @@ textwindows ssize_t __udg_recv_nt(int fd, const struct iovec *iov,
       continue;
     }
     const unsigned char *p = buf + sizeof(*head);
+    int32_t credpid = 0;
+    if (head->flags & UDG_CRED) {
+      memcpy(&credpid, p, sizeof(credpid));
+      p += sizeof(credpid);
+    }
+    f->credfrom = credpid ? credpid : __pid_of_winpid(head->srcpid);
     const unsigned char *src = p;
     p += head->srclen;
     if (head->flags & UDG_SCM) {
