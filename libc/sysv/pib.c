@@ -25,8 +25,8 @@ struct CosmoPib __pib;
  *
  * The main purpose of this function is to support vfork() on Windows.
  */
-__privileged struct CosmoPib *__get_pib(void) {
-  if (LIKELY(!IsWindows()))
+__privileged struct CosmoPib *__get_pib_slow(void) {
+  if (!IsWindows())
     return &__pib;
   if (__tls_enabled) {
     struct CosmoTib *tib = __get_tls_privileged();

@@ -74,7 +74,7 @@ static int has_segment_link(mstate m, msegmentptr ss) {
   }
 }
 
-#define should_trim(M,s)  ((s) > (M)->trim_check)
+#define should_trim(M,s)  ((s) > (M)->trim_check && (s) > mparams.trim_threshold)
 
 /*
   TOP_FOOT_SIZE is padding at the end of a segment, including space

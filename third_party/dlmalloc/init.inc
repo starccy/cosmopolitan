@@ -82,6 +82,7 @@ static int change_mparam(int param_number, int value) {
   switch(param_number) {
   case M_TRIM_THRESHOLD:
     mparams.trim_threshold = val;
+    mparams.no_dyn_threshold = 1;
     return 1;
   case M_GRANULARITY:
     if (val >= mparams.page_size && ((val & (val-1)) == 0)) {
@@ -92,6 +93,7 @@ static int change_mparam(int param_number, int value) {
     }
   case M_MMAP_THRESHOLD:
     mparams.mmap_threshold = val;
+    mparams.no_dyn_threshold = 1;
     return 1;
   case M_RSEQ_MAX:
     if (HAVE_RSEQ) {

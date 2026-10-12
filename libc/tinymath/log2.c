@@ -26,6 +26,7 @@
 │                                                                              │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/tinymath/arm.internal.h"
+#include "libc/nexgen32e/x86feature.h"
 __static_yoink("arm_optimized_routines_notice");
 
 #define T __log2_data.tab
@@ -50,6 +51,11 @@ top16 (double x)
 double
 log2 (double x)
 {
+#if defined(__x86_64__) && !TINYMATH_FMA_VARIANT
+  double __log2_fma (double);
+  if (X86_HAVE (FMA))
+    return __log2_fma (x);
+#endif
   /* double_t for better performance on targets with FLT_EVAL_METHOD==2.  */
   double_t z, r, r2, r4, y, invc, logc, kd, hi, lo, t1, t2, t3, p;
   uint64_t ix, iz, tmp;
@@ -154,7 +160,7 @@ log2 (double x)
   return eval_as_double (y);
 }
 
-#if USE_GLIBC_ABI
+#if USE_GLIBC_ABI && !TINYMATH_FMA_VARIANT
 strong_alias (log2, __log2_finite)
 hidden_alias (log2, __ieee754_log2)
 # if LDBL_MANT_DIG == 53

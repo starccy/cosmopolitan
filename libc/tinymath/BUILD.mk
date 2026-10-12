@@ -77,3 +77,11 @@ $(LIBC_TINYMATH_OBJS): $(BUILD_FILES) libc/tinymath/BUILD.mk
 o/$(MODE)/libc/tinymath:				\
 		$(LIBC_TINYMATH_CHECKS)			\
 		o/$(MODE)/libc/tinymath/tinymath.a
+
+ifeq ($(ARCH), x86_64)
+o/$(MODE)/libc/tinymath/pow_fma.o			\
+o/$(MODE)/libc/tinymath/log_fma.o			\
+o/$(MODE)/libc/tinymath/log2_fma.o: private			\
+		TARGET_ARCH =					\
+			-mfma
+endif

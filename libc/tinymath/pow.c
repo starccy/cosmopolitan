@@ -26,6 +26,7 @@
 │                                                                              │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/tinymath/arm.internal.h"
+#include "libc/nexgen32e/x86feature.h"
 __static_yoink("arm_optimized_routines_notice");
 
 /*
@@ -300,6 +301,11 @@ zeroinfnan (uint64_t i)
 double
 pow (double x, double y)
 {
+#if defined(__x86_64__) && !TINYMATH_FMA_VARIANT
+  double __pow_fma (double, double);
+  if (X86_HAVE (FMA))
+    return __pow_fma (x, y);
+#endif
   uint32_t sign_bias = 0;
   uint64_t ix, iy;
   uint32_t topx, topy;
@@ -400,7 +406,7 @@ pow (double x, double y)
   return exp_inline (ehi, elo, sign_bias);
 }
 
-#if USE_GLIBC_ABI
+#if USE_GLIBC_ABI && !TINYMATH_FMA_VARIANT
 strong_alias (pow, __pow_finite)
 hidden_alias (pow, __ieee754_pow)
 # if LDBL_MANT_DIG == 53

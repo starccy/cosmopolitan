@@ -14,6 +14,7 @@ struct malloc_params {
   size_t granularity;
   size_t mmap_threshold;
   size_t trim_threshold;
+  int no_dyn_threshold;
   flag_t default_mflags;
 };
 

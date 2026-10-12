@@ -62,6 +62,7 @@
 #define DEFAULT_GRANULARITY ((size_t)64U * (size_t)1024U)
 #define DEFAULT_MMAP_THRESHOLD ((size_t)512U * (size_t)1024U)
 #define DEFAULT_TRIM_THRESHOLD ((size_t)2U * (size_t)1024U * (size_t)1024U)
+#define DEFAULT_MMAP_THRESHOLD_MAX ((size_t)32U * (size_t)1024U * (size_t)1024U)
 
 // on linux, realloc_bench_test uses 3mb peak rss because mappings are
 // auto-assigned to dense addresses, and dlmalloc somehow merges those
@@ -322,6 +323,18 @@ static int sys_trim(mstate m, size_t pad) {
   return (released != 0)? 1 : 0;
 }
 
+/* A freed direct mapping of this size raises the mmap threshold past it,
+   the way glibc does, so the next buffer that big comes out of the heap
+   instead of being mapped and faulted in again. mallopt() turns it off. */
+static void grow_mmap_threshold(size_t psize) {
+  if (!mparams.no_dyn_threshold &&
+      psize > mparams.mmap_threshold &&
+      psize <= DEFAULT_MMAP_THRESHOLD_MAX) {
+    mparams.mmap_threshold = psize;
+    mparams.trim_threshold = 2 * psize;
+  }
+}
+
 /* Consolidate and bin a chunk. Differs from exported versions
    of free mainly in that the chunk need not be marked as inuse.
 */
@@ -332,6 +345,7 @@ static void dispose_chunk(mstate m, mchunkptr p, size_t psize) {
     size_t prevsize = p->prev_foot;
     if (is_mmapped(p)) {
       psize += prevsize + MMAP_FOOT_PAD;
+      grow_mmap_threshold(psize);
       if (munmap((char*)p - prevsize, psize) == 0)
         m->footprint -= psize;
       return;
@@ -940,6 +954,7 @@ void mspace_free(mspace msp, void* mem) {
           size_t prevsize = p->prev_foot;
           if (is_mmapped(p)) {
             psize += prevsize + MMAP_FOOT_PAD;
+            grow_mmap_threshold(psize);
             if (munmap((char*)p - prevsize, psize) == 0)
               fm->footprint -= psize;
             goto postaction;

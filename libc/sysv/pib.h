@@ -3,6 +3,8 @@
 #include "libc/atomic.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/struct/sigset.h"
+#include "libc/dce.h"
+#include "libc/intrin/likely.h"
 #include "libc/intrin/fds.h"
 #include "libc/limits.h"
 #include "libc/proc/proc.h"
@@ -38,7 +40,16 @@ struct CosmoPib {
   jmp_buf vforkret;
 };
 
-struct CosmoPib *__get_pib(void) libcesque pureconst;
+extern struct CosmoPib __pib;
+
+struct CosmoPib *__get_pib_slow(void) libcesque pureconst;
+
+// the process information block; a vfork() child on windows has its own
+forceinline pureconst dontubsan struct CosmoPib *__get_pib(void) {
+  if (LIKELY(!IsWindows()))
+    return &__pib;
+  return __get_pib_slow();
+}
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_SYSV_PIB_H_ */

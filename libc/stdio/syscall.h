@@ -16,6 +16,9 @@ COSMOPOLITAN_C_START_
 #define SYS_renameat2       __NR_linux_renameat2
 #define SYS_syncfs          __NR_linux_syncfs
 #define SYS_statx           __NR_linux_statx
+#define SYS_pidfd_open      __NR_linux_pidfd_open
+#define SYS_pidfd_send_signal __NR_linux_pidfd_send_signal
+#define SYS_pidfd_getfd     __NR_linux_pidfd_getfd
 #ifdef __x86_64__
 #define SYS_eventfd         __NR_linux_eventfd
 #endif

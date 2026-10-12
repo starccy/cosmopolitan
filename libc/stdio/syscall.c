@@ -22,10 +22,17 @@
 #include "libc/calls/struct/timespec.h"
 #include "libc/cosmotime.h"
 #include "libc/cosmo.h"
+#include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/stdio/rand.h"
 #include "libc/sysv/consts/clock.h"
 #include "libc/sysv/errfuns.h"
+
+int sys_futex(void *, int, int, const struct timespec *, void *, int);
+
+int sys_pidfd_open(int, unsigned);
+int sys_pidfd_send_signal(int, int, void *, unsigned);
+int sys_pidfd_getfd(int, int, unsigned);
 
 // linux's own numbers, since this emulates its abi
 #define FUTEX_WAIT_linux             0
@@ -93,6 +100,8 @@ static long sys_futex_emul(va_list va) {
  * - `SYS_futex` (wait, wake and their whole-bitset forms)
  * - `SYS_fchmod`, `SYS_fchown`, `SYS_fchmodat`, `SYS_copy_file_range`
  * - `SYS_renameat2`, `SYS_syncfs`, `SYS_statx`
+ * - `SYS_pidfd_open`, `SYS_pidfd_send_signal`, `SYS_pidfd_getfd` (Linux
+ *   only, ENOSYS elsewhere)
  *
  * @return system call result, or -1 w/ errno
  */
@@ -104,6 +113,17 @@ long syscall(long number, ...) {
     case SYS_futex: {
       va_list va;
       va_start(va, number);
+      if (IsLinux()) {
+        // the call goes to the kernel as is, like glibc's syscall()
+        void *addr = va_arg(va, void *);
+        int op = va_arg(va, int);
+        int val = va_arg(va, int);
+        const struct timespec *ts = va_arg(va, const struct timespec *);
+        void *addr2 = va_arg(va, void *);
+        int val3 = va_arg(va, int);
+        va_end(va);
+        return sys_futex(addr, op, val, ts, addr2, val3);
+      }
       long rc = sys_futex_emul(va);
       va_end(va);
       return rc;
@@ -200,6 +220,34 @@ long syscall(long number, ...) {
       struct statx *out = va_arg(va, struct statx *);
       va_end(va);
       return statx(dirfd, path, flags, mask, out);
+    }
+    case SYS_pidfd_open: {
+      va_list va;
+      va_start(va, number);
+      int pid = va_arg(va, int);
+      unsigned flags = va_arg(va, unsigned);
+      va_end(va);
+      return IsLinux() ? sys_pidfd_open(pid, flags) : enosys();
+    }
+    case SYS_pidfd_send_signal: {
+      va_list va;
+      va_start(va, number);
+      int pidfd = va_arg(va, int);
+      int sig = va_arg(va, int);
+      void *info = va_arg(va, void *);
+      unsigned flags = va_arg(va, unsigned);
+      va_end(va);
+      return IsLinux() ? sys_pidfd_send_signal(pidfd, sig, info, flags)
+                       : enosys();
+    }
+    case SYS_pidfd_getfd: {
+      va_list va;
+      va_start(va, number);
+      int pidfd = va_arg(va, int);
+      int targetfd = va_arg(va, int);
+      unsigned flags = va_arg(va, unsigned);
+      va_end(va);
+      return IsLinux() ? sys_pidfd_getfd(pidfd, targetfd, flags) : enosys();
     }
     case SYS_gettid:
       return gettid();
