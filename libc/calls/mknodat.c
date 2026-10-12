@@ -1,3 +1,5 @@
+#include "libc/calls/fifo.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/calls/syscall_support-sysv.internal.h"
@@ -41,6 +43,8 @@ int mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
       errno = e;
       rc = sys_mknod(path, mode, dev);
     }
+  } else if ((mode & S_IFMT) == S_IFIFO) {
+    rc = __mkfifo_nt(dirfd, path, mode);
   } else {
     rc = enosys();
   }

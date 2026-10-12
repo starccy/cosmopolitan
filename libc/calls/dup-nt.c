@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
+#include "libc/calls/fifo.internal.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/pty.internal.h"
 #include "libc/calls/state.internal.h"
@@ -110,6 +111,9 @@ textwindows static int sys_dup_nt_impl(int oldfd, int newfd, int flags,
   }
   __get_pib()->fds.p[newfd].handle = handle;
   __get_pib()->fds.p[newfd].was_created_during_vfork = __vforked;
+  if (__get_pib()->fds.p[newfd].kind == kFdFile &&
+      __get_pib()->fds.p[newfd].type == kFifoMark && _weaken(__fifo_dup_nt))
+    _weaken(__fifo_dup_nt)(__get_pib()->fds.p + newfd);
   __cursor_ref(__get_pib()->fds.p[newfd].cursor);
   if (__get_pib()->fds.p[newfd].kind == kFdEpoll && _weaken(__epoll_ref))
     _weaken(__epoll_ref)(__get_pib()->fds.p + newfd);

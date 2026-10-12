@@ -30,6 +30,10 @@ struct Cursor {
   struct Cursor *next_free_cursor;
 };
 
+// struct Fd::type of a kFdFile that is a fifo on windows, which execve()
+// carries along with the fd
+#define kFifoMark 0x46494630
+
 struct Fd {
   atomic_char kind;
   bool isbound;
@@ -62,6 +66,8 @@ struct Fd {
   void *pty;         // pseudoconsole on windows, see pty.internal.h
   bool ptymaster;
   bool devzero;  // windows: a kFdDevRandom that is /dev/zero
+  void *fifo;       // windows fifo: its registry, see fifo-nt.c
+  long fifow;       // windows fifo opened O_RDWR: the write end
   char syncio;  // windows disk file: 0 not known yet, 1 synchronous, 2 not
   char exec;    // windows disk file: 0 name doesn't say, 1 not exec, 2 exec
   long fionbio;     // windows socket: the handle FIONBIO was last set on

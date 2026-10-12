@@ -19,6 +19,7 @@
 #include "libc/assert.h"
 #include "libc/atomic.h"
 #include "libc/calls/calls.h"
+#include "libc/calls/fifo.internal.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/sig.internal.h"
 #include "libc/calls/state.internal.h"
@@ -231,6 +232,8 @@ static void fork_child(int ppid_win32, int ppid_cosmo) {
     _weaken(_pthread_onfork_child)();
   if (_weaken(__tls_adopt_onfork_child))
     _weaken(__tls_adopt_onfork_child)();
+  if (IsWindows() && _weaken(__fifo_fork_child_nt))
+    _weaken(__fifo_fork_child_nt)();
   pthread_mutex_wipe_np(&supreme_lock);
 }
 

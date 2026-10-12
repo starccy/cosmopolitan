@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/calls/flocks.h"
+#include "libc/calls/fifo.internal.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/pty.internal.h"
 #include "libc/calls/state.internal.h"
@@ -130,6 +131,10 @@ static int close_impl(int fd) {
         break;
       }
       if (!__vforked || f->was_created_during_vfork) {
+        if (f->type == kFifoMark && _weaken(__fifo_close_nt))
+          _weaken(__fifo_close_nt)(f);
+        else if (f->fifow)
+          CloseHandle(f->fifow);
         if (f->cursor)
           __cursor_unref(f->cursor);
         if (!CloseHandle(f->handle))

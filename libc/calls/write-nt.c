@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/fifo.internal.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/pty.internal.h"
 #include "libc/calls/sig.internal.h"
@@ -82,6 +83,12 @@ textwindows static ssize_t sys_write_nt_impl(int fd, void *data, size_t size,
     handle = _weaken(GetConsoleOutputHandle)();
   if (f->pty && _weaken(__pty_write_handle))
     handle = _weaken(__pty_write_handle)(f);
+  bool fifo = f->kind == kFdFile && f->type == kFifoMark &&
+              _weaken(__fifo_write_handle_nt);
+  if (fifo)
+    handle = _weaken(__fifo_write_handle_nt)(f);
+  else if (f->kind == kFdFile && f->fifow)
+    handle = f->fifow;
 
   // a cursor position query is answered here rather than by the host,
   // after what comes before it is written, see read-nt.c
@@ -108,6 +115,14 @@ textwindows static ssize_t sys_write_nt_impl(int fd, void *data, size_t size,
   ssize_t rc;
   rc = sys_readwrite_nt(fd, data, size, offset, handle, waitmask,
                         (void *)WriteFile);
+  // a fifo whose readers left may have new ones on a later pipe
+  if (rc == -2 && fifo &&
+      (GetLastError() == kNtErrorBrokenPipe ||
+       GetLastError() == kNtErrorNoData) &&
+      _weaken(__fifo_write_swap_nt)(f))
+    rc = sys_readwrite_nt(fd, data, size, offset,
+                          _weaken(__fifo_write_handle_nt)(f), waitmask,
+                          (void *)WriteFile);
   if (rc != -2)
     return rc;
 

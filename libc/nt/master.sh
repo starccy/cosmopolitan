@@ -75,6 +75,7 @@ imp	'CreateEventA'						CreateEventA						kernel32	4
 imp	'CreateEventEx'						CreateEventExW						kernel32	4
 imp	'CreateHardLink'					CreateHardLinkW						kernel32	3
 imp	'CreateIoCompletionPort'				CreateIoCompletionPort					kernel32	4
+imp	'CreateMutex'						CreateMutexW						kernel32	3
 imp	'CreatePseudoConsole'					CreatePseudoConsole					kernel32	5	# Windows 10+
 imp	'CreateSemaphore'					CreateSemaphoreW					kernel32	4
 imp	'CreateToolhelp32Snapshot'				CreateToolhelp32Snapshot				kernel32	2

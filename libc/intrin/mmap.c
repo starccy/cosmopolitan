@@ -390,7 +390,7 @@ void __maps_check(void) {
           MIN(map->addr + PGUP(map->size), next->addr + PGUP(next->size)));
     }
   }
-  MAPS_ASSERT(maps = __maps.count);
+  MAPS_ASSERT(maps == __maps.count);
   MAPS_ASSERT(pages == __maps.pages);
 }
 #endif
@@ -879,7 +879,7 @@ static size_t __maps_sparse(size_t size) {
   return size;
 }
 
-static void *__maps_pickaddr(size_t size) {
+static void *__maps_pickaddr(size_t size, bool query) {
   MAPS_ASSERT(!__tls_enabled || __maps_held());
   char *addr = 0;
   struct Map *map, *prev;
@@ -897,11 +897,36 @@ static void *__maps_pickaddr(size_t size) {
       top = ceiling;
     if ((prev = __maps_prev(map)))
       min = prev->addr + GRUP(prev->size);
-    if (top > min &&  //
-        top - min >= size) {
+    while (top > min && top - min >= size) {
       addr = top - size;
-      break;
+      if (query && IsWindows()) {
+        for (char *p = addr; p < top;) {
+          struct NtMemoryBasicInformation mbi;
+          if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            // past what the host lets us map, keep looking lower down
+            top = (char *)((uintptr_t)p & -__gransize);
+            addr = 0;
+            break;
+          }
+          if (mbi.State != kNtMemFree) {
+            // skip the whole allocation, an image comes in many regions
+            char *base = mbi.AllocationBase ? (char *)mbi.AllocationBase
+                                            : (char *)mbi.BaseAddress;
+            top = (char *)((uintptr_t)base & -__gransize);
+            addr = 0;
+            break;
+          }
+          char *end = (char *)mbi.BaseAddress + mbi.RegionSize;
+          if (end <= p)
+            return 0;
+          p = end;
+        }
+      }
+      if (addr)
+        break;
     }
+    if (addr)
+      break;
   }
   // append if existing maps are too dense
   if (!addr) {
@@ -993,6 +1018,8 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
 
   // loop for memory
   int olderr = errno;
+  int retries = 0;
+  bool hostquery = false;
   struct DirectMap res;
   for (;;) {
 
@@ -1011,8 +1038,8 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
         }
         // choose suitable address then claim it in our rbtree
         if (!addr)
-          addr = __maps_pickaddr(__maps_sparse(size));
-        if (!addr && !(addr = __maps_pickaddr(size))) {
+          addr = __maps_pickaddr(__maps_sparse(size), hostquery);
+        if (!addr && !(addr = __maps_pickaddr(size, hostquery))) {
           __maps_unlock();
           __maps_free(map);
           return (void *)enomem();
@@ -1050,7 +1077,7 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
       __maps_unlock();
     } else if (MMAP_IS_SPARSE && !fixedmode && !addr) {
       __maps_lock();
-      addr = __maps_pickaddr(__maps_sparse(size));
+      addr = __maps_pickaddr(__maps_sparse(size), false);
       __maps_unlock();
     }
 
@@ -1067,6 +1094,7 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
       __maps_lock();
       tree_remove(&__maps.maps, &map->tree);
       __maps.pages -= (map->size + __pagesize - 1) / __pagesize;
+      __maps.count -= 1;
       __maps_unlock();
       if (errno == EFAULT) {  // kNtErrorInvalidAddress
         // we've encountered mystery memory
@@ -1076,13 +1104,13 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
         } else if (noreplace) {
           // we can't try again with a different address in this case
           errno = EEXIST;
-        } else {
-          // we shall leak the tracking object since it should at least
-          // partially cover the mystery mapping. so if we loop forever
-          // the system should eventually recover and find fresh spaces
+        } else if (++retries < 64) {
+          hostquery = true;
           errno = olderr;
           addr = 0;
           continue;
+        } else {
+          errno = ENOMEM;
         }
       }
     }

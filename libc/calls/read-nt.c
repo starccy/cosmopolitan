@@ -17,6 +17,7 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
+#include "libc/calls/fifo.internal.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/pty.internal.h"
 #include "libc/calls/sig.internal.h"
@@ -1211,7 +1212,11 @@ textwindows static ssize_t ReadBuffer(int fd, void *data, size_t size,
 
   // perform heavy lifting
   ssize_t rc;
-  rc = sys_readwrite_nt(fd, data, size, offset, f->handle, waitmask, ReadFile);
+  if (f->type == kFifoMark && offset == -1 && _weaken(__fifo_read_nt))
+    rc = _weaken(__fifo_read_nt)(fd, data, size, waitmask);
+  else
+    rc = sys_readwrite_nt(fd, data, size, offset, f->handle, waitmask,
+                          ReadFile);
   if (rc != -2)
     return rc;
 

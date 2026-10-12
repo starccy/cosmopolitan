@@ -16,6 +16,7 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/nt/enum/io.h"
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
@@ -123,6 +124,7 @@ struct dirstream {
       uint32_t drives;
       uint32_t virts;
       uint32_t attrs;    // current entry
+      uint32_t tag;      // its reparse tag when attrs says it has one
       uint64_t fileid;   // current entry
       uint64_t selfid;   // the directory itself
       char *ntbuf;       // one NtQueryDirectoryFile batch
@@ -222,6 +224,7 @@ textwindows static int readdir_nt_next(DIR *dir) {
   dir->ntbuf_next = e->NextEntryOffset ? dir->ntbuf_next + e->NextEntryOffset
                                        : -1u;
   dir->attrs = e->FileAttributes;
+  dir->tag = e->EaSize;
   dir->fileid = e->FileId;
   size_t n = e->FileNameLength / sizeof(char16_t);
   if (n >= ARRAYLEN(dir->entname))
@@ -281,9 +284,14 @@ textwindows dontinline static int fdopendir_nt(DIR *res, int fd) {
   return 0;
 }
 
-textwindows static uint8_t GetNtDirentType(uint32_t attrs) {
-  if (attrs & kNtFileAttributeReparsePoint)
+textwindows static uint8_t GetNtDirentType(uint32_t attrs, uint32_t tag) {
+  if (attrs & kNtFileAttributeReparsePoint) {
+    if (tag == kNtIoReparseTagLxFifo)
+      return DT_FIFO;
+    if (tag == kNtIoReparseTagAfUnix)
+      return DT_SOCK;
     return DT_LNK;
+  }
   if (attrs & kNtFileAttributeDirectory)
     return DT_DIR;
   return DT_REG;
@@ -411,7 +419,7 @@ LetsGo:;
       if ((dir->virts & (1u << i)) &&
           !strcasecmp(dir->ent.d_name, kVirtualRoots[i]))
         pretend_this_file_doesnt_exist = true;
-  dir->ent.d_type = GetNtDirentType(dir->attrs);
+  dir->ent.d_type = GetNtDirentType(dir->attrs, dir->tag);
   if (pretend_this_file_doesnt_exist)
     goto TryAgain;
   return &dir->ent;

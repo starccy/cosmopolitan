@@ -16,6 +16,8 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/fifo.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/struct/stat.h"
 #include "libc/calls/struct/stat.internal.h"
@@ -80,9 +82,14 @@ textwindows int sys_fstat_nt(int fd, struct stat *st) {
       return 0;
     default:
       // if the file was opened, then we know it's at least readable
-      return sys_fstat_nt_handle_exec(__get_pib()->fds.p[fd].handle, 0,
-                                      __get_pib()->fds.p[fd].exec - 1, st,
-                                      0444);
+      if (sys_fstat_nt_handle_exec(__get_pib()->fds.p[fd].handle, 0,
+                                   __get_pib()->fds.p[fd].exec - 1, st,
+                                   0444) == -1)
+        return -1;
+      if (__get_pib()->fds.p[fd].kind == kFdFile &&
+          __get_pib()->fds.p[fd].type == kFifoMark && _weaken(__fifo_stat_nt))
+        _weaken(__fifo_stat_nt)(__get_pib()->fds.p + fd, st);
+      return 0;
   }
 }
 
@@ -156,6 +163,10 @@ textwindows int sys_fstat_nt_handle_exec(int64_t handle, const char16_t *path,
           // surprise! it's a unix domain named socket
           st.st_mode &= ~S_IFMT;
           st.st_mode |= S_IFSOCK;
+        } else if (ReparseTag == kNtIoReparseTagLxFifo) {
+          // a fifo, made by mkfifo() here or in wsl
+          st.st_mode &= ~S_IFMT;
+          st.st_mode |= S_IFIFO;
         } else {
           // there's many other reparse tags. for example, ones exist
           // that let wsl create blk/fifo/chr files. but cosmopolitan

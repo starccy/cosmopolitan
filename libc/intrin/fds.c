@@ -158,6 +158,8 @@ textstartup void __init_fds(void) {
         f->type = type;
         f->family = family;
         f->protocol = protocol;
+        if (kind == kFdFile && type == kFifoMark)
+          f->fifow = protocol;
         atomic_store_explicit(&fds->f, fd + 1, memory_order_relaxed);
 
         if (shand) {

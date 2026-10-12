@@ -17,6 +17,8 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
+#include "libc/calls/fifo.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/struct/sigset.internal.h"
@@ -130,7 +132,8 @@ textwindows static intptr_t sys_open_nt_path(char16_t *path16,
 
 textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
                                              uint32_t flags, int32_t mode,
-                                             uint32_t extra_attr) {
+                                             uint32_t extra_attr,
+                                             sigset_t waitmask, struct Fd *f) {
 
   // join(topath(dirfd), path) and translate from utf-8 to utf-16
   int path16len;
@@ -153,6 +156,10 @@ textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
   // you can't open symlinks; use readlink
   // this flag only applies to the final path component
   uint32_t fattr = fast ? -1u : GetFileAttributes(path16);
+  if (fattr != -1u && (fattr & kNtFileAttributeReparsePoint) &&
+      !((flags & O_CREAT) && (flags & O_EXCL)) && __fifo_path_nt(path16))
+    return __fifo_open_nt(path16, flags, waitmask, f);
+  bool nofollow = flags & O_NOFOLLOW;
   if (flags & O_NOFOLLOW) {
     if (fattr != -1u && (fattr & kNtFileAttributeReparsePoint))
       return eloop();
@@ -211,6 +218,13 @@ textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
     }
   }
 
+  // the check above can be raced by a link put in place before the open,
+  // so a link is opened as itself and refused on the handle below
+  if (nofollow) {
+    attr |= kNtFileFlagOpenReparsePoint;
+    perm |= kNtFileReadAttributes;
+  }
+
   // optimistically request fchmod() permissions
   uint32_t extra_perm = kNtFileReadAttributes | kNtFileWriteAttributes |
                         kNtReadControl | kNtWriteDac;
@@ -226,6 +240,11 @@ textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
       hand = CreateFile(path16, perm, share, &kNtIsInheritable, disp,
                         attr | extra_attr, 0);
 
+  // a fifo, which the fast path didn't look for
+  if (hand == -1 && fast && GetLastError() == kNtErrorCantAccessFile &&
+      __fifo_path_nt(path16))
+    return __fifo_open_nt(path16, flags, waitmask, f);
+
   // set errno on error
   if (hand == -1)
     __winerr();
@@ -235,6 +254,20 @@ textwindows static intptr_t sys_open_nt_impl(int dirfd, const char *path,
     if (fattr == -1u)
       if (~mode & 0400)
         RestrictFileWin32(hand, kNtFileReadData);
+
+  if (hand != -1 && nofollow) {
+    struct NtFileAttributeTagInformation tag;
+    if (!GetFileInformationByHandleEx(hand, kNtFileAttributeTagInfo, &tag,
+                                      sizeof(tag))) {
+      __winerr();
+      CloseHandle(hand);
+      return -1;
+    }
+    if (tag.FileAttributes & kNtFileAttributeReparsePoint) {
+      CloseHandle(hand);
+      return eloop();
+    }
+  }
 
   // O_DIRECTORY on the fast path is checked on the handle
   if (hand != -1 && fast && (flags & O_DIRECTORY)) {
@@ -273,17 +306,19 @@ textwindows static char sys_open_nt_exec_by_name(const char *file) {
 
 textwindows static int sys_open_nt_file(int dirfd, const char *file,
                                         uint32_t flags, int32_t mode,
-                                        size_t fd) {
+                                        size_t fd, sigset_t waitmask) {
   intptr_t handle;
   if ((handle = sys_open_nt_impl(dirfd, file, flags, mode,
-                                 kNtFileFlagOverlapped)) != -1) {
+                                 kNtFileFlagOverlapped, waitmask,
+                                 __get_pib()->fds.p + fd)) != -1) {
     __get_pib()->fds.p[fd].handle = handle;
     __get_pib()->fds.p[fd].flags = flags;
     __get_pib()->fds.p[fd].mode = mode;
     __get_pib()->fds.p[fd].used_explicit_drive_letter =
         sys_open_nt_used_explicit_drive_letter(file);
     __get_pib()->fds.p[fd].exec = sys_open_nt_exec_by_name(file);
-    if (!(flags & O_APPEND) || (flags & O_ACCMODE) != O_WRONLY) {
+    if ((!(flags & O_APPEND) || (flags & O_ACCMODE) != O_WRONLY) &&
+        __get_pib()->fds.p[fd].type != kFifoMark) {
       __fds_lock();
       __get_pib()->fds.p[fd].cursor = __cursor_new();
       __fds_unlock();
@@ -327,6 +362,9 @@ textwindows static int sys_open_nt_dup(int fd, int flags, int mode, int oldfd) {
     __get_pib()->fds.p[fd].handle = handle;
     __get_pib()->fds.p[fd].mode = mode;
     __cursor_ref(__get_pib()->fds.p[fd].cursor);
+    if (__get_pib()->fds.p[fd].type == kFifoMark &&
+        __get_pib()->fds.p[fd].kind == kFdFile && _weaken(__fifo_dup_nt))
+      _weaken(__fifo_dup_nt)(__get_pib()->fds.p + fd);
     sys_fcntl_nt_setfl(&__get_pib()->fds.p[fd], flags);
     return fd;
   } else {
@@ -336,7 +374,7 @@ textwindows static int sys_open_nt_dup(int fd, int flags, int mode, int oldfd) {
 
 textwindows static int sys_open_nt_dispatch(int dirfd, const char *file,
                                             uint32_t flags, int32_t mode,
-                                            int fd) {
+                                            int fd, sigset_t waitmask) {
   int oldfd;
   if (startswith(file, "/dev/")) {
     if (!strcmp(file + 5, "tty"))
@@ -359,7 +397,7 @@ textwindows static int sys_open_nt_dispatch(int dirfd, const char *file,
       if ((oldfd = sys_open_nt_atoi(file + 8)) != -1)
         return sys_open_nt_dup(fd, flags, mode, oldfd);
   }
-  return sys_open_nt_file(dirfd, file, flags, mode, fd);
+  return sys_open_nt_file(dirfd, file, flags, mode, fd, waitmask);
 }
 
 textwindows int sys_open_nt(int dirfd, const char *file, uint32_t flags,
@@ -372,7 +410,8 @@ textwindows int sys_open_nt(int dirfd, const char *file, uint32_t flags,
     return eperm();
   BLOCK_SIGNALS;
   if ((newfd = __reservefd(-1)) != -1) {
-    if (sys_open_nt_dispatch(dirfd, file, flags, mode, newfd) != -1) {
+    if (sys_open_nt_dispatch(dirfd, file, flags, mode, newfd, _SigMask) !=
+        -1) {
       __get_pib()->fds.p[newfd].was_created_during_vfork = __vforked;
     } else {
       __releasefd(newfd);

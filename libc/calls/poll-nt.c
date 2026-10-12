@@ -438,6 +438,9 @@ textwindows static int sys_poll_nt_actual_impl(
           }
           if (ptym && !(fds[fi].revents & POLLHUP_))
             fds[fi].revents |= ev & POLLWRNORM_;
+          // a fifo opened O_RDWR writes through its second handle
+          if (__get_pib()->fds.p[fds[fi].fd].fifow)
+            fds[fi].revents |= ev & POLLWRNORM_;
         } else if (GetLastError() == kNtErrorHandleEof ||
                    GetLastError() == kNtErrorBrokenPipe) {
           fds[fi].revents = POLLHUP_;

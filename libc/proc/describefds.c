@@ -16,6 +16,8 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/fifo.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/sig.internal.h"
@@ -252,6 +254,15 @@ textwindows char *__describe_fds(const struct Fd *fds, size_t fdslen,
         goto OnError;
     }
 
+    // the write end of a fifo opened O_RDWR rides in the protocol field
+    long protocol = f->protocol;
+    if (f->kind == kFdFile && f->type == kFifoMark) {
+      protocol = 0;
+      if (f->fifow && AppendHandle(&handles, f->fifow, hCreatorProcess,
+                                   &protocol) == -1)
+        goto OnError;
+    }
+
     // serialize file descriptors
     if (AppendLongToString(&envstr, fd))
       goto OnError;
@@ -285,7 +296,7 @@ textwindows char *__describe_fds(const struct Fd *fds, size_t fdslen,
       goto OnError;
     if (AppendString(&envstr, "_"))
       goto OnError;
-    if (AppendLongToString(&envstr, f->protocol))
+    if (AppendLongToString(&envstr, protocol))
       goto OnError;
     if (AppendString(&envstr, ";"))
       goto OnError;
