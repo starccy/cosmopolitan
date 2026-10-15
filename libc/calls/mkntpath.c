@@ -403,7 +403,8 @@ textwindows static const char *__tmpdirpath(size_t *len) {
       return 0;
     if (tmp[m - 1] != '/')
       tmp[m++] = '/', tmp[m] = 0;
-    memcpy(dir, tmp, m + 1);
+    for (int i = 0; i <= m; ++i)
+      dir[i] = tmp[i];
     atomic_store_explicit(&dirlen, m, memory_order_release);
   }
   *len = dirlen;
@@ -428,8 +429,11 @@ textwindows int __tmpunfixpath(char p[static PATH_MAX], int n) {
       return n;
   if (n - k + 4 >= PATH_MAX)
     return n;
-  memmove(p + 4, p + k, n - k + 1);
-  memcpy(p, "/tmp", 4);
+  // forward copies: WinMain() gets here before the ifunc'd memmove()
+  // has its target
+  for (size_t i = 0; i < n - k + 1; ++i)
+    p[4 + i] = p[k + i];
+  p[0] = '/', p[1] = 't', p[2] = 'm', p[3] = 'p';
   return n - k + 4;
 }
 

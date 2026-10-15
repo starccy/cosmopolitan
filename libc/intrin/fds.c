@@ -84,10 +84,14 @@ textstartup void __init_fds(void) {
   struct Fds *fds;
   fds = &__get_pib()->fds;
   atomic_init(&fds->f, 3);
+  // on nt only the entries in use get committed, see __ensurefds_unlocked
   size_t fds_map_size = ROUNDUP(sizeof(struct Fd) * 20000, __gransize);
   fds->p = mmap(0, fds_map_size, PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                MAP_PRIVATE | MAP_ANONYMOUS | (IsWindows() ? MAP_NORESERVE : 0),
+                -1, 0);
   if (fds->p == MAP_FAILED)
+    _Exit(97);
+  if (IsWindows() && !__nt_commit_range(fds->p, sizeof(struct Fd) * 3))
     _Exit(97);
   fds->c = fds_map_size;
   fds->n = 3;

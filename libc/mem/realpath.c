@@ -27,6 +27,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
+#include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/ctype.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
@@ -160,6 +161,14 @@ char *realpath(const char *filename, char *resolved)
 		}
 
 		filename = output;
+
+		/* one open follows every link at once; the walk below
+		 * is for what win32 can't open */
+		{
+			int n = __realpath_nt(output, stack);
+			if (n >= 0) return ResolvePath(resolved, stack, n);
+			if (n == -1) return 0;
+		}
 	}
 	p = sizeof stack - l - 1;
 	q = 0;

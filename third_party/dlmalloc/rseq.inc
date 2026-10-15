@@ -21,6 +21,11 @@
 #define SLAB_SIZE __pagesize
 #define TRY_AGAIN ((void *)-1l)
 #define ALLOCATED ((struct Chunk *)-23l)
+#define ALIGNED_MARK ((struct Chunk *)-24l)
+#define FALL_BACK ((void *)-2l)
+#define NCLASSES 10
+#define ALIGNED_ALIGN 128
+#define ALIGNED_MEMOFF 64
 #define HAVE_RSEQ (!IsTiny() && SupportsLinux() && __get_rseq()->cpu_id >= 0)
 
 // a chunk on a freelist knows how many chunks the list holds from it
@@ -41,12 +46,14 @@ static_assert(offsetof(struct Chunk, count) == 12);
 
 struct Slab {
   struct Slab *next;
-  alignas(MALLOC_ALIGNMENT) char memory[];
+  alignas(CACHELINE) char memory[];
 };
 
 static struct {
-  alignas(CACHELINE) struct Chunk *freelist[8];
+  alignas(CACHELINE) struct Chunk *freelist[NCLASSES];
 } chunks[CPU_SETSIZE];
+
+static_assert(sizeof(chunks[0]) == 2 * CACHELINE);  // push/pop shift by 7
 
 // chunks handed over, for any cpu whose freelist runs dry to take back
 // before it maps another slab; without this the hoarding cpu's list grew
@@ -55,8 +62,8 @@ static struct {
 #define HOARD_MOVE 256
 static struct {
   MLOCK_T lock;
-  struct Chunk *list[8];
-  _Atomic(size_t) n[8];
+  struct Chunk *list[NCLASSES];
+  _Atomic(size_t) n[NCLASSES];
 } pool;
 
 alignas(CACHELINE) static struct {
@@ -66,7 +73,30 @@ alignas(CACHELINE) static struct {
   .max = 65536, // slabs (pages)
 };
 
-static const unsigned kSizes[] = {16, 32, 48, 64, 96, 128, 192, 256};
+// classes 0-7 are what malloc() picks by size. classes 8 and 9 serve
+// memalign() with alignments up to 128: their memory starts 64 bytes
+// into a chunk whose stride is a multiple of 128, and the 16 bytes
+// right before the memory hold a stand-in header with ALIGNED_MARK as
+// its next field, which get_chunk() steps back from
+static const unsigned kSizes[NCLASSES] = {
+    16, 32, 48, 64, 96, 128, 192, 256, 128, 256};
+
+// physical stride of a chunk in a slab, which every slab walker must
+// use. objects of 128 bytes and up sit on disjoint cache lines to avoid
+// false sharing, smaller ones stay packed to limit memory overhead
+static const unsigned short kStride[NCLASSES] = {
+    32, 48, 64, 80, 112, 192, 256, 320, 256, 384};
+
+static const unsigned char kMemOff[NCLASSES] = {
+    16, 16, 16, 16, 16, 16, 16, 16, ALIGNED_MEMOFF, ALIGNED_MEMOFF};
+
+static inline size_t rseq_chunk_bytes(unsigned flindex) {
+  return kStride[flindex];
+}
+
+static inline char *chunk_memory(struct Chunk *chunk) {
+  return (char *)chunk + kMemOff[chunk->flindex];
+}
 
 static const unsigned char kPickSize[CHUNK_MAX + 1] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -102,7 +132,7 @@ static inline unsigned push_chunk(struct Chunk *chunk, unsigned char flindex) {
                "	.popsection\n"                //
                "301:	movq	$300b,8(%[rs])\n"     // rseq->rseq_cs
                "	mov	(%[rs]),%%ecx\n"      // rseq->cpu_id_start
-               "	shl	$6,%%ecx\n"           //
+               "	shl	$7,%%ecx\n"           //
                "	mov	(%[fl],%%rcx),%%rdx\n" // rdx = freelist
                "	mov	%%rdx,(%[ch])\n"      // chunk->next = rdx
                "	xor	%k[cnt],%k[cnt]\n"    // count = 0
@@ -134,7 +164,7 @@ static inline unsigned push_chunk(struct Chunk *chunk, unsigned char flindex) {
                "	add	x4, x4, :lo12:300b\n" //
                "	str	x4, [%[rs], #8]\n"    // rseq->rseq_cs
                "	ldr	w4, [%[rs]]\n"        // rseq->cpu_id_start
-               "	lsl	w4, w4, #6\n"         //
+               "	lsl	w4, w4, #7\n"         //
                "	ldr	x5, [%[fl], x4]\n"    // x5 = freelist
                "	str	x5, [%[ch]]\n"        // chunk->next = x5
                "	mov	%w[cnt], #0\n"        // count = 0
@@ -170,7 +200,7 @@ static inline struct Chunk *pop_chunk(unsigned char flindex) {
                "	.popsection\n"                //
                "301:	movq	$300b,8(%1)\n"        // rseq->rseq_cs
                "	mov	(%1),%%ecx\n"         // rseq->cpu_id_start
-               "	shl	$6,%%ecx\n"           //
+               "	shl	$7,%%ecx\n"           //
                "	mov	(%2,%%rcx),%0\n"      // chunk = chunks[cpu].freelist
                "	test	%0,%0\n"              //
                "	jz	302f\n"               //
@@ -197,7 +227,7 @@ static inline struct Chunk *pop_chunk(unsigned char flindex) {
                "	add	x4, x4, :lo12:300b\n" //
                "	str	x4, [%1, #8]\n"       // rseq->rseq_cs
                "	ldr	w4, [%1]\n"           // rseq->cpu_id_start
-               "	lsl	w4, w4, #6\n"         //
+               "	lsl	w4, w4, #7\n"         //
                "	ldr	%0, [%2, x4]\n"       // chunk = chunks[cpu].freelist
                "	cbz	%0, 302f\n"           //
                "	ldr	x5, [%0]\n"           // x5 = chunk->next
@@ -278,7 +308,7 @@ static bool is_slab_used(struct Slab *slab) {
   char *e = slab->memory + SLAB_SIZE - sizeof(struct Slab);
   while (e - p > sizeof(struct Chunk)) {
     struct Chunk *chunk = (struct Chunk *)p;
-    size_t bytes = sizeof(struct Chunk) + kSizes[chunk->flindex];
+    size_t bytes = rseq_chunk_bytes(chunk->flindex);
     if (e - p < bytes)
       break;
     if (chunk->next == ALLOCATED)
@@ -311,7 +341,7 @@ static int trim_slabs(void) {
 
   // remove chunks that are dangerous, and recount what's left
   for (int i = 0; i < CPU_SETSIZE; ++i) {
-    for (int j = 0; j < 8; ++j) {
+    for (int j = 0; j < NCLASSES; ++j) {
       unsigned left = 0;
       struct Chunk **prev = &chunks[i].freelist[j];
       for (struct Chunk *chunk = *prev; chunk; chunk = *prev) {
@@ -327,7 +357,7 @@ static int trim_slabs(void) {
         chunk->count = left--;
     }
   }
-  for (int j = 0; j < 8; ++j) {
+  for (int j = 0; j < NCLASSES; ++j) {
     size_t left = 0;
     struct Chunk **prev = &pool.list[j];
     for (struct Chunk *chunk = *prev; chunk; chunk = *prev) {
@@ -362,10 +392,12 @@ static int trim_slabs(void) {
   return 1;
 }
 
-static void *dlmalloc_rseq_populate(size_t n) {
+// adds chunks of a class to this cpu's freelist. TRY_AGAIN means pop
+// again, FALL_BACK means the threaded allocator has to serve this one
+static void *dlmalloc_rseq_populate(unsigned first) {
 
   // what other cpus handed over comes before mapping more
-  if (take_back(kPickSize[n]))
+  if (take_back(first))
     return TRY_AGAIN;
 
   // makes it possible to limit the growth of untrimmable rseq memory
@@ -386,7 +418,7 @@ static void *dlmalloc_rseq_populate(size_t n) {
   size_t max = atomic_load_explicit(&rseq.max, memory_order_relaxed);
   for (;;) {
     if (!max)
-      return dlmalloc_threaded(n);
+      return FALL_BACK;
     if (atomic_compare_exchange_weak_explicit(&rseq.max, &max, max - 1,
                                               memory_order_relaxed,
                                               memory_order_relaxed)) {
@@ -413,23 +445,28 @@ static void *dlmalloc_rseq_populate(size_t n) {
   }
   if (slab == MAP_FAILED) {
     errno = oe;
-    return dlmalloc_threaded(n);
+    return FALL_BACK;
   }
   __maps_mark(slab, SLAB_SIZE);
 
   // divide slab into chunks added to free lists
   char *p = slab->memory;
   char *e = slab->memory + SLAB_SIZE - sizeof(struct Slab);
-  signed char flindex = kPickSize[n];
+  signed char flindex = first;
   while (flindex >= 0) {
-    size_t size = kSizes[flindex];
-    size_t bytes = sizeof(struct Chunk) + size;
+    size_t bytes = rseq_chunk_bytes(flindex);
     if (bytes > e - p) {
       --flindex;
       continue;
     }
     struct Chunk *chunk = (struct Chunk *)p;
     chunk->flindex = flindex;
+    if (kMemOff[flindex] != sizeof(struct Chunk)) {
+      struct Chunk *mark =
+          (struct Chunk *)(p + kMemOff[flindex] - sizeof(struct Chunk));
+      mark->next = ALIGNED_MARK;
+      mark->flindex = flindex;
+    }
     push_chunk(chunk, flindex);
     p += bytes;
   }
@@ -445,17 +482,23 @@ static void *dlmalloc_rseq_populate(size_t n) {
   return TRY_AGAIN;
 }
 
-static inline void *dlmalloc_rseq_actual(size_t n) {
+static inline void *rseq_alloc_class(unsigned flindex) {
   for (;;) {
     struct Chunk *chunk;
-    if (LIKELY((chunk = pop_chunk(kPickSize[n])))) {
+    if (LIKELY((chunk = pop_chunk(flindex)))) {
       chunk->next = ALLOCATED;
-      return chunk->memory;
+      return chunk_memory(chunk);
     }
-    void *res = dlmalloc_rseq_populate(n);
-    if (res != TRY_AGAIN)
-      return res;
+    if (dlmalloc_rseq_populate(flindex) == FALL_BACK)
+      return FALL_BACK;
   }
+}
+
+static inline void *dlmalloc_rseq_actual(size_t n) {
+  void *p = rseq_alloc_class(kPickSize[n]);
+  if (UNLIKELY(p == FALL_BACK))
+    p = dlmalloc_threaded(n);
+  return p;
 }
 
 // a thread without a registered rseq area, see TIB_FLAG_NORSEQ
@@ -482,7 +525,10 @@ static void *dlmalloc_rseq(size_t n) {
 }
 
 static inline struct Chunk *get_chunk(char *ptr) {
-  return (struct Chunk *)(ptr - sizeof(struct Chunk));
+  struct Chunk *chunk = (struct Chunk *)(ptr - sizeof(struct Chunk));
+  if (chunk->next == ALIGNED_MARK)
+    chunk = (struct Chunk *)(ptr - ALIGNED_MEMOFF);
+  return chunk;
 }
 
 static void dlfree_rseq(void *ptr) {
@@ -528,6 +574,12 @@ static void *dlcalloc_rseq(size_t n_elements, size_t elem_size) {
 static void *dlmemalign_rseq(size_t a, size_t n) {
   if (a <= MALLOC_ALIGNMENT)
     return dlmalloc(n);
+  if (a <= ALIGNED_ALIGN && n <= kSizes[NCLASSES - 1] && !no_rseq()) {
+    void *p = rseq_alloc_class(n <= kSizes[NCLASSES - 2] ? NCLASSES - 2
+                                                         : NCLASSES - 1);
+    if (p != FALL_BACK)
+      return p;
+  }
   return dlmemalign_threaded(a, n);
 }
 
@@ -573,11 +625,12 @@ static void dlmalloc_inspect_all_rseq(void handler(void *start, void *end,
     while (e - p > sizeof(struct Chunk)) {
       struct Chunk *chunk = (struct Chunk *)p;
       size_t size = kSizes[chunk->flindex];
-      size_t bytes = sizeof(struct Chunk) + size;
+      size_t bytes = rseq_chunk_bytes(chunk->flindex);
       if (e - p < bytes)
         break;
       size_t used_bytes = chunk->next == ALLOCATED ? size : 0;
-      handler(chunk->memory, chunk->memory + size, used_bytes, arg);
+      char *memory = chunk_memory(chunk);
+      handler(memory, memory + size, used_bytes, arg);
       p += bytes;
     }
   }
@@ -595,7 +648,7 @@ static struct mallinfo dlmallinfo_rseq(void) {
     char *e = slab->memory + SLAB_SIZE - sizeof(struct Slab);
     while (e - p > sizeof(struct Chunk)) {
       struct Chunk *chunk = (struct Chunk *)p;
-      size_t bytes = sizeof(struct Chunk) + kSizes[chunk->flindex];
+      size_t bytes = rseq_chunk_bytes(chunk->flindex);
       if (e - p < bytes)
         break;
       if (chunk->next != ALLOCATED) {
@@ -644,7 +697,7 @@ static bool never_used_rseq(void) {
 #if 0
 __attribute__((__destructor__)) static void print_statistics(void) {
   static size_t histo[CPU_SETSIZE];
-  for (int j = 0; j < 8; ++j) {
+  for (int j = 0; j < NCLASSES; ++j) {
     bzero(histo, sizeof(histo));
     for (int i = 0; i < 192; ++i)
       for (struct Chunk *c = chunks[i].freelist[j]; c; c = c->next)

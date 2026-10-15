@@ -38,6 +38,13 @@ textwindows int __mkunixpath(const char16_t *path,
   return n;
 }
 
+// forward copy of `n` bytes, which WinMain() can reach before the
+// ifunc'd memmove() has its target
+textwindows static void Shift(char *d, const char *s, size_t n) {
+  for (size_t i = 0; i < n; ++i)
+    d[i] = s[i];
+}
+
 // __mkunixpath() without folding the temp directory back into "/tmp"
 textwindows int __mkunixpath_raw(const char16_t *path,
                                  char path8[static PATH_MAX]) {
@@ -64,7 +71,7 @@ textwindows int __mkunixpath_raw(const char16_t *path,
       (p[5] == 'N' || p[5] == 'n') &&
       (p[6] == 'C' || p[6] == 'c') &&
       p[7] == '/') {
-    memmove(p + 2, p + 8, n - 8 + 1);
+    Shift(p + 2, p + 8, n - 8 + 1);
     p[1] = '/';
     n -= 6;
   }
@@ -79,7 +86,7 @@ textwindows int __mkunixpath_raw(const char16_t *path,
       isalpha(p[4]) &&  //
       p[5] == ':' &&    //
       p[6] == '/') {
-    memmove(p, p + 4, n - 4 + 1);
+    Shift(p, p + 4, n - 4 + 1);
     n -= 4;
   }
 

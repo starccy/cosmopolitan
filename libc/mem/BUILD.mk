@@ -9,8 +9,16 @@ LIBC_MEM_A = o/$(MODE)/libc/mem/mem.a
 LIBC_MEM_A_FILES := $(wildcard libc/mem/*)
 LIBC_MEM_A_HDRS = $(filter %.h,$(LIBC_MEM_A_FILES))
 LIBC_MEM_A_INCS = $(filter %.inc,$(LIBC_MEM_A_FILES))
-LIBC_MEM_A_SRCS = $(filter %.c,$(LIBC_MEM_A_FILES))
-LIBC_MEM_A_OBJS = $(LIBC_MEM_A_SRCS:%.c=o/$(MODE)/%.o)
+LIBC_MEM_A_SRCS_S = $(filter %.S,$(LIBC_MEM_A_FILES))
+LIBC_MEM_A_SRCS_C = $(filter %.c,$(LIBC_MEM_A_FILES))
+LIBC_MEM_A_SRCS = $(LIBC_MEM_A_SRCS_S) $(LIBC_MEM_A_SRCS_C)
+LIBC_MEM_A_OBJS =				\
+	$(LIBC_MEM_A_SRCS_S:%.S=o/$(MODE)/%.o)	\
+	$(LIBC_MEM_A_SRCS_C:%.c=o/$(MODE)/%.o)
+
+# real assembly on aarch64 too, where .S files otherwise assemble empty
+o/$(MODE)/libc/mem/emutlsget.o: libc/mem/emutlsget.S
+	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) $<
 
 LIBC_MEM_A_CHECKS =				\
 	$(LIBC_MEM_A).pkg			\

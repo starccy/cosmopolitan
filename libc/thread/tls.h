@@ -11,7 +11,7 @@
 #ifdef MODE_DBG
 #define PTHREAD_KEYS_FAST 0
 #else
-#define PTHREAD_KEYS_FAST 37
+#define PTHREAD_KEYS_FAST 36
 #endif
 
 #if !(__ASSEMBLER__ + __LINKER__ + 0)
@@ -52,7 +52,8 @@ struct CosmoTib {
   intptr_t tib_events[2];
   void *tib_sigjmpbuf;
   void *tib_vfork;
-  void *tib_keys_static[37];
+  void *tib_keys_static[36];
+  void *tib_emutls;               /* 0x1d0 see libc/mem/emutls.c */
   void **tib_keys_dynamic;
   void *tib_locks[61];
   uintptr_t tib_ntstack[3]; /* win32 teb's own stack, see __set_stack_win32 */

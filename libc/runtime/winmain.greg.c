@@ -224,11 +224,54 @@ abi static bool32 HasEnvironmentVariable(const char16_t *name) {
   return __imp_GetEnvironmentVariableW(name, buf, ARRAYLEN(buf));
 }
 
+abi static void PrintHex(char *p, uint64_t x) {
+  for (int i = 15; i >= 0; --i)
+    p[15 - i] = "0123456789abcdef"[(x >> (i * 4)) & 15];
+}
+
 // if the program links sigaction() then __sig_crash() replaces this
 abi static unsigned OnEarlyWinCrash(struct NtExceptionPointers *ep) {
   int code, sig = __sig_crash_sig(ep->ExceptionRecord->ExceptionCode, &code);
   if (!sig)
     return kNtExceptionContinueSearch;
+  // "early crash: code xxxxxxxx pc xxxxxxxxxxxxxxxx addr xxxxxxxxxxxxxxxx\n"
+  char msg[80];
+  char *p = msg;
+  const char *s = "early crash: code ";
+  while (*s)
+    *p++ = *s++;
+  PrintHex(p, ep->ExceptionRecord->ExceptionCode);
+  p += 16;
+  s = " pc ";
+  while (*s)
+    *p++ = *s++;
+  PrintHex(p, (uintptr_t)ep->ExceptionRecord->ExceptionAddress);
+  p += 16;
+  s = " addr ";
+  while (*s)
+    *p++ = *s++;
+  PrintHex(p, ep->ExceptionRecord->ExceptionInformation[1]);
+  p += 16;
+  *p++ = '\n';
+  __imp_WriteFile(__imp_GetStdHandle(kNtStdErrorHandle), msg, p - msg, 0, 0);
+  // the return addresses up the frame pointer chain
+  uintptr_t *fp = (uintptr_t *)ep->ContextRecord->Rbp;
+  for (int i = 0; i < 24 && fp; ++i) {
+    char line[40];
+    const char *t = "  from ";
+    char *q = line;
+    while (*t)
+      *q++ = *t++;
+    uintptr_t *next = (uintptr_t *)fp[0];
+    if (next <= fp || (uintptr_t)next - (uintptr_t)fp > 0x100000)
+      break;
+    PrintHex(q, fp[1]);
+    q += 16;
+    *q++ = '\n';
+    __imp_WriteFile(__imp_GetStdHandle(kNtStdErrorHandle), line, q - line, 0,
+                    0);
+    fp = next;
+  }
   __imp_TerminateProcess(-1, sig);
   __builtin_unreachable();
 }

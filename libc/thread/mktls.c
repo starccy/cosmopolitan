@@ -94,11 +94,15 @@ static char *_mktls_below(char *mem, struct CosmoTib **out_tib,
   return _mktls_finish(out_tib, mem, tib, old);
 }
 
+// where the linker puts .tdata past the thread pointer: the two dtv
+// words rounded up to the alignment of the whole tls segment
+static size_t _mktls_dtv_size(void) {
+  return ROUNDUP(sizeof(uintptr_t) * 2, MAX(I(_tdata_align), I(_tbss_align)));
+}
+
 static size_t _mktls_above_size(void) {
   return ROUNDUP(sizeof(struct CosmoTib), I(_tls_align)) +  //
-         ROUNDUP(sizeof(uintptr_t) * 2, I(_tdata_align)) +  //
-         ROUNDUP(I(_tdata_size), I(_tbss_align)) +          //
-         I(_tbss_size);
+         _mktls_dtv_size() + I(_tls_size);
 }
 
 static char *_mktls_above(char *mem, struct CosmoTib **out_tib,
@@ -123,13 +127,12 @@ static char *_mktls_above(char *mem, struct CosmoTib **out_tib,
                           sizeof(struct CosmoTib));
 
   uintptr_t *dtv = (uintptr_t *)(tib + 1);
-  size_t dtv_size = sizeof(uintptr_t) * 2;
 
-  char *tdata = (char *)dtv + ROUNDUP(dtv_size, I(_tdata_align));
+  char *tdata = (char *)dtv + _mktls_dtv_size();
   if (I(_tdata_size))
     memmove(tdata, _tdata_start, I(_tdata_size));
 
-  char *tbss = tdata + ROUNDUP(I(_tdata_size), I(_tbss_align));
+  char *tbss = tdata + I(_tbss_offset);
   if (I(_tbss_size))
     bzero(tbss, I(_tbss_size));
 

@@ -121,7 +121,17 @@ textwindows ssize_t sys_readwrite_nt_dontwait(
   // pread() and pwrite() perform an implicit lseek() operation, so
   // similar to the lseek() system call, they too raise ESPIPE when
   // operating on a non-seekable file.
-  bool isdisk = f->kind == kFdFile && GetFileType(handle) == kNtFileTypeDisk;
+  bool isdisk = f->kind == kFdFile;
+  if (isdisk) {
+    // the type of the descriptor's own handle is asked once
+    if (handle != f->handle) {
+      isdisk = GetFileType(handle) == kNtFileTypeDisk;
+    } else {
+      if (!f->disk)
+        f->disk = GetFileType(handle) == kNtFileTypeDisk ? 1 : 2;
+      isdisk = f->disk == 1;
+    }
+  }
   bool appending = isdisk && ReadOrWriteFile == (void *)WriteFile &&
                    (f->flags & O_APPEND) && f->cursor;
   bool pwriting = offset != -1;
@@ -191,8 +201,10 @@ textwindows ssize_t sys_readwrite_nt_dontwait(
 
     // initiate asynchronous i/o operation with win32
     struct NtOverlapped overlap = {.hEvent = event, .Pointer = offset};
+    bool waited = false;
     bool32 ok = ReadOrWriteFile(handle, data, size, 0, &overlap);
     if (!ok && GetLastError() == kNtErrorIoPending) {
+      waited = true;
       if (dontwait || (f->flags & O_NONBLOCK)) {
         // immediately back out of blocking i/o if non-blocking
         CancelIoEx(handle, &overlap);
@@ -228,9 +240,14 @@ textwindows ssize_t sys_readwrite_nt_dontwait(
       }
       ok = true;
     }
+    // a synchronous completion already filled in the status block,
+    // which is all GetOverlappedResult() would read
     uint32_t exchanged = 0;
-    if (ok)
+    if (ok && !waited) {
+      exchanged = overlap.InternalHigh;
+    } else if (ok) {
       ok = GetOverlappedResult(handle, &overlap, &exchanged, true);
+    }
     uint32_t io_error = GetLastError();
     if (syncio && syncpos != -1 && pwriting)
       SetFilePointerEx(handle, syncpos, 0, kNtFileBegin);

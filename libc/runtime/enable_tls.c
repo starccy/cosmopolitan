@@ -129,11 +129,9 @@ textstartup void __enable_tls(void) {
 
   // Here's the layout we're currently using:
   //
-  //         .balign 4096
   //     _tdata_start:
   //         .tdata
   //         _tdata_size = . - _tdata_start
-  //         .balign 4096
   //     _tbss_start:
   //     _tdata_start + _tbss_offset:
   //         .tbss
@@ -172,10 +170,12 @@ textstartup void __enable_tls(void) {
 
 #elif defined(__aarch64__)
 
+  // .tdata sits past the two dtv words rounded up to the alignment of
+  // the whole tls segment, which is where the linker expects it
+  size_t dtv_size =
+      ROUNDUP(sizeof(uintptr_t) * 2, MAX(I(_tdata_align), I(_tbss_align)));
   uintptr_t size = ROUNDUP(sizeof(struct CosmoTib), I(_tls_align)) +  //
-                   ROUNDUP(sizeof(uintptr_t) * 2, I(_tdata_align)) +  //
-                   ROUNDUP(I(_tdata_size), I(_tbss_align)) +          //
-                   I(_tbss_size);
+                   dtv_size + I(_tls_size);
 
   char *mem;
   if (I(_tls_align) <= TLS_ALIGNMENT && size <= sizeof(__static_tls)) {
@@ -197,9 +197,8 @@ textstartup void __enable_tls(void) {
                           sizeof(struct CosmoTib));
 
   uintptr_t *dtv = (uintptr_t *)(tib + 1);
-  size_t dtv_size = sizeof(uintptr_t) * 2;
 
-  char *tdata = (char *)dtv + ROUNDUP(dtv_size, I(_tdata_align));
+  char *tdata = (char *)dtv + dtv_size;
   if (I(_tdata_size))
     memmove(tdata, _tdata_start, I(_tdata_size));
 

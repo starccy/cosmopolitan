@@ -128,6 +128,9 @@ NtStatus NtCreateEvent(void **out_EventHandle, uint32_t DesiredAccess,
                        int EventType, int32_t InitialState);
 NtStatus NtWaitForSingleObject(void *ObjectHandle, int32_t Alertable,
                                int64_t *TimeOut);
+NtStatus NtWaitForMultipleObjects(uint32_t Count, const int64_t *Handles,
+                                  int WaitType, int32_t Alertable,
+                                  int64_t *opt_Timeout);
 NtStatus NtSetEvent(void *EventHandle, int32_t *opt_out_PreviousState);
 NtStatus NtClearEvent(void *EventHandle);
 NtStatus NtSignalAndWaitForSingleObject(void *ObjectToSignal,

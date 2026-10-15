@@ -18,10 +18,12 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
 #include "libc/calls/state.internal.h"
+#include "libc/dce.h"
 #include "libc/calls/struct/rlimit.h"
 #include "libc/intrin/atomic.h"
 #include "libc/intrin/cmpxchg.h"
 #include "libc/intrin/fds.h"
+#include "libc/intrin/maps.h"
 #include "libc/macros.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/map.h"
@@ -48,6 +50,9 @@ int __ensurefds_unlocked(int fd) {
       return emfile();
     pib->fds.c += __gransize;
   }
+  if (IsWindows())
+    __nt_commit_range(pib->fds.p + pib->fds.n,
+                      sizeof(struct Fd) * (fd + 1 - pib->fds.n));
   pib->fds.n = fd + 1;
   return fd;
 }

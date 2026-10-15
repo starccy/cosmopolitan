@@ -43,5 +43,9 @@ int putgrent(const struct group *, FILE *);
 int getgrouplist(const char *, gid_t, gid_t *, int *);
 int initgroups(const char *, gid_t);
 
+/* what the user and group databases say where the host has none */
+char *__create_synthetic_passwd_file(void);
+char *__create_synthetic_group_file(void);
+
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_PASSWD_H_ */

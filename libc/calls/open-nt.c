@@ -317,6 +317,8 @@ textwindows static int sys_open_nt_file(int dirfd, const char *file,
     __get_pib()->fds.p[fd].used_explicit_drive_letter =
         sys_open_nt_used_explicit_drive_letter(file);
     __get_pib()->fds.p[fd].exec = sys_open_nt_exec_by_name(file);
+    __get_pib()->fds.p[fd].syncio = 2;  // opened overlapped just above
+    __get_pib()->fds.p[fd].disk = 0;
     if ((!(flags & O_APPEND) || (flags & O_ACCMODE) != O_WRONLY) &&
         __get_pib()->fds.p[fd].type != kFifoMark) {
       __fds_lock();

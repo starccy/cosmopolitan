@@ -24,38 +24,42 @@
 #if !(__ASSEMBLER__ + __LINKER__ + 0)
 COSMOPOLITAN_C_START_
 
+// the process-wide flag is checked first: it's set whenever any thread
+// turns tracing on, so a zero spares the thread block lookup
+extern int __strace;
+
 #define STRACE(FMT, ...)                       \
-  ((void)(SYSDEBUG && strace_enabled(0) > 0 && \
+  ((void)(SYSDEBUG && __strace > 0 && strace_enabled(0) > 0 && \
           (__stracef(STRACE_PROLOGUE FMT "\n", ##__VA_ARGS__), 0)))
 
 #define DATATRACE(FMT, ...)                                  \
-  ((void)(SYSDEBUG && _DATATRACE && strace_enabled(0) > 0 && \
+  ((void)(SYSDEBUG && _DATATRACE && __strace > 0 && strace_enabled(0) > 0 && \
           (__stracef(STRACE_PROLOGUE FMT "\n", ##__VA_ARGS__), 0)))
 
 #define POLLTRACE(FMT, ...)                                  \
-  ((void)(SYSDEBUG && _POLLTRACE && strace_enabled(0) > 0 && \
+  ((void)(SYSDEBUG && _POLLTRACE && __strace > 0 && strace_enabled(0) > 0 && \
           (__stracef(STRACE_PROLOGUE FMT "\n", ##__VA_ARGS__), 0)))
 
 #define KERNTRACE(FMT, ...)                                                 \
-  ((void)(SYSDEBUG && _KERNTRACE && strace_enabled(0) > 0 &&                \
+  ((void)(SYSDEBUG && _KERNTRACE && __strace > 0 && strace_enabled(0) > 0 &&                \
           (__stracef(STRACE_PROLOGUE "\e[2m" FMT "\e[0m\n", ##__VA_ARGS__), \
            0)))
 
 #define STDIOTRACE(FMT, ...)                                  \
-  ((void)(SYSDEBUG && _STDIOTRACE && strace_enabled(0) > 0 && \
+  ((void)(SYSDEBUG && _STDIOTRACE && __strace > 0 && strace_enabled(0) > 0 && \
           (__stracef(STRACE_PROLOGUE FMT "\n", ##__VA_ARGS__), 0)))
 
 #define NTTRACE(FMT, ...)                                                   \
-  ((void)(SYSDEBUG && _NTTRACE && strace_enabled(0) > 0 &&                  \
+  ((void)(SYSDEBUG && _NTTRACE && __strace > 0 && strace_enabled(0) > 0 &&                  \
           (__stracef(STRACE_PROLOGUE "\e[2m" FMT "\e[0m\n", ##__VA_ARGS__), \
            0)))
 
 #define LOCKTRACE(FMT, ...)                                  \
-  ((void)(SYSDEBUG && _LOCKTRACE && strace_enabled(0) > 0 && \
+  ((void)(SYSDEBUG && _LOCKTRACE && __strace > 0 && strace_enabled(0) > 0 && \
           (__stracef(STRACE_PROLOGUE FMT "\n", ##__VA_ARGS__), 0)))
 
 #define TIMETRACE(FMT, ...)                                  \
-  ((void)(SYSDEBUG && _TIMETRACE && strace_enabled(0) > 0 && \
+  ((void)(SYSDEBUG && _TIMETRACE && __strace > 0 && strace_enabled(0) > 0 && \
           (__stracef(STRACE_PROLOGUE FMT "\n", ##__VA_ARGS__), 0)))
 
 int strace_enabled(int);

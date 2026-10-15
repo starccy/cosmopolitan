@@ -6,11 +6,14 @@
 #include "libc/thread/tls.h"
 
 // llvm's emulated tls. a compiler told to emulate thread_local turns
-// each access into a call here with the variable's control block
-// (__emutls_v.<name>), which carries the object's size, alignment, a
-// slot number handed out on first use, and the initial image. each
-// thread keeps its objects in an array hung off a pthread key, which
-// __cxa_thread_finalize() frees once the thread's destructors ran
+// each access into a call to __emutls_get_address() with the variable's
+// control block (__emutls_v.<name>), which carries the object's size,
+// alignment, a slot number handed out on first use, and the initial
+// image. each thread keeps its objects in an array hung off its tib,
+// which __cxa_thread_finalize() frees once the destructors ran.
+//
+// the fast path is libc/mem/emutlsget.S, which tail calls
+// __emutls_get_address_slow() for anything it doesn't find
 
 struct EmutlsControl {
   size_t size;
@@ -24,26 +27,15 @@ struct EmutlsArray {
   void *p[];
 };
 
-static pthread_key_t emutls_key;
-static _Atomic(int) emutls_state;  // 0 no key yet, 1 making it, 2 made
+static_assert(offsetof(struct EmutlsControl, index) == 16);
+static_assert(offsetof(struct EmutlsArray, p) == 8);
+static_assert(offsetof(struct CosmoTib, tib_emutls) == 0x1d0);
+
 static _Atomic(uintptr_t) emutls_count;
 
-static void emutls_init(void) {
-  int s = 0;
-  if (atomic_compare_exchange_strong_explicit(&emutls_state, &s, 1,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire)) {
-    if (pthread_key_create(&emutls_key, 0))
-      __builtin_trap();
-    atomic_store_explicit(&emutls_state, 2, memory_order_release);
-  } else {
-    while (atomic_load_explicit(&emutls_state, memory_order_acquire) != 2) {
-    }
-  }
-}
+void *__emutls_get_address_slow(struct EmutlsControl *);
 
 static uintptr_t emutls_index(struct EmutlsControl *c) {
-  emutls_init();
   uintptr_t want = 0;
   uintptr_t i = atomic_fetch_add(&emutls_count, 1) + 1;
   if (!atomic_compare_exchange_strong_explicit(&c->index, &want, i,
@@ -53,14 +45,8 @@ static uintptr_t emutls_index(struct EmutlsControl *c) {
   return i;
 }
 
-static struct EmutlsArray *emutls_array(void) {
-  pthread_key_t k = emutls_key;
-  if (LIKELY(k < PTHREAD_KEYS_FAST))
-    return __get_tls()->tib_keys_static[k];
-  return pthread_getspecific(k);
-}
-
-static struct EmutlsArray *emutls_grow(struct EmutlsArray *a, uintptr_t i) {
+static struct EmutlsArray *emutls_grow(struct CosmoTib *tib,
+                                       struct EmutlsArray *a, uintptr_t i) {
   size_t n = a ? a->n : 0;
   size_t m = n ? n * 2 : 16;
   if (m < i)
@@ -70,8 +56,7 @@ static struct EmutlsArray *emutls_grow(struct EmutlsArray *a, uintptr_t i) {
     __builtin_trap();
   bzero(a->p + n, (m - n) * sizeof(void *));
   a->n = m;
-  if (pthread_setspecific(emutls_key, a))
-    __builtin_trap();
+  tib->tib_emutls = a;
   return a;
 }
 
@@ -88,33 +73,20 @@ static void *emutls_create(struct EmutlsControl *c) {
   return p;
 }
 
-dontinline static void *emutls_slow(struct EmutlsControl *c) {
+// a variable's first use in the process or in this thread, or a thread
+// the host made that has no tib yet (__get_tls() adopts it)
+dontinline void *__emutls_get_address_slow(struct EmutlsControl *c) {
   uintptr_t i = atomic_load_explicit(&c->index, memory_order_acquire);
   if (!i)
     i = emutls_index(c);
-  struct EmutlsArray *a = emutls_array();
+  struct CosmoTib *tib = __get_tls();
+  struct EmutlsArray *a = tib->tib_emutls;
   if (!a || i > a->n)
-    a = emutls_grow(a, i);
+    a = emutls_grow(tib, a, i);
   void *p = a->p[i - 1];
   if (!p)
     p = a->p[i - 1] = emutls_create(c);
   return p;
-}
-
-void *__emutls_get_address(struct EmutlsControl *c) {
-  uintptr_t i = atomic_load_explicit(&c->index, memory_order_acquire);
-  if (LIKELY(i)) {
-    pthread_key_t k = emutls_key;
-    if (LIKELY(k < PTHREAD_KEYS_FAST)) {
-      struct EmutlsArray *a = __get_tls()->tib_keys_static[k];
-      if (LIKELY(a && i <= a->n)) {
-        void *p = a->p[i - 1];
-        if (LIKELY(p))
-          return p;
-      }
-    }
-  }
-  return emutls_slow(c);
 }
 
 // frees the calling thread's objects. runs after the thread's
@@ -122,10 +94,11 @@ void *__emutls_get_address(struct EmutlsControl *c) {
 void __emutls_thread_finalize(void) {
   if (!atomic_load_explicit(&emutls_count, memory_order_acquire))
     return;
-  struct EmutlsArray *a = emutls_array();
+  struct CosmoTib *tib = __get_tls();
+  struct EmutlsArray *a = tib->tib_emutls;
   if (!a)
     return;
-  pthread_setspecific(emutls_key, 0);
+  tib->tib_emutls = 0;
   for (size_t i = 0; i < a->n; ++i)
     free(a->p[i]);
   free(a);

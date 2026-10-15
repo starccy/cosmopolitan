@@ -362,14 +362,7 @@ SECTIONS {
     *(SORT_BY_ALIGNMENT(.tdata))
     *(SORT_BY_ALIGNMENT(.tdata.*))
     _tdata_end = .;
-    KEEP(*(.ape.pad.rodata))
-    . = ALIGN(. != 0 ? CONSTANT(COMMONPAGESIZE) : 0);
-    _etext = .;
-    PROVIDE(etext = .);
   } :Tls :Rom
-/*END: Read Only Data */
-
-  . = ALIGN(CONSTANT(COMMONPAGESIZE));
 
 /* this only tells the linker about the layout of uninitialized */
 /* TLS data, and does not advance the linker's location counter */
@@ -378,9 +371,21 @@ SECTIONS {
     *(SORT_BY_ALIGNMENT(.tbss))
     *(SORT_BY_ALIGNMENT(.tbss.*))
     KEEP(*(.fstls))
+    /* the linker puts %fs at the end rounded up to the segment's */
+    /* alignment, and the runtime puts it at _tls_size past the start */
+    . = ALIGN(TLS_ALIGNMENT);
     /* the %fs register is based on this location */
     _tbss_end = .;
   } :Tls
+
+  .tdatapad . : {
+    KEEP(*(.ape.pad.rodata))
+  } :Rom
+/*END: Read Only Data */
+
+  . = ALIGN(CONSTANT(COMMONPAGESIZE));
+  _etext = .;
+  PROVIDE(etext = .);
 
   .idata : {
 #if SupportsWindows()
@@ -596,7 +601,7 @@ ape_cod_rva = RVA(ape_cod_vaddr);
 ape_rom_vaddr = ADDR(.rodata);
 ape_rom_offset = ape_rom_vaddr - __executable_start;
 ape_rom_paddr = LOADADDR(.rodata);
-ape_rom_filesz = ADDR(.tbss) - ADDR(.rodata);
+ape_rom_filesz = _etext - ADDR(.rodata);
 ape_rom_memsz = ape_rom_filesz;
 ape_rom_align = CONSTANT(COMMONPAGESIZE);
 ape_rom_rva = RVA(ape_rom_vaddr);

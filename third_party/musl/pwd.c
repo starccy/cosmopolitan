@@ -37,7 +37,9 @@
 #include "libc/stdio/stdio.h"
 #include "libc/str/str.h"
 #include "libc/thread/thread.h"
-#include "libc/nt/shell32.h"
+#include "libc/nt/dll.h"
+#include "libc/nt/struct/guid.h"
+#include "libc/nt/thunk/msabi.h"
 #include "libc/nt/enum/knownfolder.h"
 #include "libc/nt/enum/e.h"
 #include "libc/str/str.h"
@@ -60,12 +62,28 @@ __static_yoink("_Cz_inflateEnd");
 static int
 GetUserHomeDirectory(char *path, size_t size)
 {
+#ifdef __x86_64__
+	// shell32 is loaded on first use, not imported, which would bring
+	// user32, gdi32 and combase into every program at startup
+	static int32_t __msabi (*get)(const struct NtGuid *, uint32_t,
+				      intptr_t, char16_t **);
+	static void __msabi (*free16)(void *);
 	int i, len;
 	int32_t hResult;
 	char16_t *path16;
 	if (size < 8)
 		return -1;
-	hResult = SHGetKnownFolderPath(&FOLDERID_Profile, 0, 0, &path16);
+	if (!get) {
+		int64_t shell32 = LoadLibrary(u"shell32.dll");
+		int64_t ole32 = LoadLibrary(u"ole32.dll");
+		if (!shell32 || !ole32)
+			return -1;
+		free16 = (void *)GetProcAddress(ole32, "CoTaskMemFree");
+		get = (void *)GetProcAddress(shell32, "SHGetKnownFolderPath");
+		if (!get || !free16)
+			return -1;
+	}
+	hResult = get(&FOLDERID_Profile, 0, 0, &path16);
 	if (!SUCCEEDED(hResult))
 		return -1;
 	path16[1] = path16[0];
@@ -76,11 +94,14 @@ GetUserHomeDirectory(char *path, size_t size)
 	len = tprecode16to8(path, size, path16).ax;
 	if (len >= size - 1)
 		len = -1;
-	CoTaskMemFree(path16);
+	free16(path16);
 	return len;
+#else
+	return -1;
+#endif
 }
 
-static char *
+char *
 __create_synthetic_passwd_file(void)
 {
 	int uid, gid;

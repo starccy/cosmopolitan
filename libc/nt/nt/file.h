@@ -3,6 +3,7 @@
 #include "libc/nt/enum/fileinformationclass.h"
 #include "libc/nt/enum/status.h"
 #include "libc/nt/struct/iostatusblock.h"
+#include "libc/nt/struct/overlappedentry.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/nt/typedef/ioapcroutine.h"
 COSMOPOLITAN_C_START_
@@ -95,6 +96,10 @@ NtStatus NtAssociateWaitCompletionPacket(
     int64_t TargetObjectHandle, void *KeyContext, void *ApcContext,
     NtStatus IoStatus, uintptr_t IoStatusInformation,
     unsigned char *opt_out_AlreadySignaled);
+NtStatus NtRemoveIoCompletionEx(int64_t IoCompletionHandle,
+                                struct NtOverlappedEntry *out_Entries,
+                                uint32_t Count, uint32_t *out_NumEntriesRemoved,
+                                int64_t *opt_Timeout, bool32 Alertable);
 NtStatus NtCancelWaitCompletionPacket(int64_t WaitCompletionPacketHandle,
                                       unsigned char RemoveSignaledPacket);
 

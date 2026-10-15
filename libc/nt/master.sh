@@ -807,6 +807,7 @@ imp	'NtRaiseHardError'					NtRaiseHardError					ntdll		6
 imp	'NtReadFile'						NtReadFile						ntdll		9
 imp	'NtReadVirtualMemory'					NtReadVirtualMemory					ntdll		5
 imp	'NtReleaseKeyedEvent'					NtReleaseKeyedEvent					ntdll		4
+imp	'NtRemoveIoCompletionEx'				NtRemoveIoCompletionEx					ntdll		6
 imp	'NtResumeProcess'					NtResumeProcess					ntdll		1
 imp	'NtResumeThread'					NtResumeThread						ntdll		2
 imp	'NtSetContextThread'					NtSetContextThread					ntdll		2
@@ -827,6 +828,7 @@ imp	'NtTerminateThread'					NtTerminateThread					ntdll		2
 imp	'NtTestAlert'						NtTestAlert						ntdll		0
 imp	'NtUnmapViewOfSection'					NtUnmapViewOfSection					ntdll		2
 imp	'NtWaitForKeyedEvent'					NtWaitForKeyedEvent					ntdll		4
+imp	'NtWaitForMultipleObjects'				NtWaitForMultipleObjects				ntdll		5
 imp	'NtWaitForSingleObject'					NtWaitForSingleObject					ntdll		3
 imp	'NtWriteFile'						NtWriteFile						ntdll		9
 imp	'NtWriteVirtualMemory'					NtWriteVirtualMemory					ntdll		5
