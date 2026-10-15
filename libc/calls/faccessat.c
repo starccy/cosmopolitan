@@ -82,6 +82,7 @@ static char *_DescribeAccessMode(char buf[13], int amode) {
 int faccessat(int dirfd, const char *path, int amode, int flags) {
   int e, rc;
   struct ZiposUri zipname;
+  int zr;
   char zbuf[ZIPOS_PATH_MAX + 8];
   if (kisdangerous(path)) {
     rc = efault();
@@ -91,11 +92,10 @@ int faccessat(int dirfd, const char *path, int amode, int flags) {
   } else if (_weaken(__procfs_access) &&
              (rc = _weaken(__procfs_access)(dirfd, path, amode)) != -2) {
     // the /proc emulation answered
-  } else if (_weaken(__zipos_atpath) &&
-             !(path = _weaken(__zipos_atpath)(&dirfd, path, zbuf, sizeof(zbuf)))) {
+  } else if ((zr = __zipos_resolve(&dirfd, &path, zbuf, sizeof(zbuf),
+                                   &zipname)) == -1) {
     rc = -1;
-  } else if (_weaken(__zipos_open) &&
-             _weaken(__zipos_parseuri)(path, &zipname) != -1) {
+  } else if (zr) {
     rc = _weaken(__zipos_access)(&zipname, amode);
   } else if (!IsWindows()) {
     e = errno;

@@ -109,7 +109,8 @@ static int __zipos_mkfd(int minfd) {
   return fd;
 }
 
-static int __zipos_setfd(int fd, struct ZiposHandle *h, unsigned flags) {
+static int __zipos_setfd(int fd, struct ZiposHandle *h, unsigned flags,
+                         size_t node) {
   int want = fd;
   atomic_compare_exchange_strong_explicit(&__get_pib()->fds.f, &want, fd + 1,
                                           memory_order_release,
@@ -117,6 +118,7 @@ static int __zipos_setfd(int fd, struct ZiposHandle *h, unsigned flags) {
   __get_pib()->fds.p[fd].kind = kFdZip;
   __get_pib()->fds.p[fd].handle = (intptr_t)h;
   __get_pib()->fds.p[fd].flags = flags | O_CLOEXEC;
+  __get_pib()->fds.p[fd].zipdir = node + 1;
   __fds_unlock();
   return fd;
 }
@@ -127,26 +129,32 @@ static int __zipos_load(struct Zipos *zipos, size_t cf, int flags,
   size_t size;
   int fd, minfd;
   struct ZiposHandle *h;
+  bool directory = cf == ZIPOS_SYNTHETIC_DIRECTORY ||
+                   S_ISDIR(GetZipCfileMode(zipos->map + cf));
+  size_t aliaslen = directory && name->alias ? strlen(name->alias) + 1 : 0;
+  size_t aliaspos = 0;
 
   if (cf == ZIPOS_SYNTHETIC_DIRECTORY) {
     size = name->len;
-    if (!(h = __zipos_alloc(zipos, size + 1)))
+    if (!(h = __zipos_alloc(zipos, size + 1 + aliaslen)))
       return -1;
     if (size)
       memcpy(h->data, name->path, size);
     h->data[size] = 0;
     h->mem = h->data;
+    aliaspos = size + 1;
   } else {
     lf = GetZipCfileOffset(zipos->map + cf);
     size = GetZipLfileUncompressedSize(zipos->map + lf);
     switch (ZIP_LFILE_COMPRESSIONMETHOD(zipos->map + lf)) {
       case kZipCompressionNone:
-        if (!(h = __zipos_alloc(zipos, 0)))
+        if (!(h = __zipos_alloc(zipos, aliaslen)))
           return -1;
         h->mem = ZIP_LFILE_CONTENT(zipos->map + lf);
         break;
       case kZipCompressionDeflate:
-        if (!(h = __zipos_alloc(zipos, size)))
+        aliaspos = size;
+        if (!(h = __zipos_alloc(zipos, size + aliaslen)))
           return -1;
         if (!__inflate(h->data, size, ZIP_LFILE_CONTENT(zipos->map + lf),
                        GetZipLfileCompressedSize(zipos->map + lf))) {
@@ -163,6 +171,11 @@ static int __zipos_load(struct Zipos *zipos, size_t cf, int flags,
 
   atomic_store_explicit(&h->pos, 0, memory_order_relaxed);
   h->cfile = cf;
+  h->isvirtual = name->isvirtual;
+  if (aliaslen) {
+    h->aliasoff = aliaspos + 1;
+    memcpy(h->data + aliaspos, name->alias, aliaslen);
+  }
   h->size = size;
   if (h->mem) {
     minfd = 3;
@@ -170,7 +183,7 @@ static int __zipos_load(struct Zipos *zipos, size_t cf, int flags,
   TryAgain:
     if (IsWindows() || IsMetal()) {
       if ((fd = __reservefd_unlocked(-1)) != -1)
-        return __zipos_setfd(fd, h, flags);
+        return __zipos_setfd(fd, h, flags, name->node);
     } else if ((fd = __zipos_mkfd(minfd)) != -1) {
       if (__ensurefds_unlocked(fd) != -1) {
         if (__get_pib()->fds.p[fd].kind) {
@@ -178,7 +191,7 @@ static int __zipos_load(struct Zipos *zipos, size_t cf, int flags,
           minfd = fd + 1;
           goto TryAgain;
         }
-        return __zipos_setfd(fd, h, flags);
+        return __zipos_setfd(fd, h, flags, name->node);
       }
       sys_close(fd);
     }
@@ -188,12 +201,25 @@ static int __zipos_load(struct Zipos *zipos, size_t cf, int flags,
   return -1;
 }
 
-void __zipos_postdup(int oldfd, int newfd) {
-  if (oldfd == newfd)
-    return;
+int __zipos_postdup(int oldfd, int newfd) {
+  int rc = newfd;
+  if (__vforked || oldfd == newfd)
+    return newfd;
+  if (!__isfdkind(oldfd, kFdZip) && !__isfdkind(newfd, kFdZip) &&
+      !((unsigned)oldfd < __get_pib()->fds.n && __get_pib()->fds.p[oldfd].zipdir) &&
+      !((unsigned)newfd < __get_pib()->fds.n && __get_pib()->fds.p[newfd].zipdir))
+    return newfd;
   BLOCK_SIGNALS;
   BLOCK_CANCELATION;
   __fds_lock();
+  if (__ensurefds_unlocked(newfd) == -1) {
+    int e = errno;
+    __fds_unlock();
+    sys_close(newfd);
+    errno = e;
+    rc = -1;
+    goto Done;
+  }
   if (__isfdkind(newfd, kFdZip)) {
     __zipos_drop(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[newfd].handle);
@@ -206,9 +232,13 @@ void __zipos_postdup(int oldfd, int newfd) {
     __ensurefds_unlocked(newfd);
     __get_pib()->fds.p[newfd] = __get_pib()->fds.p[oldfd];
   }
+  if (__ensurefds_unlocked(newfd) != -1)
+    __get_pib()->fds.p[newfd].zipdir = (unsigned)oldfd < __get_pib()->fds.n ? __get_pib()->fds.p[oldfd].zipdir : 0;
   __fds_unlock();
+Done:
   ALLOW_CANCELATION;
   ALLOW_SIGNALS;
+  return rc;
 }
 
 /**

@@ -219,7 +219,7 @@ static int copy_tree(char *zpath, char *dst) {
     memcpy(zpath + zn + 1, e->d_name, n + 1);
     dst[dn] = '/';
     memcpy(dst + dn + 1, e->d_name, n + 1);
-    if (!stat(zpath, &st)) {
+    if (zpath && !stat(zpath, &st)) {
       if (S_ISDIR(st.st_mode)) {
         copy_tree(zpath, dst);
       } else if (S_ISREG(st.st_mode)) {
@@ -285,7 +285,7 @@ dontinline const char *__host_pathmap(const char *path, char *buf,
     return 0;
   if (!is_zip(path) && (zpath = __zipos_remap(path, tmp, sizeof(tmp))) == path)
     return 0;
-  if (!stat(zpath, &st)) {
+  if (zpath && !stat(zpath, &st)) {
     pthread_mutex_lock(&__hostpath.lock);
     if ((root = get_root()) && strlen(root) + strlen(zpath + 4) < size) {
       stpcpy(stpcpy(buf, root), zpath + 4);

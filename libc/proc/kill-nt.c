@@ -125,17 +125,34 @@ textwindows int sys_kill_nt(int pid, int sig) {
     }
     ALLOW_SIGNALS;
     if (self)
-      return raise(sig);
+      return sys_kill_nt(getpid(), sig);
     return 0;
   }
 
-  // just call raise() if we're targeting self
+  // Deliver synchronously when the calling thread can take the signal.
+  // Otherwise it belongs to the process, not this thread's pending set:
+  // another thread may be waiting for it (e.g. a POSIX timer's SIGALRM).
   if (pid == getpid()) {
-    if (sig) {
-      return raise(sig);
-    } else {
+    if (!sig)
       return 0;  // ability check passes
+    if (sig != SIGKILL && sig != SIGSTOP) {
+      bool blocked;
+      uint64_t bit = 1ull << (sig - 1);
+      BLOCK_SIGNALS;
+      blocked = !!(_SigMask & bit);
+      if (blocked) {
+        __sig_lock();
+        if (!__sig_ignored(sig))
+          atomic_fetch_or_explicit(__get_pib()->sigpending, bit,
+                                   memory_order_release);
+        __sig_unlock();
+        __sig_wake_process(pid);
+      }
+      ALLOW_SIGNALS;
+      if (blocked)
+        return 0;
     }
+    return raise(sig);
   }
 
   // find existing handle we own for process

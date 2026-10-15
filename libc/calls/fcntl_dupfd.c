@@ -44,7 +44,7 @@ int __fcntl_dupfd(int fd, ...) {
     rc = ebadf();
   }
   if (rc != -1 && _weaken(__zipos_postdup))
-    _weaken(__zipos_postdup)(fd, rc);
+    rc = _weaken(__zipos_postdup)(fd, rc);
   if (rc != -1 && _weaken(__procfs_postdup))
     _weaken(__procfs_postdup)(fd, rc);
   STRACE("fcntl(%d, F_DUPFD, %d) → %d% m", fd, arg, rc);

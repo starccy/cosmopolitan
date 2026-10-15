@@ -22,6 +22,8 @@
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
+#include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -32,18 +34,24 @@
  * @raise EACCES if search permission was denied on directory
  * @raise ENOTDIR if `dirfd` doesn't refer to a directory
  * @raise EBADF if `dirfd` isn't a valid file descriptor
- * @raise ENOTSUP if `dirfd` refers to `/zip/...` file
+ * @raise ENOTSUP if `dirfd` refers to a `/proc` directory
  * @see open(path, O_DIRECTORY)
  * @asyncsignalsafe
  */
 int fchdir(int dirfd) {
   int rc;
-  if (__isfdkind(dirfd, kFdZip) || __isfdkind(dirfd, kFdProc)) {
+  if (__isfdkind(dirfd, kFdZip)) {
+    rc = _weaken(__zipos_fchdir) ? _weaken(__zipos_fchdir)(dirfd) : enotsup();
+  } else if (__isfdkind(dirfd, kFdProc)) {
     rc = enotsup();
-  } else if (!IsWindows()) {
-    rc = sys_fchdir(dirfd);
   } else {
-    rc = sys_fchdir_nt(dirfd);
+    if (!IsWindows()) {
+      rc = sys_fchdir(dirfd);
+    } else {
+      rc = sys_fchdir_nt(dirfd);
+    }
+    if (!rc && _weaken(__zipos_incwd))
+      *_weaken(__zipos_incwd) = false;
   }
   STRACE("fchdir(%d) → %d% m", dirfd, rc);
   return rc;

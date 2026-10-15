@@ -103,6 +103,7 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
   ssize_t bytes;
   struct stat st;
   struct ZiposUri zipname;
+  int zr;
   char zbuf[ZIPOS_PATH_MAX + 8];
   if (IsLinux() && !bufsiz) {
     // the linux kernel will einval if bufsiz is zero. linux is the only
@@ -117,11 +118,10 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
              (bytes = _weaken(__procfs_readlink)(dirfd, path, buf, bufsiz)) !=
                  -2) {
     // the /proc emulation answered
-  } else if (_weaken(__zipos_atpath) &&
-             !(path = _weaken(__zipos_atpath)(&dirfd, path, zbuf, sizeof(zbuf)))) {
+  } else if ((zr = __zipos_resolve(&dirfd, &path, zbuf, sizeof(zbuf),
+                                   &zipname)) == -1) {
     bytes = -1;
-  } else if (_weaken(__zipos_stat) &&
-             _weaken(__zipos_parseuri)(path, &zipname) != -1) {
+  } else if (zr) {
     // the zip store has no symbolic links
     if (!_weaken(__zipos_stat)(&zipname, &st)) {
       bytes = einval();

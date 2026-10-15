@@ -66,10 +66,16 @@ struct Fd {
   void *pty;         // pseudoconsole on windows, see pty.internal.h
   bool ptymaster;
   bool devzero;  // windows: a kFdDevRandom that is /dev/zero
+  bool devfull;  // windows: a kFdDevRandom that is /dev/full
+  char devdir;   // windows: a handleless kFdDevRandom standing for a
+                 // directory: 1 /dev, 2 /dev/pts, 3 /dev/fd
   bool peergone;  // windows SOCK_DGRAM pair: ECONNREFUSED already reported
   bool xnupkt;      // xnu: a socketpair(SOCK_SEQPACKET) end, see unixpair-xnu.c
   bool xnugone;     // xnu: an AF_UNIX datagram peer gone, not yet told to send
   bool xnudgram;    // xnu: an AF_UNIX datagram socket made by socket()
+  bool listening;   // xnu, windows: listen() was called
+  bool xnuseq;      // xnu: a socket(SOCK_SEQPACKET) framed on a stream
+  char pmtudisc;    // xnu: IP_MTU_DISCOVER as set, plus one
   int64_t xnuino;   // xnu: the inode either of those belongs to
   bool passcred;    // off linux: SO_PASSCRED as set, see passcred.c
   int credpid;      // windows unix socket: the pid of the process it's from
@@ -78,13 +84,19 @@ struct Fd {
   void *fifo;       // windows fifo: its registry, see fifo-nt.c
   long fifow;       // windows fifo opened O_RDWR: the write end
   bool quickack;    // off linux: TCP_QUICKACK as set, see tcphint.c
+  bool cork;        // windows socket: TCP_CORK as set
   int deferaccept;  // off linux: TCP_DEFER_ACCEPT as set
+  unsigned usertimeout;  // off linux: TCP_USER_TIMEOUT as set, millis
   bool reuseport;   // windows socket: SO_REUSEPORT as set
   char sockbuf;     // off linux: 1 SO_SNDBUF set, 2 SO_RCVBUF set, 3 both
   uint8_t tclass;   // windows socket: IPV6_TCLASS as set
+  char shut;        // windows socket: 1 after SHUT_RD, 2 SHUT_WR, 3 both
+  bool msgtrunc;    // windows unix seqpacket: the last receive was cut
   char syncio;  // windows disk file: 0 not known yet, 1 synchronous, 2 not
+  char disk;    // windows kFdFile: 0 not known yet, 1 a disk file, 2 not
   char exec;    // windows disk file: 0 name doesn't say, 1 not exec, 2 exec
   long fionbio;     // windows socket: the handle FIONBIO was last set on
+  size_t zipdir;  // immutable bundle directory index (zero for ordinary fds)
   int fionbio_pid;  // and in which process, since fork() doesn't keep it
 };
 

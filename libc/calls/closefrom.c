@@ -43,7 +43,7 @@ void closefrom(int minfd) {
   if (IsFreebsd() || IsOpenbsd()) {
     rc = sys_closefrom(minfd);
   } else if (IsLinux()) {
-    rc = sys_close_range(minfd, 0xffffffffu, 0);
+    rc = close_range(minfd, 0xffffffffu, 0);
   } else if (IsNetbsd()) {
     rc = __sys_fcntl(minfd, 10 /*F_CLOSEM*/, minfd);
   } else {

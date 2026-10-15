@@ -18,11 +18,14 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
 #include "libc/runtime/zipos.internal.h"
+#include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
 
 int __zipos_notat(int dirfd, const char *path) {
   struct ZiposUri zipname;
-  if (__isfdkind(dirfd, kFdZip) || __zipos_parseuri(path, &zipname) != -1)
+  if (__isfdkind(dirfd, kFdZip) ||
+      (dirfd == AT_FDCWD && path[0] != '/' && __zipos_incwd) ||
+      __zipos_parseuri(path, &zipname) != -1)
     return -1;
   return 0;
 }

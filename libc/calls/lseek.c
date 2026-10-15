@@ -80,14 +80,15 @@
 int64_t lseek(int fd, int64_t offset, int whence) {
   int64_t rc;
   int hwhence = __whence2host(whence);
-  if (hwhence == -1) {
-    rc = einval();
-  } else if (__isfdkind(fd, kFdProc)) {
-    rc = _weaken(__procfs_seek)((struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, offset, whence);
-  } else if (__isfdkind(fd, kFdZip)) {
+  // ZipOS implements its own seek modes independently of the host kernel.
+  if (__isfdkind(fd, kFdZip)) {
     rc = _weaken(__zipos_seek)(
         (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, offset,
         whence);
+  } else if (hwhence == -1) {
+    rc = einval();
+  } else if (__isfdkind(fd, kFdProc)) {
+    rc = _weaken(__procfs_seek)((struct ProcfsHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, offset, whence);
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd()) {
     rc = sys_lseek(fd, offset, hwhence, 0);
   } else if (IsNetbsd()) {

@@ -28,6 +28,7 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #include "libc/thread/thread.h"
+#include "libc/sysv/consts/seek.h"
 
 textwindows static int64_t GetPosition(struct Fd *f, int whence) {
   switch (whence) {
@@ -76,6 +77,18 @@ textwindows int64_t sys_lseek_nt(int fd, int64_t offset, int whence) {
         return espipe();
       default:
         break;
+    }
+    // no holes are known, so data runs to the end of the file; the
+    // position moves there like a seek from the start
+    if (whence == SEEK_DATA || whence == SEEK_HOLE) {
+      struct NtByHandleFileInformation wst;
+      if (!GetFileInformationByHandle(f->handle, &wst))
+        return __winerr();
+      int64_t size = (wst.nFileSizeHigh + 0ull) << 32 | wst.nFileSizeLow;
+      if (offset < 0 || offset >= size)
+        return enxio();
+      offset = whence == SEEK_DATA ? offset : size;
+      whence = SEEK_SET;
     }
     int64_t res;
     if (f->cursor)

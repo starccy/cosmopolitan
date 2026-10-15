@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/state.internal.h"
 #include "libc/calls/struct/rlimit.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
@@ -57,6 +58,25 @@ static int close_range_emu(unsigned first, unsigned last, unsigned flags) {
   return 0;
 }
 
+// a zip descriptor goes through close() for its handle; the rest the
+// kernel closes, and their table entries forget any index node
+static int close_range_bundle(unsigned first, unsigned last) {
+  unsigned start = first;
+  for (unsigned fd = first; fd < __get_pib()->fds.n && fd <= last; ++fd) {
+    if (__isfdkind(fd, kFdZip)) {
+      if (start < fd && sys_close_range(start, fd - 1, 0)) return -1;
+      close(fd);
+      start = fd + 1;
+    }
+  }
+  return start <= last ? sys_close_range(start, last, 0) : 0;
+}
+
+static void forget_nodes(unsigned first, unsigned last) {
+  for (unsigned fd = first; fd < __get_pib()->fds.n && fd <= last; ++fd)
+    __get_pib()->fds.p[fd].zipdir = 0;
+}
+
 /**
  * Closes inclusive range of file descriptors.
  *
@@ -78,8 +98,36 @@ static int close_range_emu(unsigned first, unsigned last, unsigned flags) {
  */
 int close_range(unsigned int first, unsigned int last, unsigned int flags) {
   int rc;
+  if (first > last || (flags & ~(CLOSE_RANGE_CLOEXEC | CLOSE_RANGE_UNSHARE)))
+    return einval();
   if (IsLinux() || IsFreebsd()) {
+    if (__vforked) return sys_close_range(first, last, flags);
+    __fds_lock();
+    // a zip handle is process state the kernel table can't carry
+    if (flags & CLOSE_RANGE_UNSHARE) {
+      for (unsigned i = 0; i < __get_pib()->fds.n; ++i) {
+        if (__isfdkind(i, kFdZip)) {
+          __fds_unlock();
+          return einval();
+        }
+      }
+    }
+    if (!(flags & CLOSE_RANGE_CLOEXEC)) {
+      unsigned end = last < __get_pib()->fds.n ? last : __get_pib()->fds.n - 1;
+      for (unsigned i = first; __get_pib()->fds.n && i <= end; ++i) {
+        if (__isfdkind(i, kFdZip)) {
+          __fds_unlock();
+          rc = close_range_bundle(first, last);
+          __fds_lock();
+          forget_nodes(first, last);
+          __fds_unlock();
+          return rc;
+        }
+      }
+      forget_nodes(first, last);
+    }
     rc = sys_close_range(first, last, flags);
+    __fds_unlock();
   } else {
     rc = close_range_emu(first, last, flags);
   }

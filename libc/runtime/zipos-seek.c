@@ -22,6 +22,7 @@
 #include "libc/limits.h"
 #include "libc/runtime/zipos.internal.h"
 #include "libc/stdckdint.h"
+#include "libc/sysv/consts/seek.h"
 #include "libc/sysv/errfuns.h"
 
 static int64_t Seek(int64_t pos, int64_t offset) {
@@ -41,7 +42,11 @@ static int64_t Seek(int64_t pos, int64_t offset) {
  * Changes current position of zip file handle.
  *
  * @param offset is the relative byte count
- * @param whence can be SEEK_SET, SEEK_CUR, or SEEK_END
+ * ZIP members have no logical holes, regardless of compression or zero
+ * bytes in their contents. SEEK_DATA returns offset and SEEK_HOLE returns
+ * the file size, provided offset is within the file.
+ *
+ * @param whence can be SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, or SEEK_HOLE
  * @return new position relative to beginning, or -1 on error
  * @asyncsignalsafe
  */
@@ -62,6 +67,16 @@ Restart:
         break;
       case SEEK_END:
         new_pos = Seek(h->size, offset);
+        break;
+      case SEEK_DATA:
+      case SEEK_HOLE:
+        if (offset < 0) {
+          new_pos = einval();
+        } else if ((uint64_t)offset >= h->size) {
+          new_pos = enxio();
+        } else {
+          new_pos = whence == SEEK_DATA ? offset : Seek(h->size, 0);
+        }
         break;
       default:
         new_pos = einval();

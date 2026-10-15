@@ -26,6 +26,7 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/o.h"
+#include "libc/sysv/consts/seek.h"
 #include "libc/testlib/hyperion.h"
 #include "libc/testlib/subprocess.h"
 #include "libc/testlib/testlib.h"
@@ -113,6 +114,56 @@ TEST(zipos, lseek) {
   EXPECT_SYS(0, 512, read(3, b1, 512));
   EXPECT_EQ(0, memcmp(b1, b2, 512));
   EXPECT_SYS(0, 0, close(3));
+}
+
+TEST(zipos, seekDataAndHole) {
+  char buf[16];
+  int fd, other;
+  ASSERT_NE(-1, (fd = open("/zip/libc/testlib/hyperion.txt", O_RDONLY)));
+  ASSERT_NE(-1, (other = dup(fd)));
+  // Compression does not create holes in the logical file.
+  ASSERT_SYS(0, 0, lseek(fd, 0, SEEK_DATA));
+  ASSERT_SYS(0, 1024, lseek(fd, 1024, SEEK_DATA));
+  ASSERT_SYS(0, 1024, lseek(other, 0, SEEK_CUR));
+  ASSERT_SYS(0, sizeof(buf), read(other, buf, sizeof(buf)));
+  ASSERT_EQ(0, memcmp(buf, kHyperion + 1024, sizeof(buf)));
+  ASSERT_SYS(0, 1024 + sizeof(buf), lseek(fd, 0, SEEK_CUR));
+  ASSERT_SYS(0, kHyperionSize - 1, lseek(fd, kHyperionSize - 1, SEEK_DATA));
+  ASSERT_SYS(0, kHyperionSize, lseek(fd, 0, SEEK_HOLE));
+  ASSERT_SYS(0, kHyperionSize, lseek(other, 0, SEEK_CUR));
+  ASSERT_SYS(0, 0, read(other, buf, sizeof(buf)));
+  ASSERT_SYS(0, kHyperionSize, lseek(fd, 1024, SEEK_HOLE));
+  ASSERT_SYS(0, kHyperionSize, lseek(fd, kHyperionSize - 1, SEEK_HOLE));
+  ASSERT_SYS(0, 0, close(other));
+  ASSERT_SYS(0, 0, close(fd));
+}
+
+TEST(zipos, seekDataAndHoleErrorsPreservePosition) {
+  int fd;
+  const int modes[] = {SEEK_DATA, SEEK_HOLE};
+  const int64_t beyond[] = {kHyperionSize, kHyperionSize + 1, INT64_MAX};
+  ASSERT_NE(-1, (fd = open("/zip/libc/testlib/hyperion.txt", O_RDONLY)));
+  ASSERT_SYS(0, 7, lseek(fd, 7, SEEK_SET));
+  for (unsigned i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
+    ASSERT_SYS(EINVAL, -1, lseek(fd, -1, modes[i]));
+    ASSERT_SYS(0, 7, lseek(fd, 0, SEEK_CUR));
+    ASSERT_SYS(EINVAL, -1, lseek(fd, INT64_MIN, modes[i]));
+    ASSERT_SYS(0, 7, lseek(fd, 0, SEEK_CUR));
+    for (unsigned j = 0; j < sizeof(beyond) / sizeof(beyond[0]); ++j) {
+      ASSERT_SYS(ENXIO, -1, lseek(fd, beyond[j], modes[i]));
+      ASSERT_SYS(0, 7, lseek(fd, 0, SEEK_CUR));
+    }
+  }
+  ASSERT_SYS(0, 0, close(fd));
+}
+
+TEST(zipos, seekDataAndHoleEmpty) {
+  struct ZiposHandle h = {.size = 0, .pos = 5};
+  ASSERT_SYS(ENXIO, -1, __zipos_seek(&h, 0, SEEK_DATA));
+  ASSERT_SYS(ENXIO, -1, __zipos_seek(&h, 0, SEEK_HOLE));
+  ASSERT_SYS(ENXIO, -1, __zipos_seek(&h, 1, SEEK_DATA));
+  ASSERT_SYS(ENXIO, -1, __zipos_seek(&h, 1, SEEK_HOLE));
+  ASSERT_EQ(5, h.pos);
 }
 
 TEST(zipos, closeAfterVfork) {

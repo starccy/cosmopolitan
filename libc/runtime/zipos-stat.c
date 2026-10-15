@@ -38,6 +38,7 @@ int __zipos_stat(struct ZiposUri *name, struct stat *st) {
     return -1;
   if (__zipos_stat_impl(zipos, cf, st))
     return -1;
+  if (name->isvirtual) st->st_mode = 0040000 | 0555;
   st->st_ino = __zipos_inode(zipos, cf, name->path, name->len);
   return 0;
 }

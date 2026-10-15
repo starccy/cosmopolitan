@@ -30,6 +30,7 @@
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/intrin/weaken.h"
+#include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/errfuns.h"
 
 
@@ -151,6 +152,9 @@ int __getcwd(char *buf, size_t size) {
   int rc;
   if (size && kisdangerous(buf)) {
     rc = efault();
+  } else if (_weaken(__zipos_getcwd) &&
+             (rc = _weaken(__zipos_getcwd)(buf, size))) {
+    // the working directory is inside the zip
   } else if (IsLinux() || IsNetbsd()) {
     rc = sys_getcwd(buf, size);
   } else if (IsXnu()) {

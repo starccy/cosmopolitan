@@ -44,7 +44,6 @@
  * @raise ENOTDIR if `path` is a regular file that exists
  * @raise ENOMEM if insufficient memory was available
  * @raise EFAULT if `path` points to invalid memory
- * @raise ENOTSUP if `path` is a `/zip/...` file
  * @raise ENAMETOOLONG if `path` was too long
  * @raise ENOENT if `path` is empty string
  * @raise ENOENT if `path` doesn't exist
@@ -53,8 +52,8 @@
  * @see fchdir()
  */
 int chdir(const char *path) {
-  int rc;
-  struct ZiposUri zipname;
+  int rc, zr;
+  char zbuf[ZIPOS_PATH_MAX + 8];
   if (_weaken(__get_tmpdir))
     _weaken(__get_tmpdir)();
   if (_weaken(GetAddr2linePath))
@@ -63,13 +62,17 @@ int chdir(const char *path) {
     _weaken(GetProgramExecutableName)();
   if (kisdangerous(path)) {
     rc = efault();
-  } else if (_weaken(__zipos_parseuri) &&
-             _weaken(__zipos_parseuri)(path, &zipname) != -1) {
-    rc = enotsup();
-  } else if (!IsWindows()) {
-    rc = sys_chdir(path);
+  } else if (_weaken(__zipos_chdir) &&
+             (zr = _weaken(__zipos_chdir)(&path, zbuf, sizeof(zbuf)))) {
+    rc = zr == 1 ? 0 : -1;
   } else {
-    rc = sys_chdir_nt(path);
+    if (!IsWindows()) {
+      rc = sys_chdir(path);
+    } else {
+      rc = sys_chdir_nt(path);
+    }
+    if (!rc && _weaken(__zipos_incwd))
+      *_weaken(__zipos_incwd) = false;
   }
   STRACE("%s(%#s) → %d% m", "chdir", path, rc);
   return rc;

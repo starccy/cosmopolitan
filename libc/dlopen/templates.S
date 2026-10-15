@@ -40,12 +40,6 @@
 	push	%rsi
 	push	%rdi
 	sub	$MS2SYSV_FRAME,%rsp
-	i = 0
-	.rept	MS2SYSV_COPY
-	mov	64+i*8(%rbp),%rax
-	mov	%rax,i*8(%rsp)
-	i = i + 1
-	.endr
 	.irp	r,6,7,8,9,10,11,12,13,14,15
 	movaps	%xmm\r,MS2SYSV_ARGS+(\r-6)*16(%rsp)
 	.endr
@@ -53,8 +47,41 @@
 	mov	%rdx,%rsi
 	mov	%r8,%rdx
 	mov	%r9,%rcx
-	mov	48(%rbp),%r8
-	mov	56(%rbp),%r9
+//	the count of stack arguments isn't known. the window of sixteen
+//	past the sixth is copied down, but never past the TEB's StackBase:
+//	a fresh host thread or fiber may have less than that above the
+//	frame. a frame outside StackLimit..StackBase is on a stack the TEB
+//	doesn't describe, and gets the whole window
+	lea	48(%rbp),%rax
+	lea	64+MS2SYSV_ARGS(%rbp),%r10
+	mov	%gs:8,%r11
+	cmp	%r11,%rax
+	jae	.Lms2sysv_limit\@
+	cmp	%gs:16,%rax
+	jb	.Lms2sysv_limit\@
+	cmp	%r11,%r10
+	cmova	%r11,%r10
+.Lms2sysv_limit\@:
+	sub	$8,%r10
+	xor	%r8d,%r8d
+	xor	%r9d,%r9d
+	cmp	%r10,%rax
+	ja	.Lms2sysv_call\@
+	mov	(%rax),%r8
+	add	$8,%rax
+	cmp	%r10,%rax
+	ja	.Lms2sysv_call\@
+	mov	(%rax),%r9
+	xor	%eax,%eax
+.Lms2sysv_copy\@:
+	lea	64(%rbp,%rax),%r11
+	cmp	%r10,%r11
+	ja	.Lms2sysv_call\@
+	mov	(%r11),%r11
+	mov	%r11,(%rsp,%rax)
+	add	$8,%rax
+	jmp	.Lms2sysv_copy\@
+.Lms2sysv_call\@:
 	call	*\func(%rip)
 	.irp	r,6,7,8,9,10,11,12,13,14,15
 	movaps	MS2SYSV_ARGS+(\r-6)*16(%rsp),%xmm\r
@@ -78,6 +105,9 @@ __tmpl_jump_end:
 	.balign	8
 __tmpl_ms2sysv:
 	ms2sysv	1f
+//	Keep the parameter slot last and reject growth beyond CTRAMP.
+//	.org also works when branch relaxation makes .if sizes nonconstant.
+	.org	__tmpl_ms2sysv+512-8,0x90
 	slots	__tmpl_ms2sysv
 1:	.quad	0
 __tmpl_ms2sysv_end:
@@ -326,11 +356,7 @@ __tmpl_vtramp_count:
 	.if	__tmpl_jump_end-__tmpl_jump > 16
 	.error	"__tmpl_jump is bigger than TRAMP"
 	.endif
-#ifdef __x86_64__
-	.if	__tmpl_ms2sysv_end-__tmpl_ms2sysv > 512
-	.error	"__tmpl_ms2sysv is bigger than CTRAMP"
-	.endif
-#endif
+//	__tmpl_ms2sysv enforces its CTRAMP limit with .org above.
 	.irp	n,VTRAMPS
 	.if	.Lvtramp\n\()_end-.Lvtramp\n > 512
 	.error	"a vtramp is bigger than VTRAMP"

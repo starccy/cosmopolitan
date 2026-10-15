@@ -110,6 +110,7 @@ ssize_t __zipos_scan(struct Zipos *zipos, struct ZiposUri *name) {
 
 // support code for open(), stat(), and access()
 ssize_t __zipos_find(struct Zipos *zipos, struct ZiposUri *name) {
+  if (name->isvirtual) return ZIPOS_SYNTHETIC_DIRECTORY;
   ssize_t cf;
   if ((cf = __zipos_scan(zipos, name)) == -1) {
     // test if parent component exists that isn't a directory

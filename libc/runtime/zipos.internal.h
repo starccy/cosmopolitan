@@ -2,6 +2,10 @@
 #define COSMOPOLITAN_LIBC_ZIPOS_ZIPOS_H_
 COSMOPOLITAN_C_START_
 
+#include "libc/calls/internal.h"
+#include "libc/intrin/weaken.h"
+#include "libc/sysv/consts/at.h"
+
 #define ZIPOS_PATH_MAX 1024
 
 #define ZIPOS_SYNTHETIC_DIRECTORY 0
@@ -14,11 +18,15 @@ COSMOPOLITAN_C_START_
 
 struct stat;
 struct iovec;
+struct dirent;
 struct Zipos;
 
 struct ZiposUri {
+  bool isvirtual;
   uint32_t len;
   char path[ZIPOS_PATH_MAX];
+  const char *alias;  // public spelling of a mapped directory, the caller's string
+  size_t node;        // the index node the public path is, or zero
 };
 
 struct ZiposHandle {
@@ -27,6 +35,8 @@ struct ZiposHandle {
   size_t size;
   size_t mapsize;
   size_t cfile;
+  bool isvirtual;
+  size_t aliasoff;
   _ZIPOS_ATOMIC(size_t) refs;
   _ZIPOS_ATOMIC(size_t) pos;
   uint8_t *mem;
@@ -50,13 +60,44 @@ bool __zipos_initializing(void);
 size_t __zipos_normpath(char *, const char *, size_t);
 const char *__zipos_remap(const char *, char *, size_t);
 bool __zipos_remap_active(void);
-const char *__zipos_atpath(int *, const char *, char *, size_t);
+int __zipos_lookup(const char *, struct ZiposUri *);
+const char *__zipos_dirpath(size_t, char *, size_t);
+bool __zipos_present(size_t);
+bool __zipos_ischild(size_t, const char *);
+size_t __zipos_child(size_t, size_t, struct dirent *);
+size_t __zipos_fdnode(int);
+void __zipos_setfdnode(int, int, const char *);
+int __zipos_resolve_slow(int *, const char **, char *, size_t,
+                         struct ZiposUri *);
+extern int __zipos_bundle_state;  // 0 not loaded, 1 no mappings, 2 otherwise
+extern bool __zipos_incwd;        // the working directory is in the zip
+int __zipos_chdir(const char **, char *, size_t);
+int __zipos_fchdir(int);
+int __zipos_getcwd(char *, size_t);
+const char *__zipos_cwdjoin(const char *, char *, size_t);
+
+// resolves a path for openat() and friends; see __zipos_resolve_slow().
+// with no mappings, only an explicit /zip path or a zip directory
+// descriptor needs the index
+forceinline int __zipos_resolve(int *dirfd, const char **path, char *buf,
+                                size_t cap, struct ZiposUri *out) {
+  const char *p = *path;
+  if (!_weaken(__zipos_resolve_slow))
+    return 0;
+  if (*_weaken(__zipos_bundle_state) == 1 &&
+      (p[0] == '/' ? !(p[1] == 'z' && p[2] == 'i' && p[3] == 'p' &&
+                       (!p[4] || p[4] == '/'))
+                   : !__isfdkind(*dirfd, kFdZip) &&
+                         !(*dirfd == AT_FDCWD && *_weaken(__zipos_incwd))))
+    return 0;
+  return _weaken(__zipos_resolve_slow)(dirfd, path, buf, cap, out);
+}
 ssize_t __zipos_find(struct Zipos *, struct ZiposUri *);
 ssize_t __zipos_scan(struct Zipos *, struct ZiposUri *);
 ssize_t __zipos_parseuri(const char *, struct ZiposUri *);
 uint64_t __zipos_inode(struct Zipos *, int64_t, const void *, size_t);
 int __zipos_open(struct ZiposUri *, int);
-void __zipos_postdup(int, int);
+int __zipos_postdup(int, int);
 int __zipos_access(struct ZiposUri *, int);
 int __zipos_stat(struct ZiposUri *, struct stat *);
 int __zipos_fstat(struct ZiposHandle *, struct stat *);

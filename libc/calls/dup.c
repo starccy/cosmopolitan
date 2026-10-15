@@ -56,9 +56,10 @@ int dup(int fd) {
   int rc;
   if (!IsWindows()) {
     rc = sys_dup(fd);
-    if (rc != -1 && __isfdkind(fd, kFdZip)) {
-      _weaken(__zipos_postdup)(fd, rc);
-    } else if (rc != -1 && __isfdkind(fd, kFdProc)) {
+    if (rc != -1 && _weaken(__zipos_postdup)) {
+      rc = _weaken(__zipos_postdup)(fd, rc);
+    }
+    if (rc != -1 && __isfdkind(fd, kFdProc)) {
       _weaken(__procfs_postdup)(fd, rc);
     }
   } else {

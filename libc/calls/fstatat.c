@@ -80,6 +80,7 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
   // execve() depends on this
   int rc;
   struct ZiposUri zipname;
+  int zr;
   char zbuf[ZIPOS_PATH_MAX + 8];
   if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT)) {
     rc = einval();
@@ -95,11 +96,10 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
   } else if (_weaken(__procfs_stat) &&
              (rc = _weaken(__procfs_stat)(dirfd, path, st, flags)) != -2) {
     // the /proc emulation answered
-  } else if (_weaken(__zipos_atpath) &&
-             !(path = _weaken(__zipos_atpath)(&dirfd, path, zbuf, sizeof(zbuf)))) {
+  } else if ((zr = __zipos_resolve(&dirfd, &path, zbuf, sizeof(zbuf),
+                                   &zipname)) == -1) {
     rc = -1;
-  } else if (_weaken(__zipos_stat) &&
-             _weaken(__zipos_parseuri)(path, &zipname) != -1) {
+  } else if (zr) {
     rc = _weaken(__zipos_stat)(&zipname, st);
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     rc = sys_fstatat(dirfd, path, st, flags);

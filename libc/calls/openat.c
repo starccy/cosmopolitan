@@ -182,6 +182,7 @@ int openat(int dirfd, const char *path, int flags, ...) {
   unsigned mode;
   struct stat st;
   struct ZiposUri zipname;
+  int zr;
   char zbuf[ZIPOS_PATH_MAX + 8];
   va_start(va, flags);
   mode = va_arg(va, unsigned);
@@ -202,11 +203,10 @@ int openat(int dirfd, const char *path, int flags, ...) {
     // feature for anything but temporary files, we are going to prevent
     // the clever use cases for now; please file an issue if you want it
     rc = einval();
-  } else if (_weaken(__zipos_atpath) &&
-             !(path = _weaken(__zipos_atpath)(&dirfd, path, zbuf, sizeof(zbuf)))) {
+  } else if ((zr = __zipos_resolve(&dirfd, &path, zbuf, sizeof(zbuf),
+                                   &zipname)) == -1) {
     rc = -1;
-  } else if (_weaken(__zipos_open) &&
-             _weaken(__zipos_parseuri)(path, &zipname) != -1) {
+  } else if (zr) {
     if (!__vforked) {
       rc = _weaken(__zipos_open)(&zipname, flags);
     } else {

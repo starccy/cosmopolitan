@@ -31,7 +31,9 @@
 	.yoink	__zipos_read
 	.yoink	__zipos_stat
 	.yoink	__zipos_notat
-	.yoink	__zipos_atpath
+	.yoink	__zipos_resolve_slow
+	.yoink	__zipos_fdnode
+	.yoink	__zipos_setfdnode
 	.yoink	__zipos_mmap
 	.yoink  __zipos_postdup
 	.yoink  __zipos_keep

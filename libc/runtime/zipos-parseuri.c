@@ -24,6 +24,18 @@
  */
 ssize_t __zipos_parseuri(const char *uri, struct ZiposUri *out) {
   size_t len;
+  char joined[ZIPOS_PATH_MAX + 8];
+  out->isvirtual = false;
+  out->alias = 0;
+  out->node = 0;
+  if (uri[0] != '/' && uri[0] && __zipos_incwd) {
+    // relative to a working directory inside the zip
+    if (!__zipos_cwdjoin(uri, joined, sizeof(joined)))
+      return -1;
+    uri = joined;
+  }
+  if (uri[0] == '/' && strncmp(uri, "/zip/", 5) && strcmp(uri, "/zip"))
+    return __zipos_lookup(uri, out) == 1 ? (ssize_t)out->len : -1;
   if ((uri[0] == '/' &&  //
        uri[1] == 'z' &&  //
        uri[2] == 'i' &&  //
