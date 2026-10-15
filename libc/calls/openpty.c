@@ -20,6 +20,7 @@
 #include "libc/calls/blockcancel.internal.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/pty.internal.h"
+#include "libc/sysv/pib.h"
 #include "libc/calls/struct/metatermios.internal.h"
 #include "libc/calls/struct/termios.h"
 #include "libc/calls/struct/winsize.h"
@@ -98,7 +99,9 @@ int openpty(int *mfd, int *sfd, char *name,  //
   if (IsWindows()) {
     rc = sys_openpty_nt(mfd, sfd, wsz);
     if (!rc && name)
-      strcpy(name, "/dev/pty");
+      __pty_name_nt(__get_pib()->fds.p + *mfd, name, 32);
+    if (!rc && tio)
+      tcsetattr(*sfd, TCSANOW, tio);
   } else {
     rc = openpty_impl(mfd, sfd, name, tio, wsz);
   }

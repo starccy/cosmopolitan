@@ -16,7 +16,9 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
@@ -39,8 +41,12 @@ int posix_openpt(int flags) {
     rc = einval();
   } else if (IsLinux() || IsXnu() || IsNetbsd()) {
     rc = sys_openat(AT_FDCWD, "/dev/ptmx", flags, 0);
+    if (rc != -1 && IsXnu())
+      __ptmx_opened_xnu(rc);
   } else if (IsOpenbsd()) {
     rc = sys_openat(AT_FDCWD, "/dev/ptm", flags, 0);
+  } else if (IsWindows()) {
+    rc = __pty_posix_openpt_nt(flags);
   } else if (IsFreebsd()) {
     rc = sys_posix_openpt(flags);
     if (rc == -1 && errno == ENOSPC)

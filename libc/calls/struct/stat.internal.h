@@ -8,6 +8,7 @@ int sys_fstat(int, struct stat *);
 int sys_fstatat(int, const char *, struct stat *, int);
 int sys_fstat_nt(int, struct stat *);
 int sys_fstat_nt_char(int, struct stat *);
+int sys_fstat_nt_devdir(int, struct stat *);
 int sys_fstat_nt_handle(int64_t, const char16_t *, struct stat *, int);
 int sys_fstat_nt_handle_exec(int64_t, const char16_t *, int, struct stat *,
                              int);

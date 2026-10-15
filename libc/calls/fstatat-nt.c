@@ -17,6 +17,8 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/struct/stat.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
@@ -72,23 +74,43 @@ textwindows int sys_fstatat_nt(int dirfd, const char *path, struct stat *st,
   if ((flags & AT_SYMLINK_NOFOLLOW) && NamesDirectoryItself(path))
     flags &= ~AT_SYMLINK_NOFOLLOW;
 
-  // handle special files
-  if (startswith(path, "/dev/")) {
+  // the devices open-nt.c makes up, answered the same way here
+  char devbuf[32];
+  const char *dev = __devname(path, devbuf);
+  if (dev) {
     int fd;
-    if (!strcmp(path + 5, "tty")) {
+    if (!*dev) {
+      return sys_fstat_nt_devdir(1, st);
+    } else if (!strcmp(dev, "pts")) {
+      return sys_fstat_nt_devdir(2, st);
+    } else if (!strcmp(dev, "fd")) {
+      return sys_fstat_nt_devdir(3, st);
+    } else if (!strcmp(dev, "tty")) {
       return sys_fstat_nt_char(kFdConsole, st);
-    } else if (!strcmp(path + 5, "null")) {
+    } else if (!strcmp(dev, "null")) {
       return sys_fstat_nt_char(kFdDevNull, st);
-    } else if (!strcmp(path + 5, "random") || !strcmp(path + 5, "urandom") ||
-               !strcmp(path + 5, "zero")) {
+    } else if (!strcmp(dev, "random") || !strcmp(dev, "urandom") ||
+               !strcmp(dev, "zero") || !strcmp(dev, "full") ||
+               !strcmp(dev, "ptmx")) {
       return sys_fstat_nt_char(kFdDevRandom, st);
-    } else if (!strcmp(path + 5, "stdin")) {
-      return sys_fstat_nt(STDIN_FILENO, st);
-    } else if (!strcmp(path + 5, "stdout")) {
-      return sys_fstat_nt(STDOUT_FILENO, st);
-    } else if (!strcmp(path + 5, "stderr")) {
-      return sys_fstat_nt(STDERR_FILENO, st);
-    } else if (startswith(path + 5, "fd/") && (fd = Atoi(path + 8)) != -1) {
+    } else if (!strcmp(dev, "stdin")) {
+      fd = STDIN_FILENO;
+    } else if (!strcmp(dev, "stdout")) {
+      fd = STDOUT_FILENO;
+    } else if (!strcmp(dev, "stderr")) {
+      fd = STDERR_FILENO;
+    } else if (startswith(dev, "fd/")) {
+      fd = Atoi(dev + 3);
+    } else if (startswith(dev, "pts/") && _weaken(__pty_exists_nt)) {
+      if ((fd = Atoi(dev + 4)) != -1 && _weaken(__pty_exists_nt)(fd))
+        return sys_fstat_nt_char(kFdConsole, st);
+      return enoent();
+    } else {
+      fd = -2;  // a name that isn't ours
+    }
+    if (fd != -2) {
+      if (fd == -1 || !__isfdopen(fd))
+        return enoent();
       return sys_fstat_nt(fd, st);
     }
   }

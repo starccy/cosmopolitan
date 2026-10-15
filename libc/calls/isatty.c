@@ -45,7 +45,7 @@ bool32 isatty(int fd) {
     res = false;
   } else if (IsWindows() || IsMetal()) {
     res = sys_isatty(fd);
-  } else if (!sys_ioctl(fd, __ioctl2host(TIOCGWINSZ), &ws)) {
+  } else if (!__ioctl_tty_xnu(fd, __ioctl2host(TIOCGWINSZ), &ws)) {
     res = true;
   } else {
     res = false;

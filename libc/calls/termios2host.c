@@ -24,6 +24,8 @@
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/termios.h"
 
+#define IBSHIFT 16  // linux: the input speed bits of c_cflag
+
 /*
  * struct termios is Linux's on the outside. The BSDs keep the same
  * fields with their own bit positions, c_cc indices and a wider layout
@@ -217,7 +219,15 @@ static void termios2bsd(struct termios_bsd *b, const struct termios *lt) {
   // a null speed makes bsd hang up the terminal
   if (!rate)
     rate = 9600;
-  b->_c_ispeed = rate;
+  // linux keeps an input speed of its own above IBSHIFT, 0 meaning the
+  // output speed
+  uint32_t icode = (lt->c_cflag >> IBSHIFT) & CBAUD;
+  uint32_t irate = !icode              ? rate
+                   : icode == BOTHER ? lt->_c_ispeed
+                                     : __baud2rate(icode);
+  if (!irate)
+    irate = rate;
+  b->_c_ispeed = irate;
   b->_c_ospeed = rate;
 }
 
@@ -236,6 +246,8 @@ static void bsd2termios(struct termios *lt, const struct termios_bsd *b) {
     lt->c_cc[kCcs[i].linux] = c;
   }
   lt->c_cflag |= __rate2baud(b->_c_ospeed);
+  if (b->_c_ispeed != b->_c_ospeed)
+    lt->c_cflag |= __rate2baud(b->_c_ispeed) << IBSHIFT;
   lt->_c_ispeed = b->_c_ispeed;
   lt->_c_ospeed = b->_c_ospeed;
 }

@@ -70,8 +70,13 @@ textwindows static ssize_t sys_write_nt_impl(int fd, void *data, size_t size,
       isconsole = true;
       break;
     case kFdDevRandom:
-      // not implemented, XNU returns eperm();
-      return eperm();
+      // linux takes writes to /dev/zero and /dev/urandom and drops them,
+      // and /dev/full is never not full
+      if (f->devdir)
+        return ebadf();
+      if (f->devfull)
+        return enospc();
+      return size;
     default:
       return ebadf();
   }

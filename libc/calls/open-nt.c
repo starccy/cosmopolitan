@@ -20,6 +20,7 @@
 #include "libc/calls/fifo.internal.h"
 #include "libc/intrin/weaken.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/syscall-nt.internal.h"
@@ -378,26 +379,51 @@ textwindows static int sys_open_nt_dispatch(int dirfd, const char *file,
                                             uint32_t flags, int32_t mode,
                                             int fd, sigset_t waitmask) {
   int oldfd;
-  if (startswith(file, "/dev/")) {
-    if (!strcmp(file + 5, "tty"))
-      return sys_open_nt_special(fd, flags, mode, kFdConsole, u"CONIN$");
-    if (!strcmp(file + 5, "null"))
-      return sys_open_nt_special(fd, flags, mode, kFdDevNull, u"NUL");
-    if (!strcmp(file + 5, "urandom") || !strcmp(file + 5, "random"))
+  char devbuf[32];
+  const char *dev = __devname(file, devbuf);
+  if (dev) {
+    // the directories, listed by dirstream.c
+    int devdir = !*dev ? 1 : !strcmp(dev, "pts") ? 2 : !strcmp(dev, "fd") ? 3 : 0;
+    if (devdir) {
+      if ((flags & O_ACCMODE) != O_RDONLY)
+        return eisdir();
+      __get_pib()->fds.p[fd].devdir = devdir;
       return sys_open_nt_no_handle(fd, flags, mode, kFdDevRandom);
-    if (!strcmp(file + 5, "zero")) {
+    }
+    if (flags & O_DIRECTORY)
+      return enotdir();
+    if (!strcmp(dev, "tty"))
+      return sys_open_nt_special(fd, flags, mode, kFdConsole, u"CONIN$");
+    if (!strcmp(dev, "null"))
+      return sys_open_nt_special(fd, flags, mode, kFdDevNull, u"NUL");
+    if (!strcmp(dev, "urandom") || !strcmp(dev, "random"))
+      return sys_open_nt_no_handle(fd, flags, mode, kFdDevRandom);
+    if (!strcmp(dev, "zero")) {
       __get_pib()->fds.p[fd].devzero = true;
       return sys_open_nt_no_handle(fd, flags, mode, kFdDevRandom);
     }
-    if (!strcmp(file + 5, "stdin"))
+    if (!strcmp(dev, "full")) {
+      __get_pib()->fds.p[fd].devfull = true;
+      return sys_open_nt_no_handle(fd, flags, mode, kFdDevRandom);
+    }
+    if (!strcmp(dev, "stdin"))
       return sys_open_nt_dup(fd, flags, mode, STDIN_FILENO);
-    if (!strcmp(file + 5, "stdout"))
+    if (!strcmp(dev, "stdout"))
       return sys_open_nt_dup(fd, flags, mode, STDOUT_FILENO);
-    if (!strcmp(file + 5, "stderr"))
+    if (!strcmp(dev, "stderr"))
       return sys_open_nt_dup(fd, flags, mode, STDERR_FILENO);
-    if (startswith(file + 5, "fd/"))
-      if ((oldfd = sys_open_nt_atoi(file + 8)) != -1)
+    if (startswith(dev, "fd/"))
+      if ((oldfd = sys_open_nt_atoi(dev + 3)) != -1)
         return sys_open_nt_dup(fd, flags, mode, oldfd);
+    if (startswith(dev, "pts/") && _weaken(__pty_open_slave_nt))
+      if ((oldfd = sys_open_nt_atoi(dev + 4)) != -1)
+        return _weaken(__pty_open_slave_nt)(fd, oldfd, flags, mode);
+#if SupportsWindows()
+    // a program that only opens /dev/ptmx and uses the pty ioctls has
+    // nothing else linking pty-nt.c in, so this reference is a strong one
+    if (!strcmp(dev, "ptmx"))
+      return __pty_open_master_nt(fd, flags);
+#endif
   }
   return sys_open_nt_file(dirfd, file, flags, mode, fd, waitmask);
 }

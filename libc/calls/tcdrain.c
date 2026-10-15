@@ -20,9 +20,11 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
+#include "libc/errno.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/strace.h"
 #include "libc/nt/files.h"
@@ -64,6 +66,8 @@ int tcdrain(int fd) {
     rc = sys_ioctl_cp(fd, TCSBRK, (uintptr_t)1);
   } else if (IsBsd()) {
     rc = sys_ioctl_cp(fd, TIOCDRAIN, 0);
+    if (rc == -1 && errno == ENOTTY && IsXnu())
+      rc = __ioctl_tty_xnu(fd, TIOCDRAIN, 0);
   } else if (IsWindows()) {
     rc = sys_tcdrain_nt(fd);
   } else {

@@ -16,7 +16,10 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/sysv/pib.h"
 #include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
@@ -47,7 +50,8 @@ int _ptsname(int fd, char *buf, size_t size) {
   size_t n;
   struct ptmget t;
 
-  if (_isptmaster(fd)) {
+  // windows answers ENOTTY for a non-master itself, as linux does
+  if (!IsWindows() && _isptmaster(fd)) {
     return -1;
   }
 
@@ -82,6 +86,11 @@ int _ptsname(int fd, char *buf, size_t size) {
     if (sys_ioctl(fd, TIOCPTSNAME, &t)) {
       return -1;
     }
+  } else if (IsWindows()) {
+    if (!__isfdopen(fd))
+      return ebadf();
+    if (__pty_name_nt(__get_pib()->fds.p + fd, t.sn, sizeof(t.sn)))
+      return -1;
   } else {
     return enosys();
   }

@@ -16,7 +16,11 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
+#include "libc/sysv/consts/fileno.h"
+#include "libc/calls/pty.internal.h"
+#include "libc/intrin/weaken.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
@@ -64,6 +68,14 @@ static int sys_faccessat_nt_dev(int amode, bool readable, bool writable) {
   if (amode == W_OK)
     if (!writable)
       return eacces();
+  return 0;
+}
+
+// /dev and /dev/pts: readable and searchable, not writable; /dev/fd is
+// one's own, which linux lets through
+static int sys_faccessat_nt_devdir(int amode, bool writable) {
+  if ((amode & W_OK) && !writable)
+    return eacces();
   return 0;
 }
 
@@ -140,25 +152,39 @@ textwindows int sys_faccessat_nt(int dirfd, const char *path, int amode,
   if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW))
     return einval();
 
-  // handle special files
-  if (startswith(path, "/dev/")) {
+  // the devices open-nt.c makes up. linux answers from the file's mode,
+  // which is rw for all of them, and /dev/stdin and friends resolve to
+  // whatever the descriptor is, so they're rw as long as it's open
+  char devbuf[32];
+  const char *dev = __devname(path, devbuf);
+  if (dev) {
     int fd;
-    if (!strcmp(path + 5, "tty")) {
+    if (!*dev || !strcmp(dev, "pts") || !strcmp(dev, "fd")) {
+      return sys_faccessat_nt_devdir(amode, !strcmp(dev, "fd"));
+    } else if (!strcmp(dev, "tty") || !strcmp(dev, "null") ||
+               !strcmp(dev, "zero") || !strcmp(dev, "full") ||
+               !strcmp(dev, "random") || !strcmp(dev, "urandom") ||
+               !strcmp(dev, "ptmx")) {
       return sys_faccessat_nt_dev(amode, true, true);
-    } else if (!strcmp(path + 5, "null")) {
+    } else if (!strcmp(dev, "stdin")) {
+      fd = STDIN_FILENO;
+    } else if (!strcmp(dev, "stdout")) {
+      fd = STDOUT_FILENO;
+    } else if (!strcmp(dev, "stderr")) {
+      fd = STDERR_FILENO;
+    } else if (startswith(dev, "fd/")) {
+      fd = Atoi(dev + 3);
+    } else if (startswith(dev, "pts/") && _weaken(__pty_exists_nt)) {
+      if ((fd = Atoi(dev + 4)) != -1 && _weaken(__pty_exists_nt)(fd))
+        return sys_faccessat_nt_dev(amode, true, true);
+      return enoent();
+    } else {
+      fd = -2;  // a name that isn't ours
+    }
+    if (fd != -2) {
+      if (fd == -1 || !__isfdopen(fd))
+        return enoent();
       return sys_faccessat_nt_dev(amode, true, true);
-    } else if (!strcmp(path + 5, "random") || !strcmp(path + 5, "urandom")) {
-      return sys_faccessat_nt_dev(amode, true, false);
-    } else if (!strcmp(path + 5, "stdin")) {
-      return sys_faccessat_nt_dev(amode, true, false);
-    } else if (!strcmp(path + 5, "stdout")) {
-      return sys_faccessat_nt_dev(amode, false, true);
-    } else if (!strcmp(path + 5, "stderr")) {
-      return sys_faccessat_nt_dev(amode, false, true);
-    } else if (startswith(path + 5, "fd/") && (fd = Atoi(path + 8)) != -1) {
-      return sys_faccessat_nt_dev(
-          amode, (__get_pib()->fds.p[fd].flags & O_ACCMODE) != O_WRONLY,
-          (__get_pib()->fds.p[fd].flags & O_ACCMODE) != O_RDONLY);
     }
   }
 

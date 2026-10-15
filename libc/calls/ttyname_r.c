@@ -61,6 +61,20 @@ static errno_t ttyname_freebsd(int fd, char *buf, size_t size) {
   }
 }
 
+#define F_GETPATH_XNU 50
+
+// clobbers errno
+static errno_t ttyname_xnu(int fd, char *buf, size_t size) {
+  char path[1024];
+  if (!isatty(fd))
+    return errno;
+  if (__sys_fcntl(fd, F_GETPATH_XNU, (uintptr_t)path) == -1)
+    strcpy(path, "/dev/tty");
+  if (strlcpy(buf, path, size) >= size)
+    return ERANGE;
+  return 0;
+}
+
 // clobbers errno
 static errno_t ttyname_linux(int fd, char *buf, size_t size) {
   ssize_t got;
@@ -98,8 +112,9 @@ errno_t ttyname_r(int fd, char *buf, size_t size) {
     res = ttyname_freebsd(fd, buf, size);
   } else if (IsWindows()) {
     res = sys_ttyname_nt(fd, buf, size);
+  } else if (IsXnu()) {
+    res = ttyname_xnu(fd, buf, size);
   } else {
-    // TODO(jart): Use that fstat(dev/ino) + readdir(/dev/) trick.
     if (strlcpy(buf, "/dev/tty", size) < size) {
       res = 0;
     } else {

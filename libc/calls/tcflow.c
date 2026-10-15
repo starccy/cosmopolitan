@@ -20,6 +20,7 @@
 #include "libc/calls/struct/metatermios.internal.h"
 #include "libc/calls/struct/termios.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
@@ -62,7 +63,7 @@ static const char *DescribeFlow(char buf[12], int action) {
 static int sys_tcflow_bsd_write(int fd, int cc) {
   unsigned char c;
   struct termios_bsd term;
-  if (sys_ioctl(fd, __host_TCGETS, &term) == -1) {
+  if (__ioctl_tty_xnu(fd, __host_TCGETS, &term) == -1) {
     return -1;
   }
   if ((c = term.c_cc[cc]) != __host__POSIX_VDISABLE &&
@@ -75,18 +76,18 @@ static int sys_tcflow_bsd_write(int fd, int cc) {
 static int sys_tcflow_bsd(int fd, int action) {
   switch (action) {
     case TCOOFF:
-      return sys_ioctl(fd, TIOCSTOP, 0);
+      return __ioctl_tty_xnu(fd, TIOCSTOP, 0);
     case TCOON:
-      return sys_ioctl(fd, TIOCSTART, 0);
+      return __ioctl_tty_xnu(fd, TIOCSTART, 0);
     case TCION:
       if (IsXnu()) {
-        return sys_ioctl(fd, TIOCIXON, 0);
+        return __ioctl_tty_xnu(fd, TIOCIXON, 0);
       } else {
         return sys_tcflow_bsd_write(fd, __host_VSTART);
       }
     case TCIOFF:
       if (IsXnu()) {
-        return sys_ioctl(fd, TIOCIXOFF, 0);
+        return __ioctl_tty_xnu(fd, TIOCIXOFF, 0);
       } else {
         return sys_tcflow_bsd_write(fd, __host_VSTOP);
       }

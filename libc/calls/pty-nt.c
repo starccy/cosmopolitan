@@ -35,6 +35,8 @@
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/thread/thread.h"
+#include "libc/fmt/itoa.h"
 #if SupportsWindows()
 
 /**
@@ -54,6 +56,30 @@
  * echo and VT translation come from conhost, not from here. Reading or
  * writing the slave descriptor directly bypasses all of that.
  */
+
+// the ptys this process made or inherited, by number, for opening a
+// slave by its /dev/pts/N name. a number is never reused
+static struct Pty *g_ptys;
+static int g_ptynum;
+static pthread_mutex_t g_ptylock = PTHREAD_MUTEX_INITIALIZER;
+
+textwindows static void PtyRegister(struct Pty *pty) {
+  pthread_mutex_lock(&g_ptylock);
+  pty->num = ++g_ptynum;
+  pty->next = g_ptys;
+  g_ptys = pty;
+  pthread_mutex_unlock(&g_ptylock);
+}
+
+textwindows static void PtyUnregister(struct Pty *pty) {
+  pthread_mutex_lock(&g_ptylock);
+  for (struct Pty **pp = &g_ptys; *pp; pp = &(*pp)->next)
+    if (*pp == pty) {
+      *pp = pty->next;
+      break;
+    }
+  pthread_mutex_unlock(&g_ptylock);
+}
 
 textwindows static bool SpawnHolder(struct Pty *pty) {
   char16_t exe[PATH_MAX];
@@ -108,9 +134,12 @@ textwindows int sys_openpty_nt(int *mfd, int *sfd, const struct winsize *wsz) {
   if (!pty)
     goto Fail;
   pty->owner = GetCurrentProcessId();
-  pty->ws.ws_col = wsz && wsz->ws_col ? wsz->ws_col : 80;
-  pty->ws.ws_row = wsz && wsz->ws_row ? wsz->ws_row : 24;
-  struct NtCoord size = {pty->ws.ws_col, pty->ws.ws_row};
+  // the console needs a size, the pty reports 0x0 until given one
+  if (wsz)
+    pty->ws = *wsz;
+  __pty_termios(&pty->tio);
+  struct NtCoord size = {pty->ws.ws_col ? pty->ws.ws_col : 80,
+                         pty->ws.ws_row ? pty->ws.ws_row : 24};
   if (CreatePseudoConsole(size, p[inp[0]].handle, p[outp[1]].handle, 0,
                           &pty->hpc)) {
     enotsup();
@@ -123,6 +152,13 @@ textwindows int sys_openpty_nt(int *mfd, int *sfd, const struct winsize *wsz) {
   // writes on the slave go straight to the master
   if (!DuplicateHandle(GetCurrentProcess(), p[outp[1]].handle,
                        GetCurrentProcess(), &sh, 0, true,
+                       kNtDuplicateSameAccess)) {
+    __winerr();
+    goto Fail;
+  }
+  // a slave opened by name later is a copy of this one
+  if (!DuplicateHandle(GetCurrentProcess(), p[live[1]].handle,
+                       GetCurrentProcess(), &pty->live_w, 0, true,
                        kNtDuplicateSameAccess)) {
     __winerr();
     goto Fail;
@@ -147,13 +183,17 @@ textwindows int sys_openpty_nt(int *mfd, int *sfd, const struct winsize *wsz) {
   p[live[1]].pty = pty;
   pty->refs = 2;
   pty->mrefs = 1;
+  pty->srefs = 1;
   __fds_unlock();
+  PtyRegister(pty);
   *mfd = outp[0];
   *sfd = live[1];
   return 0;
 Fail:;
   int e = errno;
   if (pty) {
+    if (pty->live_w)
+      CloseHandle(pty->live_w);
     if (pty->hold) {
       TerminateProcess(pty->hold, 0);
       CloseHandle(pty->hold);
@@ -172,6 +212,122 @@ Fail:;
   close(live[1]);
   errno = e;
   return -1;
+}
+
+/**
+ * Opens a pty whose slave is only there to be opened by name.
+ *
+ * The slave side stays alive, so the master doesn't hang up before the
+ * first open("/dev/pts/N"), which a forked child may be the one to do.
+ */
+textwindows int __pty_open_master_nt(int fd, int flags) {
+  int m, s;
+  if (sys_openpty_nt(&m, &s, 0) == -1)
+    return -1;
+  struct Fd *p = __get_pib()->fds.p;
+  struct Pty *pty = p[m].pty;
+  __fds_lock();
+  CloseHandle(p[s].handle);
+  __releasefd(s);
+  --pty->refs;
+  --pty->srefs;
+  p[fd] = p[m];
+  p[fd].flags = O_RDWR | (flags & (O_CLOEXEC | O_NONBLOCK));
+  __releasefd(m);
+  __fds_unlock();
+  return fd;
+}
+
+textwindows int __pty_posix_openpt_nt(int flags) {
+  int fd;
+  if ((fd = __reservefd(-1)) == -1)
+    return -1;
+  if (__pty_open_master_nt(fd, flags) == -1) {
+    __releasefd(fd);
+    return -1;
+  }
+  return fd;
+}
+
+/**
+ * Opens slave number num into descriptor fd, for open("/dev/pts/N").
+ */
+textwindows int __pty_open_slave_nt(int fd, int num, int flags, int mode) {
+  struct Pty *pty;
+  int64_t h;
+  pthread_mutex_lock(&g_ptylock);
+  for (pty = g_ptys; pty && pty->num != num; pty = pty->next) {
+  }
+  if (!pty || !pty->live_w) {
+    pthread_mutex_unlock(&g_ptylock);
+    return pty ? enxio() : enoent();
+  }
+  if (!DuplicateHandle(GetCurrentProcess(), pty->live_w, GetCurrentProcess(),
+                       &h, 0, true, kNtDuplicateSameAccess)) {
+    pthread_mutex_unlock(&g_ptylock);
+    return __winerr();
+  }
+  __fds_lock();
+  struct Fd *f = __get_pib()->fds.p + fd;
+  f->handle = h;
+  f->flags = O_RDWR | (flags & (O_CLOEXEC | O_NONBLOCK));
+  f->mode = 020620;
+  f->pty = pty;
+  f->ptymaster = false;
+  f->kind = kFdFile;
+  ++pty->refs;
+  ++pty->srefs;
+  __fds_unlock();
+  pthread_mutex_unlock(&g_ptylock);
+  return fd;
+}
+
+/**
+ * Whether /dev/pts/N names a pty this process knows.
+ */
+textwindows bool __pty_exists_nt(int num) {
+  struct Pty *pty;
+  pthread_mutex_lock(&g_ptylock);
+  for (pty = g_ptys; pty && pty->num != num; pty = pty->next) {
+  }
+  pthread_mutex_unlock(&g_ptylock);
+  return !!pty;
+}
+
+/**
+ * Lists the pty numbers this process knows, lowest first; returns how
+ * many there are, which may exceed max.
+ */
+textwindows int __pty_list_nt(int *nums, int max) {
+  int n = 0;
+  pthread_mutex_lock(&g_ptylock);
+  for (struct Pty *pty = g_ptys; pty; pty = pty->next, ++n)
+    if (n < max)
+      nums[n] = pty->num;
+  pthread_mutex_unlock(&g_ptylock);
+  int m = n < max ? n : max;
+  for (int i = 1; i < m; ++i)
+    for (int j = i; j > 0 && nums[j - 1] > nums[j]; --j) {
+      int t = nums[j];
+      nums[j] = nums[j - 1];
+      nums[j - 1] = t;
+    }
+  return n;
+}
+
+/**
+ * Writes the /dev/pts/N name of a master's slave; -1 w/ errno
+ */
+textwindows int __pty_name_nt(struct Fd *f, char *buf, size_t size) {
+  if (!f->pty || !f->ptymaster)
+    return enotty();
+  char tmp[32], *p = tmp;
+  p = stpcpy(p, "/dev/pts/");
+  p = FormatInt32(p, ((struct Pty *)f->pty)->num);
+  if ((size_t)(p - tmp) >= size)
+    return erange();
+  memcpy(buf, tmp, p - tmp + 1);
+  return 0;
 }
 
 textwindows int64_t __pty_write_handle(struct Fd *f) {
@@ -212,7 +368,15 @@ textwindows int __pty_close_nt(struct Fd *f) {
   int rc = 0;
   if (!CloseHandle(f->handle))
     rc = __winerr();
+  if (!f->ptymaster && !--pty->srefs && pty->live_w) {
+    CloseHandle(pty->live_w);
+    pty->live_w = 0;
+  }
   if (f->ptymaster && !--pty->mrefs) {
+    PtyUnregister(pty);
+    if (pty->live_w)
+      CloseHandle(pty->live_w);
+    pty->live_w = 0;
     CloseHandle(pty->in_w);
     CloseHandle(pty->out_w);
     CloseHandle(pty->live_r);
@@ -238,10 +402,24 @@ textwindows int __pty_getwinsize(struct Fd *f, struct winsize *ws) {
 textwindows int __pty_setwinsize(struct Fd *f, const struct winsize *ws) {
   struct Pty *pty = f->pty;
   pty->ws = *ws;
-  if (pty->owner == GetCurrentProcessId()) {
+  if (pty->owner == GetCurrentProcessId() && ws->ws_col && ws->ws_row) {
     struct NtCoord size = {ws->ws_col, ws->ws_row};
     ResizePseudoConsole(pty->hpc, size);
   }
+  return 0;
+}
+
+textwindows int __pty_tcgetattr(struct Fd *f, struct termios *tio) {
+  struct Pty *pty = f->pty;
+  *tio = pty->tio;
+  return 0;
+}
+
+// kept for tcgetattr() to read back; conhost's line discipline is what
+// a child on the pty actually gets
+textwindows int __pty_tcsetattr(struct Fd *f, const struct termios *tio) {
+  struct Pty *pty = f->pty;
+  pty->tio = *tio;
   return 0;
 }
 

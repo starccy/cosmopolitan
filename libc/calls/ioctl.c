@@ -51,8 +51,11 @@
 #include "libc/sock/struct/ifconf.h"
 #include "libc/sock/struct/ifreq.h"
 #include "libc/sock/struct/sockaddr.h"
+#include "libc/fmt/conv.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/at.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/arp.h"
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/consts/fio.h"
 #include "libc/sysv/consts/host.internal.h"
@@ -61,6 +64,7 @@
 #include "libc/sysv/consts/sio.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/thread/thread.h"
 #include "libc/sysv/errno.h"
 #include "libc/sysv/pib.h"
 
@@ -78,7 +82,65 @@ static struct HostAdapterInfoNode {
   struct sockaddr netmask;
   struct sockaddr broadcast;
   short flags;
+  unsigned short hwtype;  // ARPHRD_*, from IfType
+  unsigned char hwaddr[14];
 } *__hostInfo;
+
+static pthread_mutex_t g_ifmutex = PTHREAD_MUTEX_INITIALIZER;
+
+#define TIOCGPTN    0x80045430
+#define TIOCSPTLCK  0x40045431
+#define TIOCGPTPEER 0x5441
+
+// what linux does with these on a pty master, see pty-nt.c
+static int ioctl_pty_nt(int fd, unsigned long request, void *arg) {
+  if (!__isfdopen(fd))
+    return ebadf();
+  struct Fd *f = __get_pib()->fds.p + fd;
+  if (!f->pty || !f->ptymaster)
+    return enotty();
+  struct Pty *pty = f->pty;
+  if (request == TIOCGPTN) {
+    *(int *)arg = pty->num;
+    return 0;
+  }
+  if (request == TIOCSPTLCK)
+    return 0;
+  int nfd = __reservefd(-1);
+  if (nfd == -1)
+    return -1;
+  if (!_weaken(__pty_open_slave_nt) ||
+      _weaken(__pty_open_slave_nt)(nfd, pty->num, (int)(intptr_t)arg,
+                                   020620) == -1) {
+    __releasefd(nfd);
+    return -1;
+  }
+  return nfd;
+}
+
+#define TIOCPTYGNAME 0x40807453  // xnu
+#define TIOCPTYUNLK  0x20007452  // xnu
+
+// what linux does with these on a pty master, for xnu
+static int ioctl_pty_xnu(int fd, unsigned long request, void *arg) {
+  char name[128];
+  if (sys_ioctl(fd, TIOCPTYGNAME, name) == -1)
+    return -1;
+  if (request == TIOCGPTN) {
+    const char *p = name + strlen(name);
+    while (p > name && p[-1] >= '0' && p[-1] <= '9')
+      --p;
+    *(unsigned *)arg = atoi(p);
+    return 0;
+  }
+  if (request == TIOCSPTLCK) {
+    // xnu can't lock a slave back
+    if (*(int *)arg)
+      return 0;
+    return sys_ioctl(fd, TIOCPTYUNLK, 0);
+  }
+  return sys_openat(AT_FDCWD, name, (int)(intptr_t)arg, 0);
+}
 
 static int ioctl_default(int fd, unsigned long request, void *arg) {
   int rc;
@@ -205,6 +267,22 @@ static textwindows struct HostAdapterInfoNode *appendHostInfo(
 
   memcpy(node->name, baseName, IFNAMSIZ);
   node->ifindex = aa->IfIndex;
+  memcpy(node->hwaddr, aa->PhysicalAddress,
+         MIN(aa->PhysicalAddressLength, sizeof(node->hwaddr)));
+  switch (aa->IfType) {
+    case kNtIfTypeEthernetCsmacd:
+    case kNtIfTypeIeee80211:
+      node->hwtype = ARPHRD_ETHER;
+      break;
+    case kNtIfTypeSoftwareLoopback:
+      node->hwtype = ARPHRD_LOOPBACK;
+      break;
+    case kNtIfTypePpp:
+      node->hwtype = ARPHRD_PPP;
+      break;
+    default:
+      node->hwtype = ARPHRD_NONE;
+  }
 
   /* Are there more than a single unicast address ? */
   if (count > 0 || ((*ptrUA)->Next != NULL)) {
@@ -498,6 +576,34 @@ static textwindows int ioctl_siocgifaddr_nt(int fd, struct ifreq *ifr) {
   return 0;
 }
 
+// the adapter's physical address, in the ARPHRD_* numbering linux
+// uses for it; a loopback adapter has none, like linux's lo
+static textwindows int ioctl_siocgifhwaddr_nt(int fd, struct ifreq *ifr) {
+  struct HostAdapterInfoNode *node;
+  if (!__hostInfo && readAdapterAddresses() == -1)
+    return -1;
+  if (!(node = findAdapterByName(ifr->ifr_name)))
+    return enodev();
+  bzero(&ifr->ifr_hwaddr, sizeof(ifr->ifr_hwaddr));
+  ifr->ifr_hwaddr.sa_family = node->hwtype;
+  memcpy(ifr->ifr_hwaddr.sa_data, node->hwaddr, sizeof(node->hwaddr));
+  return 0;
+}
+
+// xnu lists every interface's link layer address in the NET_RT_IFLIST
+// sysctl, see ifname.c
+static int ioctl_siocgifhwaddr_xnu(int fd, struct ifreq *ifr) {
+  unsigned short type;
+  unsigned char addr[14];
+  int alen;
+  if (__xnu_ifhwaddr(ifr->ifr_name, &type, addr, &alen) == -1)
+    return -1;
+  bzero(&ifr->ifr_hwaddr, sizeof(ifr->ifr_hwaddr));
+  ifr->ifr_hwaddr.sa_family = type;
+  memcpy(ifr->ifr_hwaddr.sa_data, addr, MIN(alen, sizeof(ifr->ifr_hwaddr.sa_data)));
+  return 0;
+}
+
 /* Performs the SIOCGIFFLAGS operation */
 static textwindows int ioctl_siocgifflags_nt(int fd, struct ifreq *ifr) {
   struct HostAdapterInfoNode *node;
@@ -671,9 +777,15 @@ static int ioctl_tcgets(int fd, void *arg, bool two) {
     return -1;
   memcpy(arg, &t, KERNEL_TERMIOS_SIZE);
   if (two) {
-    uint32_t code = t.c_cflag & CBAUD;
+    // c_ispeed and c_ospeed of termios2: the output speed from CBAUD,
+    // the input one from CIBAUD when set, BOTHER meaning the fields
+    uint32_t ocode = t.c_cflag & CBAUD;
+    uint32_t icode = (t.c_cflag >> 16) & CBAUD;
     uint32_t speeds[2];
-    speeds[0] = speeds[1] = code == BOTHER ? t._c_ospeed : __baud2rate(code);
+    speeds[1] = ocode == BOTHER ? t._c_ospeed : __baud2rate(ocode);
+    speeds[0] = !icode             ? speeds[1]
+                : icode == BOTHER ? t._c_ispeed
+                                  : __baud2rate(icode);
     memcpy((char *)arg + KERNEL_TERMIOS_SIZE, speeds, sizeof(speeds));
   }
   return 0;
@@ -802,6 +914,10 @@ int ioctl(int fd, unsigned long request, ...) {
   va_end(va);
   if (request == FIONREAD) {
     rc = ioctl_fionread(fd, arg);
+  } else if (IsLinux() && (request == TCGETS2 || request == TCSETS2 ||
+                           request == TCSETSW2 || request == TCSETSF2)) {
+    // the kernel's own termios2, which carries BOTHER speeds
+    rc = sys_ioctl(fd, request, arg);
   } else if (request == TCGETS || request == TCGETS2) {
     rc = ioctl_tcgets(fd, arg, request == TCGETS2);
   } else if (request == TCSETS || request == TCSETSW || request == TCSETSF) {
@@ -809,6 +925,12 @@ int ioctl(int fd, unsigned long request, ...) {
   } else if (request == TCSETS2 || request == TCSETSW2 ||
              request == TCSETSF2) {
     rc = ioctl_tcsets(fd, arg, true, request - TCSETS2);
+  } else if (IsWindows() && (request == TIOCGPTN || request == TIOCSPTLCK ||
+                             request == TIOCGPTPEER)) {
+    rc = ioctl_pty_nt(fd, request, arg);
+  } else if (IsXnu() && (request == TIOCGPTN || request == TIOCSPTLCK ||
+                         request == TIOCGPTPEER)) {
+    rc = ioctl_pty_xnu(fd, request, arg);
   } else if (IsWindows() && request == TIOCSCTTY) {
     rc = __isfdopen(fd) && (__get_pib()->fds.p[fd].pty ||
                             __isfdkind(fd, kFdConsole))
@@ -828,22 +950,38 @@ int ioctl(int fd, unsigned long request, ...) {
     return tcgetwinsize(fd, arg);
   } else if (request == TIOCSWINSZ) {
     return tcsetwinsize(fd, arg);
-  } else if (request == SIOCGIFCONF) {
-    rc = ioctl_siocgifconf(fd, arg);
-  } else if (request == SIOCGIFADDR) {
-    rc = ioctl_siocgifaddr(fd, arg);
-  } else if (request == SIOCGIFNETMASK) {
-    rc = ioctl_siocgifnetmask(fd, arg);
-  } else if (request == SIOCGIFBRDADDR) {
-    rc = ioctl_siocgifbrdaddr(fd, arg);
-  } else if (request == SIOCGIFDSTADDR) {
-    rc = ioctl_siocgifdstaddr(fd, arg);
-  } else if (request == SIOCGIFFLAGS) {
-    rc = ioctl_siocgifflags(fd, arg);
-  } else if (IsWindows() && request == SIOCGIFINDEX) {
-    rc = ioctl_siocgifindex_nt(fd, arg);
-  } else if (IsWindows() && request == SIOCGIFNAME) {
-    rc = ioctl_siocgifname_nt(fd, arg);
+  } else if (request == SIOCGIFCONF || request == SIOCGIFADDR ||
+             request == SIOCGIFNETMASK || request == SIOCGIFBRDADDR ||
+             request == SIOCGIFDSTADDR || request == SIOCGIFFLAGS ||
+             (IsWindows() && (request == SIOCGIFINDEX ||
+                              request == SIOCGIFNAME ||
+                              request == SIOCGIFHWADDR))) {
+    // the interface list on windows is one static for all threads
+    if (IsWindows())
+      pthread_mutex_lock(&g_ifmutex);
+    if (request == SIOCGIFCONF) {
+      rc = ioctl_siocgifconf(fd, arg);
+    } else if (request == SIOCGIFADDR) {
+      rc = ioctl_siocgifaddr(fd, arg);
+    } else if (request == SIOCGIFNETMASK) {
+      rc = ioctl_siocgifnetmask(fd, arg);
+    } else if (request == SIOCGIFBRDADDR) {
+      rc = ioctl_siocgifbrdaddr(fd, arg);
+    } else if (request == SIOCGIFDSTADDR) {
+      rc = ioctl_siocgifdstaddr(fd, arg);
+    } else if (request == SIOCGIFFLAGS) {
+      rc = ioctl_siocgifflags(fd, arg);
+    } else if (request == SIOCGIFINDEX) {
+      rc = ioctl_siocgifindex_nt(fd, arg);
+    } else if (request == SIOCGIFHWADDR) {
+      rc = ioctl_siocgifhwaddr_nt(fd, arg);
+    } else {
+      rc = ioctl_siocgifname_nt(fd, arg);
+    }
+    if (IsWindows())
+      pthread_mutex_unlock(&g_ifmutex);
+  } else if (IsXnu() && request == SIOCGIFHWADDR) {
+    rc = ioctl_siocgifhwaddr_xnu(fd, arg);
   } else {
     rc = ioctl_default(fd, request, arg);
   }

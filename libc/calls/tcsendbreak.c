@@ -19,6 +19,7 @@
 #include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
@@ -31,10 +32,10 @@
 #define TIOCCBRK 0x2000747a  // bsd
 
 static int sys_tcsendbreak_bsd(int fd) {
-  if (sys_ioctl(fd, TIOCSBRK, 0) == -1)
+  if (__ioctl_tty_xnu(fd, TIOCSBRK, 0) == -1)
     return -1;
   usleep(400000);
-  if (sys_ioctl(fd, TIOCCBRK, 0) == -1)
+  if (__ioctl_tty_xnu(fd, TIOCCBRK, 0) == -1)
     return -1;
   return 0;
 }

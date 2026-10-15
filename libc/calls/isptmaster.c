@@ -17,6 +17,9 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
+#include "libc/calls/internal.h"
+#include "libc/sysv/errfuns.h"
+#include "libc/sysv/pib.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
@@ -34,6 +37,12 @@ int _isptmaster(int fd) {
       }
       return -1;
     }
+  } else if (IsWindows()) {
+    if (!__isfdopen(fd))
+      return ebadf();
+    if (!__get_pib()->fds.p[fd].pty || !__get_pib()->fds.p[fd].ptymaster)
+      return einval();
+    return 0;
   } else {
     return 0;
   }

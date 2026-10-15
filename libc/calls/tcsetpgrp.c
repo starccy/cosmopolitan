@@ -58,7 +58,9 @@ int tcsetpgrp(int fd, int pgrp) {
       if (rc == -1)
         goto done;
     }
-    if (sys_isatty(fd)) {
+    if (IsWindows() && __isfdopen(fd) && __get_pib()->fds.p[fd].ptymaster) {
+      rc = enotty();  // a pty master is nobody's controlling terminal
+    } else if (sys_isatty(fd)) {
       __fgpgrp = pgrp;
       if (IsWindows() && __isfdkind(fd, kFdConsole) &&
           _weaken(__pgrp_set_foreground))

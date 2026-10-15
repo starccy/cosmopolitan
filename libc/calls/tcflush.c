@@ -19,6 +19,7 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
@@ -98,7 +99,7 @@ int tcflush(int fd, int queue) {
     int host = queue == TCIFLUSH    ? __host_TCIFLUSH
                : queue == TCOFLUSH ? __host_TCOFLUSH
                                    : __host_TCIOFLUSH;
-    rc = sys_ioctl(fd, TIOCFLUSH, &host);
+    rc = __ioctl_tty_xnu(fd, TIOCFLUSH, &host);
   } else if (IsWindows()) {
     rc = sys_tcflush_nt(fd, queue);
   } else {

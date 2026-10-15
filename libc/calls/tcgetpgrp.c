@@ -52,6 +52,11 @@ int tcgetpgrp(int fd) {
   } else if (IsBsd()) {
     rc = sys_ioctl(fd, TIOCGPGRP_bsd, &pgrp);
   } else if (sys_isatty(fd)) {
+    // a pty master has no foreground group, which linux reports as 0
+    if (IsWindows() && __get_pib()->fds.p[fd].ptymaster) {
+      STRACE("tcgetpgrp(%d) → 0", fd);
+      return 0;
+    }
     if (!__isfdkind(fd, kFdConsole) || !_weaken(__pgrp_foreground) ||
         !(pgrp = _weaken(__pgrp_foreground)()))
       pgrp = __fgpgrp                  ? __fgpgrp

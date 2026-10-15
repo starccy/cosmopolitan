@@ -21,6 +21,7 @@
 #include "libc/calls/struct/termios.h"
 #include "libc/calls/struct/termios.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/termios.internal.h"
 #include "libc/calls/ttydefaults.h"
 #include "libc/dce.h"
@@ -44,7 +45,7 @@ static int tcgetattr_metal(int fd, struct termios *tio) {
 static int tcgetattr_bsd(int fd, struct termios *tio) {
   int rc;
   union metatermios mt;
-  if ((rc = sys_ioctl(fd, __ioctl2host(TCGETS), &mt)) != -1)
+  if ((rc = __ioctl_tty_xnu(fd, __ioctl2host(TCGETS), &mt)) != -1)
     __termios2linux(tio, &mt);
   return rc;
 }

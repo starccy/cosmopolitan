@@ -221,7 +221,12 @@ int openat(int dirfd, const char *path, int flags, ...) {
     rc = einval();
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     // openat unix userspace
+    char pts[64];
+    if (IsXnu() && __ptsname_xnu(path, pts))
+      path = pts;
     rc = sys_openat(dirfd, path, flags & ~O_UNLINK, mode);
+    if (rc != -1 && IsXnu() && !strcmp(path, "/dev/ptmx"))
+      __ptmx_opened_xnu(rc);
     if (rc != -1) {
       // openat succeeded
       if (IsXnu() && (flags & _O_PATH) && !(flags & O_NONBLOCK))

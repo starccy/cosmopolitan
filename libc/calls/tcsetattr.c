@@ -20,6 +20,7 @@
 #include "libc/calls/struct/metatermios.internal.h"
 #include "libc/calls/struct/termios.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/termios.h"
 #include "libc/calls/termios.internal.h"
 #include "libc/dce.h"
@@ -75,7 +76,8 @@ static int tcsetattr_impl(int fd, int opt, const struct termios *tio) {
 
   if (IsLinux() || IsBsd()) {
     union metatermios mt;
-    return sys_ioctl(fd, __ioctl2host(TCSETS + opt), __termios2host(&mt, tio));
+    return __ioctl_tty_xnu(fd, __ioctl2host(TCSETS + opt),
+                           __termios2host(&mt, tio));
   }
 
   return enosys();

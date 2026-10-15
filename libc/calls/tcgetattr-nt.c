@@ -41,10 +41,8 @@ textwindows int tcgetattr_nt(int fd, struct termios *tio) {
   // validate file descriptor
   if (!__isfdopen(fd))
     return ebadf();
-  if (__get_pib()->fds.p[fd].pty && _weaken(__pty_termios)) {
-    _weaken(__pty_termios)(tio);
-    return 0;
-  }
+  if (__get_pib()->fds.p[fd].pty && _weaken(__pty_tcgetattr))
+    return _weaken(__pty_tcgetattr)(__get_pib()->fds.p + fd, tio);
   if (!__isfdkind(fd, kFdConsole))
     return enotty();
 

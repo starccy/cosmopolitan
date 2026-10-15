@@ -38,6 +38,12 @@ void __restore_rt();
 void __restore_rt_netbsd(void);
 void cosmo2flock(uintptr_t);
 void flock2cosmo(uintptr_t);
+int __resids_xnu(uint32_t[6]);
+void __mlock_count(const void *, size_t, bool);
+void __ptmx_opened_xnu(int);
+int __ptm_slave_xnu(int, int);
+bool __ptsname_xnu(const char *, char[64]);
+int __ioctl_tty_xnu(int, unsigned long, void *);
 
 COSMOPOLITAN_C_END_
 #endif /* COSMOPOLITAN_LIBC_CALLS_SYSCALL_SUPPORT_SYSV_INTERNAL_H_ */

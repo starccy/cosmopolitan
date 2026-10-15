@@ -20,17 +20,30 @@ struct Pty {
   int64_t in_w;     // master → console
   int64_t out_w;    // console → master, for writes on the slave
   int64_t live_r;   // every slave holder has the write end of this pipe
-  struct winsize ws;
+  int64_t live_w;   // a write end of it kept while slaves are opened here
+  int srefs;        // slave descriptors in this process
+  int num;          // N of /dev/pts/N
+  struct Pty *next; // the registry open("/dev/pts/N") searches
+  struct winsize ws;    // what the pty reports, 0x0 until set
+  struct termios tio;   // tcsetattr() on either end lands here
 };
 
 #define __pty_isslave(f) ((f)->pty && !(f)->ptymaster)
 
 int sys_openpty_nt(int *, int *, const struct winsize *);
+int __pty_posix_openpt_nt(int);
+int __pty_open_master_nt(int, int);
+int __pty_open_slave_nt(int, int, int, int);
+int __pty_name_nt(struct Fd *, char *, size_t);
+bool __pty_exists_nt(int);
+int __pty_list_nt(int *, int);
 int64_t __pty_write_handle(struct Fd *);
 int __pty_close_nt(struct Fd *);
 int __pty_getwinsize(struct Fd *, struct winsize *);
 int __pty_setwinsize(struct Fd *, const struct winsize *);
 void __pty_termios(struct termios *);
+int __pty_tcgetattr(struct Fd *, struct termios *);
+int __pty_tcsetattr(struct Fd *, const struct termios *);
 int64_t __pty_exec_prepare(uint32_t *, bool *, int64_t *);
 int __pty_wait_readable(struct Fd *, bool);
 bool __pty_hangup(struct Fd *);

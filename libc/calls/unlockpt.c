@@ -41,7 +41,7 @@ int unlockpt(int fd) {
   int rc, unlock = 0;
   if (__isfdkind(fd, kFdZip)) {
     rc = enotty();
-  } else if (IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
+  } else if (IsFreebsd() || IsOpenbsd() || IsNetbsd() || IsWindows()) {
     rc = _isptmaster(fd);
   } else if (IsXnu()) {
     rc = sys_ioctl(fd, TIOCPTYUNLK);

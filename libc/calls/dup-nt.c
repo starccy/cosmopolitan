@@ -108,6 +108,8 @@ textwindows static int sys_dup_nt_impl(int oldfd, int newfd, int flags,
     ++pty->refs;
     if (__get_pib()->fds.p[newfd].ptymaster)
       ++pty->mrefs;
+    else
+      ++pty->srefs;
   }
   __get_pib()->fds.p[newfd].handle = handle;
   __get_pib()->fds.p[newfd].was_created_during_vfork = __vforked;

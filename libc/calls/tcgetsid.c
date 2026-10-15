@@ -23,6 +23,7 @@
 #include "libc/intrin/strace.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/calls/calls.h"
 
 #define TIOCGSID (IsLinux() ? 0x5429 : 0x40047463)
 
@@ -33,6 +34,14 @@ int tcgetsid(int fd) {
   int rc, sid;
   if (__isfdkind(fd, kFdZip)) {
     rc = enotty();
+  } else if (IsWindows()) {
+    // a terminal here belongs to our own session
+    if (isatty(fd)) {
+      sid = getsid(0);
+      rc = sid == -1 ? -1 : 0;
+    } else {
+      rc = enotty();
+    }
   } else {
     rc = sys_ioctl(fd, TIOCGSID, &sid);
   }

@@ -56,15 +56,29 @@ textwindows int sys_fstat_nt_char(int kind, struct stat *st) {
   return 0;
 }
 
+// /dev, /dev/pts and /dev/fd, which exist only as names here
+textwindows int sys_fstat_nt_devdir(int which, struct stat *st) {
+  bzero(st, sizeof(*st));
+  st->st_blksize = 512;
+  st->st_mode = S_IFDIR | 0755;
+  st->st_nlink = 2;
+  st->st_dev = MAKEDEV(kFdDevRandom, 0);
+  st->st_ino = 0x646576 + which;
+  return 0;
+}
+
 textwindows int sys_fstat_nt(int fd, struct stat *st) {
   if (fd + 0u >= __get_pib()->fds.n)
     return ebadf();
   switch (__get_pib()->fds.p[fd].kind) {
     case kFdEmpty:
       return ebadf();
+    case kFdDevRandom:
+      if (__get_pib()->fds.p[fd].devdir)
+        return sys_fstat_nt_devdir(__get_pib()->fds.p[fd].devdir, st);
+      return sys_fstat_nt_char(kFdDevRandom, st);
     case kFdConsole:
     case kFdDevNull:
-    case kFdDevRandom:
       return sys_fstat_nt_char(__get_pib()->fds.p[fd].kind, st);
     case kFdEvent:
     case kFdEpoll:

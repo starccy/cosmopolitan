@@ -20,6 +20,7 @@
 #include "libc/calls/struct/winsize.h"
 #include "libc/calls/struct/winsize.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/termios.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
@@ -38,7 +39,7 @@ int tcgetwinsize(int fd, struct winsize *ws) {
     } else if (IsWindows()) {
       rc = tcgetwinsize_nt(fd, ws);
     } else {
-      rc = sys_ioctl(fd, __ioctl2host(TIOCGWINSZ), ws);
+      rc = __ioctl_tty_xnu(fd, __ioctl2host(TIOCGWINSZ), ws);
     }
   } else {
     rc = einval();
