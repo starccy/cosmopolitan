@@ -81,6 +81,24 @@ i32 sys_mknod(const char *, u32, u64);
 i32 sys_mknodat(i32, const char *, u32, u64);
 struct itimerspec;
 struct rlimit;
+struct iovec;
+struct timespec;
+i32 sys_acct(const char *);
+i32 sys_umount2(const char *, i32);
+i32 sys_signalfd4(i32, const void *, u64, i32);
+i32 sys_fanotify_init(u32, u32);
+i32 sys_fanotify_mark(i32, u32, u64, i32, const char *);
+i64 sys_process_vm_readv(i32, const struct iovec *, u64, const struct iovec *,
+                         u64, u64);
+i64 sys_process_vm_writev(i32, const struct iovec *, u64,
+                          const struct iovec *, u64, u64);
+i32 sys_mq_open(const char *, i32, u32, const void *);
+i32 sys_mq_unlink(const char *);
+i32 sys_mq_timedsend(i32, const char *, u64, u32, const struct timespec *);
+i64 sys_mq_timedreceive(i32, char *, u64, u32 *, const struct timespec *);
+i32 sys_mq_getsetattr(i32, const void *, void *);
+i32 sys_mq_notify(i32, const void *);
+i32 sys_tgsigqueueinfo(i32, i32, i32, const void *);
 i32 sys_eventfd2(u32, i32);
 i32 sys_inotify_init1(i32);
 i32 sys_inotify_add_watch(i32, const char *, u32);

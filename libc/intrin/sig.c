@@ -416,6 +416,7 @@ textwindows int __sig_raise(volatile int sig, int sic) {
     // call the user's signal handler
     char ssbuf[128];
     siginfo_t si = {.si_signo = sig, .si_code = sic};
+    __sig_take_value(sig, &si);
     STRACE(
         "__sig_raise(%G, %t) mask %s", sig, __sig_handler(rva),
         _DescribeSigset(ssbuf, 0, (sigset_t *)&__get_tls_win32()->tib_sigmask));
@@ -617,6 +618,7 @@ textwindows static int __sig_killer(struct PosixThread *pt, int sig, int sic) {
   sf->flags = flags;
   sf->si.si_code = sic;
   sf->si.si_signo = sig;
+  __sig_take_value(sig, &sf->si);
   *(uintptr_t *)(sp -= sizeof(uintptr_t)) = nc.Rip;
   nc.Rip = (intptr_t)__sig_tramp;
   nc.Rdi = (intptr_t)sf;

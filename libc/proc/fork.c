@@ -146,9 +146,13 @@ static void fork_prepare(void) {
     _weaken(cosmo_stack_lock)();
   __cxa_lock();
   _pthread_lock();
+  if (_weaken(__epoll_kq_fork_prepare))
+    _weaken(__epoll_kq_fork_prepare)();
   if (_weaken(dlmalloc_pre_fork))
     _weaken(dlmalloc_pre_fork)();
   __fds_lock();
+  if (_weaken(__epoll_nt_fork_prepare))
+    _weaken(__epoll_nt_fork_prepare)();
   if (_weaken(__arc4random_fork_prepare))
     _weaken(__arc4random_fork_prepare)();
   if (_weaken(__rand64_lock))
@@ -158,11 +162,15 @@ static void fork_prepare(void) {
 }
 
 static void fork_parent(void) {
+  if (!IsLinux() && _weaken(__procfs_spawned))
+    _weaken(__procfs_spawned)();
   __maps_unlock();
   if (_weaken(__rand64_unlock))
     _weaken(__rand64_unlock)();
   if (_weaken(__arc4random_fork_parent))
     _weaken(__arc4random_fork_parent)();
+  if (_weaken(__epoll_nt_fork_parent))
+    _weaken(__epoll_nt_fork_parent)();
   __fds_unlock();
   if (IsWindows()) {
     // clear cursor cache which belongs to parent
@@ -176,6 +184,8 @@ static void fork_parent(void) {
   }
   if (_weaken(dlmalloc_post_fork_parent))
     _weaken(dlmalloc_post_fork_parent)();
+  if (_weaken(__epoll_kq_fork_parent))
+    _weaken(__epoll_kq_fork_parent)();
   _pthread_unlock();
   __cxa_unlock();
   if (_weaken(cosmo_stack_unlock))
@@ -204,7 +214,11 @@ static void fork_child(int ppid_win32, int ppid_cosmo) {
   if (_weaken(__arc4random_fork_child))
     _weaken(__arc4random_fork_child)();
   pthread_mutex_wipe_np(&__fds_lock_obj);
+  if (_weaken(__epoll_nt_fork_child))
+    _weaken(__epoll_nt_fork_child)();
   dlmalloc_post_fork_child();
+  if (_weaken(__epoll_kq_fork_child))
+    _weaken(__epoll_kq_fork_child)();
   fork_child_stdio();
   pthread_mutex_wipe_np(&__pthread_lock_obj);
   pthread_mutex_wipe_np(&__cxa_lock_obj);
@@ -225,8 +239,9 @@ static void fork_child(int ppid_win32, int ppid_cosmo) {
     __rlimit_launch();
     if (_weaken(__sig_init))
       _weaken(__sig_init)();
-    if (_weaken(sys_getppid_nt_wipe))
-      _weaken(sys_getppid_nt_wipe)(ppid_win32, ppid_cosmo);
+    // what _exit() encodes the status for hinges on these
+    __get_pib()->ppid_win32 = ppid_win32;
+    __get_pib()->ppid_cosmo = ppid_cosmo;
   }
   if (_weaken(_pthread_onfork_child))
     _weaken(_pthread_onfork_child)();

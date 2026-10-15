@@ -8,6 +8,12 @@ struct iovec {
 };
 
 ssize_t preadv(int, struct iovec *, int, int64_t) libcesque;
+ssize_t process_vm_readv(int, const struct iovec *, unsigned long,
+                         const struct iovec *, unsigned long,
+                         unsigned long) libcesque;
+ssize_t process_vm_writev(int, const struct iovec *, unsigned long,
+                          const struct iovec *, unsigned long,
+                          unsigned long) libcesque;
 ssize_t pwritev(int, const struct iovec *, int, int64_t) libcesque;
 ssize_t readv(int, const struct iovec *, int) libcesque;
 ssize_t vmsplice(int, const struct iovec *, int64_t, uint32_t) libcesque;

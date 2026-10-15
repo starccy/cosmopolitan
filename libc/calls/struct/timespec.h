@@ -8,6 +8,7 @@ struct timespec {
   int64_t tv_nsec; /* nanoseconds */
 };
 
+int clock_getcpuclockid(int, int *) libcesque;
 int clock_getres(int, struct timespec *) libcesque;
 int clock_gettime(int, struct timespec *) libcesque;
 int clock_settime(int, const struct timespec *) libcesque;

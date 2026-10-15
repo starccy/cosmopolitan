@@ -1,6 +1,7 @@
 #ifndef _TIME_H
 #define _TIME_H
 #include "libc/calls/calls.h"
+#include "libc/calls/struct/itimerspec.h"
 #include "libc/calls/struct/timespec.h"
 #include "libc/calls/struct/timeval.h"
 #include "libc/calls/weirdtypes.h"

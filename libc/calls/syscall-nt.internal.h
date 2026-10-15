@@ -10,6 +10,9 @@ int sys_faccessat_nt(int, const char *, int, int);
 int sys_posix_fadvise_nt(int, uint64_t, uint64_t, int);
 int sys_fchdir_nt(int);
 int sys_fchmod_nt(int, uint32_t);
+int sys_fchown_nt(int, uint32_t, uint32_t);
+int sys_fchownat_nt(int, const char *, uint32_t, uint32_t, int);
+int sys_getsid_nt(int);
 int sys_fchmodat_nt(int, const char *, uint32_t, int);
 int sys_fcntl_nt(int, int, uintptr_t);
 int sys_fdatasync_nt(int, bool);
@@ -41,7 +44,6 @@ int sys_unlinkat_nt(int, const char *, int);
 int64_t sys_lseek_nt(int, int64_t, int);
 ssize_t sys_read_nt_impl(int, void *, size_t, int64_t);
 ssize_t sys_readlinkat_nt(int, const char *, char *, size_t);
-void sys_getppid_nt_wipe(int, int);
 void sys_vfork_nt_exec(intptr_t);
 void sys_vfork_nt_exit(uint32_t);
 

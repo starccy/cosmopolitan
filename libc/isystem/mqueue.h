@@ -1,0 +1,4 @@
+#ifndef COSMOPOLITAN_LIBC_ISYSTEM_MQUEUE_H_
+#define COSMOPOLITAN_LIBC_ISYSTEM_MQUEUE_H_
+#include "libc/calls/mqueue.h"
+#endif /* COSMOPOLITAN_LIBC_ISYSTEM_MQUEUE_H_ */

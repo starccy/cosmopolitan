@@ -1,6 +1,8 @@
 #include "libc/calls/calls.h"
 #include "libc/calls/struct/itimerspec.h"
 #include "libc/calls/struct/sigevent.h"
+#include "libc/calls/struct/sigval.internal.h"
+#include "libc/sysv/consts/sicode.h"
 #include "libc/calls/struct/timespec.h"
 #include "libc/calls/weirdtypes.h"
 #include "libc/cosmotime.h"
@@ -44,8 +46,9 @@ struct PosixTimer {
 static void Notify(const struct sigevent *sev) {
   switch (sev->sigev_notify) {
     case SIGEV_SIGNAL:
-      if (sigqueue(getpid(), sev->sigev_signo, sev->sigev_value) == -1)
-        raise(sev->sigev_signo);
+      if (__sigqueue(getpid(), sev->sigev_signo, sev->sigev_value,
+                     SI_TIMER) == -1)
+        kill(getpid(), sev->sigev_signo);
       break;
     case SIGEV_THREAD:
       sev->sigev_notify_function(sev->sigev_value);

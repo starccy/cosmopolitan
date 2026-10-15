@@ -198,3 +198,11 @@ $(LIBC_INTRIN_OBJS): $(BUILD_FILES) libc/intrin/BUILD.mk
 
 .PHONY: o/$(MODE)/libc/intrin
 o/$(MODE)/libc/intrin: $(LIBC_INTRIN_CHECKS)
+
+# __sig_take_value() runs from the privileged signal entry, which can't
+# reach the outlined atomic helpers
+ifeq ($(ARCH), aarch64)
+o/$(MODE)/libc/intrin/sigvalue.o: private		\
+		COPTS +=				\
+			-mno-outline-atomics
+endif

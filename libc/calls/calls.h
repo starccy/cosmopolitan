@@ -65,6 +65,7 @@ char *getcwd(char *, size_t) dontthrow __write_only(1, 2);
 char *realpath(const char *, char *) libcesque __wur __read_only(1) __write_only(2);
 char *ttyname(int) libcesque;
 int access(const char *, int) libcesque __read_only(1);
+int acct(const char *) libcesque;
 int chdir(const char *) libcesque __read_only(1);
 int chmod(const char *, unsigned) libcesque __read_only(1);
 int chown(const char *, unsigned, unsigned) libcesque __read_only(1);

@@ -24,6 +24,7 @@
 #include "libc/calls/struct/sigaction.h"
 #include "libc/calls/struct/siginfo-meta.internal.h"
 #include "libc/calls/struct/siginfo-xnu.internal.h"
+#include "libc/calls/sig.internal.h"
 #include "libc/calls/struct/siginfo.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/syscall_support-sysv.internal.h"
@@ -599,6 +600,7 @@ __privileged void __sigenter_xnu(int sig, struct siginfo_xnu *xnuinfo,
         if (xnuinfo) {
           __siginfo2cosmo(&g.si, (void *)xnuinfo);
         }
+        __sig_take_value(sig, &g.si);
         ((sigaction_f)(__executable_start + rva))(sig, &g.si, &g.uc);
 
         if (xnuctx) {

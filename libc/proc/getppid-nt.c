@@ -54,8 +54,3 @@ textwindows int sys_getppid_nt_win32(void) {
     return __get_pib()->ppid_win32;
   return sys_getppid_nt_ntdll();
 }
-
-textwindows void sys_getppid_nt_wipe(int win32, int cosmo) {
-  __get_pib()->ppid_win32 = win32;
-  __get_pib()->ppid_cosmo = cosmo;
-}
