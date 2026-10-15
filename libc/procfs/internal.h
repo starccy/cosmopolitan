@@ -43,7 +43,7 @@ COSMOPOLITAN_C_START_
 #define PC_HOSTED() (IsWindows() || IsXnuSilicon())
 
 #define PC_PATH_MAX 256  // a virtual path
-#define PID_DIR_MS  200  // one process's volatile files
+#define PID_DIR_MS  100  // one process's volatile files
 #define NET_MS      250  // the interface counters
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,10 @@ int pfs_threads_of(uint32_t pid, uint64_t **out);
 // What the runtime knows about this process for /proc/self/status: the
 // main thread's stack and the text in bytes, and the blocked, ignored and
 // caught signal sets as Linux prints them (bit 0 = signal 1). selfvm.c
+void pfs_gen_limits(struct pfs_buf *, uint32_t);
+void __procfs_spawned(void);
 uint64_t pfs_self_stack(void);
+uint64_t pfs_self_locked(uint32_t);
 uint64_t pfs_self_text(void);
 void pfs_self_sigs(uint64_t *blk, uint64_t *ign, uint64_t *cgt);
 
@@ -353,6 +356,7 @@ struct ProcfsHandle {
   bool dir;
   bool link;  // opened with O_PATH|O_NOFOLLOW: names the link itself
   bool fixed;  // made once, not regenerated on a rewind (user-dirs.dirs)
+  bool gone;   // a pid file whose process ended since: reads say ESRCH
   struct pfs_virtent *ents;
   int nents;
   char vpath[PC_PATH_MAX];
@@ -363,6 +367,11 @@ bool pc_fd_vpath(int fd, char *out, size_t n);
 int pc_open_dir(const char *vpath, int flags);
 int pc_open_content(const char *vpath, int flags);
 int pc_userdirs_open(int dirfd, const char *path, int flags);
+int pc_etc_open(int dirfd, const char *path, int flags);
+int pc_etc_stat(int dirfd, const char *path, struct stat *st);
+int pc_etc_access(int dirfd, const char *path, int amode);
+char *__nt_ca_bundle(size_t *n);
+ssize_t __nt_ca_bundle_size(void);
 int pc_userdirs_stat(int dirfd, const char *path, struct stat *st);
 int pc_userdirs_access(int dirfd, const char *path, int amode);
 

@@ -16,14 +16,19 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/atomic.h"
 #include "libc/calls/calls.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
 #include "libc/nt/memory.h"
 #include "libc/runtime/runtime.h"
+#include "libc/nt/errors.h"
+#include "libc/nt/runtime.h"
 
 static textwindows int sys_munlock_nt(const void *addr, size_t len) {
-  if (VirtualUnlock(addr, len)) {
+  // linux doesn't mind unlocking what wasn't locked
+  if (VirtualUnlock(addr, len) || GetLastError() == kNtErrorNotLocked) {
     return 0;
   } else {
     return __winerr();
@@ -36,9 +41,13 @@ static textwindows int sys_munlock_nt(const void *addr, size_t len) {
  * @return 0 on success, or -1 w/ errno
  */
 int munlock(const void *addr, size_t len) {
+  int rc;
   if (!IsWindows()) {
-    return sys_munlock(addr, len);
+    rc = sys_munlock(addr, len);
   } else {
-    return sys_munlock_nt(addr, len);
+    rc = sys_munlock_nt(addr, len);
   }
+  if (!rc && !IsLinux())
+    __mlock_count(addr, len, false);
+  return rc;
 }

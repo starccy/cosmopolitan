@@ -20,7 +20,9 @@
 #include "libc/calls/cp.internal.h"
 #include "libc/calls/struct/rusage.internal.h"
 #include "libc/calls/syscall_support-sysv.internal.h"
+#include "libc/calls/internal.h"
 #include "libc/dce.h"
+#include "libc/intrin/weaken.h"
 #include "libc/intrin/strace.h"
 #include "libc/proc/proc.h"
 #include "libc/sysv/errfuns.h"
@@ -51,6 +53,8 @@ int wait4(int pid, int *opt_out_wstatus, int options,
   if (rc != -1 && opt_out_wstatus)
     *opt_out_wstatus = ws;
   END_CANCELATION_POINT;
+  if (rc > 0 && !IsLinux() && _weaken(__procfs_reaped))
+    _weaken(__procfs_reaped)(rc);
   STRACE("wait4(%d, [%#x], %d, %p) → %d% m", pid, ws, options, opt_out_rusage,
          rc);
   return rc;

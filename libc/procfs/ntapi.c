@@ -21,7 +21,7 @@
 // question about what exists, and the time base. Nothing here writes
 // files or knows about paths.
 
-#define PFS_SNAP_MS 200
+#define PFS_SNAP_MS 100
 
 // ---------------------------------------------------------------------------
 // Dynamic symbols. A tiny cache keyed by DLL name; misses stay cached as
@@ -310,6 +310,20 @@ static void snap_refresh_locked(void) {
   g_snap_ms = pfs_now_ms();
 }
 
+/**
+ * Drops the process snapshot: a child this process just made is in
+ * the next one.
+ */
+void __procfs_spawned(void) {
+  if (IsXnuSilicon()) {
+    pfs_xnu_snap_dirty();
+    return;
+  }
+  pthread_mutex_lock(&g_snap_lock);
+  g_snap_ms = 0;
+  pthread_mutex_unlock(&g_snap_lock);
+}
+
 int pfs_procs(const struct pfs_proc **out) {
   if (IsXnuSilicon())
     return pfs_xnu_procs(out);
@@ -321,6 +335,8 @@ int pfs_procs(const struct pfs_proc **out) {
 }
 
 const struct pfs_proc *pfs_proc_find(uint32_t pid) {
+  if (IsXnuSilicon())
+    return pfs_xnu_proc_find(pid);
   const struct pfs_proc *p;
   int n = pfs_procs(&p);
   for (int i = 0; i < n; i++)

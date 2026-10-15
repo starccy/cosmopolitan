@@ -23,6 +23,7 @@
 #include "libc/calls/struct/sigaction.h"
 #include "libc/calls/struct/sigset.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/atomic.h"
@@ -355,6 +356,8 @@ errno_t posix_spawn(int *pid, const char *path,
     if (!res) {
       if (pid)
         *pid = child;
+      if (!IsLinux() && _weaken(__procfs_spawned))
+        _weaken(__procfs_spawned)();
     } else {
       wait4(child, 0, 0, 0);
     }

@@ -27,6 +27,8 @@
 #include "libc/runtime/stack.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/procfs/procfs.internal.h"
+#include "libc/intrin/weaken.h"
 
 /**
  * Returns information about filesystem.
@@ -44,7 +46,10 @@ int fstatfs(int fd, struct statfs *sf) {
   int rc;
   BEGIN_CANCELATION_POINT;
 
-  if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc)) {
+  if (__isfdkind(fd, kFdProc) && _weaken(__procfs_statfs)) {
+    _weaken(__procfs_statfs)("/proc", sf);
+    rc = 0;
+  } else if (__isfdkind(fd, kFdZip) || __isfdkind(fd, kFdProc)) {
     rc = enotsup();
   } else if (!IsWindows()) {
     if ((rc = sys_fstatfs(fd, &m)) != -1) {

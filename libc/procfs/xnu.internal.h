@@ -401,6 +401,7 @@ bool pfs_xnu_pcblist(const char *name, char **out, size_t *len);
 
 int pfs_xnu_procs(const struct pfs_proc **out);
 const struct pfs_proc *pfs_xnu_proc_find(uint32_t pid);
+void pfs_xnu_snap_dirty(void);
 
 const char *pfs_xnu_kernel_sysname(void);
 const char *pfs_xnu_kernel_release(void);

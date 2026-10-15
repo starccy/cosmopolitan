@@ -15,6 +15,8 @@ struct stat;
 
 int __procfs_open(int, const char *, int, unsigned);
 int __procfs_stat(int, const char *, struct stat *, int);
+struct statfs;
+void __procfs_statfs(const char *, struct statfs *);
 int __procfs_access(int, const char *, int);
 ssize_t __procfs_readlink(int, const char *, char *, size_t);
 ssize_t __procfs_read(struct ProcfsHandle *, const struct iovec *, size_t,

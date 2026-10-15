@@ -26,6 +26,8 @@
 │                                                                              │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
+#include "libc/dce.h"
+#include "libc/stdio/append.h"
 #include "libc/calls/weirdtypes.h"
 #include "libc/errno.h"
 #include "libc/mem/mem.h"
@@ -106,6 +108,41 @@ end:
 	return rv;
 }
 
+// windows has no /etc/group: root's group and the user's own, which is
+// the user's name since cosmo gives both the same number
+char *
+__create_synthetic_group_file(void)
+{
+	char login[256];
+	char *user = getenv("USER"), *res = 0;
+	if (user && strchr(user, ':'))
+		user = 0;
+	if (!user && getlogin_r(login, sizeof(login)) != -1)
+		user = login;
+	int gid = getgid();
+	if (gid)
+		appendf(&res, "root:x:0:\n");
+	if (user)
+		appendf(&res, "%s:x:%d:%s\n", user, gid, user);
+	return res;
+}
+
+static FILE *
+__fopen_group(void)
+{
+	FILE *f;
+	char *s;
+	if (!IsWindows() && (f = fopen("/etc/group", "rbe")))
+		return f;
+	if (!IsWindows())
+		return 0;
+	if (!(s = __create_synthetic_group_file()))
+		return 0;
+	if (!(f = fmemopen(s, strlen(s), "rbe")))
+		free(s);
+	return f;
+}
+
 int __getgr_a(const char *name, gid_t gid, struct group *gr, char **buf,
 	      size_t *size, char ***mem, size_t *nmem,
 	      struct group **res) {
@@ -114,7 +151,7 @@ int __getgr_a(const char *name, gid_t gid, struct group *gr, char **buf,
 	int cs;
 	*res = 0;
 	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
-	f = fopen("/etc/group", "rbe"); /* todo(jart): why does this leak? */
+	f = __fopen_group();
 	if (!f) {
 		rv = errno;
 		goto done;
@@ -180,7 +217,7 @@ int getgrouplist(const char *user, gid_t gid, gid_t *groups, int *ngroups) {
 	nlim = *ngroups;
 	if (nlim >= 1)
 		*groups++ = gid;
-	f = fopen("/etc/group", "rbe");
+	f = __fopen_group();
 	if (!f && errno != ENOENT && errno != ENOTDIR)
 		goto cleanup;
 	if (f) {
@@ -264,7 +301,7 @@ struct group *getgrent()
 	struct group *res;
 	size_t size = 0, nmem = 0;
 	if (!g_getgrent->f)
-		g_getgrent->f = fopen("/etc/group", "rbe");
+		g_getgrent->f = __fopen_group();
 	if (!g_getgrent->f)
 		return 0;
 	__getgrent_a(g_getgrent->f, &g_getgrent->gr, &g_getgrent->line, &size,

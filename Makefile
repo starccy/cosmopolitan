@@ -281,9 +281,9 @@ include third_party/intel/BUILD.mk		# │
 include third_party/aarch64/BUILD.mk		# │
 include libc/BUILD.mk				#─┘
 include libc/sock/BUILD.mk			#─┐
-include libc/procfs/BUILD.mk			# │
 include net/http/BUILD.mk			# ├──ONLINE RUNTIME
 include third_party/musl/BUILD.mk		# │  You can communicate with the network
+include libc/procfs/BUILD.mk			# │
 include third_party/regex/BUILD.mk		# │
 include third_party/tr/BUILD.mk			# │
 include third_party/sed/BUILD.mk		# │

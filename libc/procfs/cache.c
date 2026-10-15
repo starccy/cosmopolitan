@@ -67,11 +67,27 @@ static int name_index(const char *const *names, const char *name) {
   return -1;
 }
 
+/**
+ * Forgets what is cached about a child this process has just reaped,
+ * and the snapshot it was in.
+ */
+void __procfs_reaped(uint32_t pid) {
+  if (pc_busy)
+    return;
+  pthread_mutex_lock(&pc_lock);
+  struct pidslot *s = slot_of(pid);
+  s->ms = 0;
+  pthread_mutex_unlock(&pc_lock);
+  __procfs_spawned();
+}
+
 // The slot of a process with its volatile generation no older than
 // PID_DIR_MS; 0 for a process that is not there.
 static struct pidslot *pid_refresh(uint32_t pid, int64_t t) {
   struct pidslot *s = slot_of(pid);
-  if (s->ms && t - s->ms < PID_DIR_MS)
+  // our own files are read back right after what changed them, so they
+  // are made fresh each time; the window is for watching other processes
+  if (s->ms && t - s->ms < PID_DIR_MS && pid != pfs_self_pid())
     return s->start ? s : 0;  // start 0: known absent
   for (int i = 0; i < 4; i++) {
     pfs_buf_free(&s->vol[i]);

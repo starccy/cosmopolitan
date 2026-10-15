@@ -2,10 +2,14 @@
 #include "libc/calls/internal.h"
 #include "libc/intrin/maps.h"
 #include "libc/procfs/internal.h"
+#include "libc/atomic.h"
+#include "libc/intrin/weaken.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/pib.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/struct/sigset.h"
+
+extern atomic_size_t __mlocked_bytes;
 
 // The parts of /proc/self/status the C runtime itself knows: the main
 // thread's stack, the program's text, and the signal state, which the
@@ -37,4 +41,11 @@ void pfs_self_sigs(uint64_t *blk, uint64_t *ign, uint64_t *cgt) {
     else if (rva >= kSigactionMinRva)
       *cgt |= 1ull << (sig - 1);
   }
+}
+
+// what mlock() has locked in this process; another process's is unknown
+uint64_t pfs_self_locked(uint32_t pid) {
+  if (pid != pfs_self_pid() || !_weaken(__mlocked_bytes))
+    return 0;
+  return atomic_load_explicit(_weaken(__mlocked_bytes), memory_order_relaxed);
 }

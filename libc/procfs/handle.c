@@ -186,6 +186,8 @@ ssize_t __procfs_read(struct ProcfsHandle *h, const struct iovec *iov,
     return eisdir();
   if (h->link)
     return ebadf();
+  if (h->gone)
+    return esrch();
   size_t done = 0;
   pthread_mutex_lock(&h->lock);
   size_t pos = off < 0 ? h->pos : (size_t)off;
@@ -229,6 +231,14 @@ int64_t __procfs_seek(struct ProcfsHandle *h, int64_t off, unsigned whence) {
         h->p = b.p;
         h->n = b.n;
         h->gen = gen;
+        h->pos = 0;
+        pthread_mutex_unlock(&h->lock);
+        return 0;
+      } else if (h->gen) {
+        // the process a slot file came from has ended: linux answers a
+        // read of its open file with ESRCH, not the old text
+        pthread_mutex_lock(&h->lock);
+        h->gone = true;
         h->pos = 0;
         pthread_mutex_unlock(&h->lock);
         return 0;

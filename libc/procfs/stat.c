@@ -1,5 +1,7 @@
 #include "libc/procfs/internal.h"
 #include "libc/sysv/consts/ok.h"
+#include "libc/calls/struct/statfs.h"
+#include "libc/str/str.h"
 
 // stat() and access() of a path in the tree, the answer a kernel /proc
 // would have given. -2 sends the caller to the host.
@@ -92,6 +94,8 @@ int __procfs_stat(int dirfd, const char *path, struct stat *st, int flags) {
   int rc;
   if ((rc = pc_userdirs_stat(dirfd, path, st)) != -2)
     return rc;
+  if ((rc = pc_etc_stat(dirfd, path, st)) != -2)
+    return rc;
   char vpath[PATH_MAX];
   int r = pc_resolve(dirfd, path, vpath, sizeof vpath);
   if (r == 0)
@@ -111,6 +115,8 @@ int __procfs_access(int dirfd, const char *path, int amode) {
   int rc;
   if ((rc = pc_userdirs_access(dirfd, path, amode)) != -2)
     return rc;
+  if ((rc = pc_etc_access(dirfd, path, amode)) != -2)
+    return rc;
   char vpath[PATH_MAX];
   int r = pc_resolve(dirfd, path, vpath, sizeof vpath);
   if (r == 0)
@@ -127,4 +133,14 @@ int __procfs_access(int dirfd, const char *path, int amode) {
   if ((amode & X_OK) && !S_ISDIR(st.st_mode))
     return eacces();
   return 0;
+}
+
+// what statfs() says about the virtual tree: linux's magic numbers for
+// proc and sys, and the block size everything else here uses
+void __procfs_statfs(const char *path, struct statfs *sf) {
+  bzero(sf, sizeof(*sf));
+  sf->f_type = !strncmp(path, "/sys", 4) ? 0x62656572 : 0x9fa0;
+  sf->f_bsize = 4096;
+  sf->f_frsize = 4096;
+  sf->f_namelen = 255;
 }

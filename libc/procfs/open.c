@@ -96,6 +96,8 @@ int __procfs_open(int dirfd, const char *path, int flags, unsigned mode) {
   int rc;
   if ((rc = pc_userdirs_open(dirfd, path, flags)) != -2)
     return rc;
+  if ((rc = pc_etc_open(dirfd, path, flags)) != -2)
+    return rc;
   char vpath[PATH_MAX];
   int r = pc_resolve(dirfd, path, vpath, sizeof vpath);
   if (r == 0)

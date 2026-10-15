@@ -1,3 +1,4 @@
+#include "libc/calls/calls.h"
 #include "libc/procfs/internal.h"
 #include "libc/procfs/xnu.internal.h"
 #include "libc/sock/sock.h"
@@ -113,8 +114,10 @@ static void gen_stat(struct pfs_buf *b, uint32_t pid, const struct pfs_proc *p,
   uint32_t minflt =
       f->have_task && f->ti.pti_faults > 0 ? (uint32_t)f->ti.pti_faults : 0;
   uint32_t pgid = f->have_bsd ? f->bi.pbi_pgid : pid;
+  int sid = getsid(pid);
   pfs_printf(b, "%u (%s) %c %u %u %u 0 -1 0 %u 0 0 0 ", pid, p->comm,
-             state_of(f), p->ppid, pgid, pid, minflt);
+             state_of(f), p->ppid, pgid, sid > 0 ? (uint32_t)sid : pid,
+             minflt);
   pfs_printf(b, "%llu %llu 0 0 20 0 %u 0 %llu %llu %llu ",
              (unsigned long long)utime, (unsigned long long)stime, threads,
              (unsigned long long)start_jiffies(f), (unsigned long long)vsize,
@@ -145,6 +148,8 @@ static void gen_status(struct pfs_buf *b, uint32_t pid,
   pfs_printf(b, "VmPeak:\t%8llu kB\nVmSize:\t%8llu kB\n",
              (unsigned long long)(vsize / 1024),
              (unsigned long long)(vsize / 1024));
+  pfs_printf(b, "VmLck:\t%8llu kB\nVmPin:\t       0 kB\n",
+             (unsigned long long)(pfs_self_locked(pid) / 1024));
   pfs_printf(b, "VmHWM:\t%8llu kB\nVmRSS:\t%8llu kB\n",
              (unsigned long long)(rss / 1024),
              (unsigned long long)(rss / 1024));
@@ -308,25 +313,6 @@ static void gen_environ(struct pfs_buf *b, uint32_t pid) {
   free(raw);
 }
 
-static void gen_limits(struct pfs_buf *b) {
-  static const struct {
-    const char *name, *unit;
-  } rows[] = {
-      {"Max cpu time", "seconds"},     {"Max file size", "bytes"},
-      {"Max data size", "bytes"},      {"Max stack size", "bytes"},
-      {"Max core file size", "bytes"}, {"Max resident set", "bytes"},
-      {"Max processes", "processes"},  {"Max open files", "files"},
-      {"Max locked memory", "bytes"},  {"Max address space", "bytes"},
-      {"Max file locks", "locks"},     {"Max pending signals", "signals"},
-      {"Max msgqueue size", "bytes"},  {"Max nice priority", ""},
-      {"Max realtime priority", ""},   {"Max realtime timeout", "us"},
-  };
-  pfs_printf(b, "%-25s %20s %20s %-10s\n", "Limit", "Soft Limit", "Hard Limit",
-             "Units");
-  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++)
-    pfs_printf(b, "%-25s %20s %20s %-10s\n", rows[i].name, "unlimited",
-               "unlimited", rows[i].unit);
-}
 
 static void gen_mountinfo(struct pfs_buf *b) {
   pfs_printf(b, "1 1 0:1 / / rw - rootfs rootfs rw\n");
@@ -623,7 +609,7 @@ bool pfs_xnu_gen_pid_file(struct pfs_buf *b, uint32_t pid, const char *name) {
   if (!strcmp(name, "environ"))
     return gen_environ(b, pid), true;
   if (!strcmp(name, "limits"))
-    return gen_limits(b), true;
+    return pfs_gen_limits(b, pid), true;
   if (!strcmp(name, "maps"))
     return gen_maps(b, pid), true;
   if (!strcmp(name, "smaps"))

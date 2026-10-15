@@ -575,7 +575,7 @@ long pfs_xnu_regionfile(uint64_t addr, char *buf, size_t n) {
 // reads. Thread ids are not enumerated here; task/ pretends one thread per
 // process until someone needs better.
 
-#define XNU_SNAP_MS 200
+#define XNU_SNAP_MS 100
 
 // The table is handed to readers outside the lock, so an outgrown array
 // is kept, not freed (the NT side does the same).
@@ -670,6 +670,12 @@ static void snap_locked(void) {
   g_snap_ms = pfs_now_ms();
 }
 
+void pfs_xnu_snap_dirty(void) {
+  pthread_mutex_lock(&g_lock);
+  g_snap_ms = 0;
+  pthread_mutex_unlock(&g_lock);
+}
+
 int pfs_xnu_procs(const struct pfs_proc **out) {
   pthread_mutex_lock(&g_lock);
   snap_locked();
@@ -679,11 +685,20 @@ int pfs_xnu_procs(const struct pfs_proc **out) {
 }
 
 const struct pfs_proc *pfs_xnu_proc_find(uint32_t pid) {
-  const struct pfs_proc *p;
-  int n = pfs_xnu_procs(&p);
-  for (int i = 0; i < n; i++)
-    if (p[i].pid == pid)
-      return &p[i];
+  for (int pass = 0; pass < 2; ++pass) {
+    const struct pfs_proc *p;
+    int n = pfs_xnu_procs(&p);
+    for (int i = 0; i < n; i++)
+      if (p[i].pid == pid)
+        return &p[i];
+    // a process that started since the snapshot was taken
+    struct xnu_proc_bsdinfo bi;
+    if (pass || !pfs_xnu_bsdinfo(pid, &bi))
+      break;
+    pthread_mutex_lock(&g_lock);
+    g_snap_ms = 0;
+    pthread_mutex_unlock(&g_lock);
+  }
   return 0;
 }
 

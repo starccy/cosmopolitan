@@ -31,6 +31,8 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/calls/struct/stat.h"
+#include "libc/procfs/procfs.internal.h"
 
 /**
  * Returns information about filesystem.
@@ -106,6 +108,7 @@ int statfs(const char *path, struct statfs *sf) {
 #pragma GCC pop_options
   int rc;
   struct ZiposUri zipname;
+  struct stat st;
   BEGIN_CANCELATION_POINT;
 
   CheckLargeStackAllocation(&m, sizeof(m));
@@ -114,6 +117,10 @@ int statfs(const char *path, struct statfs *sf) {
   } else if (_weaken(__zipos_parseuri) &&
              _weaken(__zipos_parseuri)(path, &zipname) != -1) {
     rc = enotsup();
+  } else if (!IsLinux() && _weaken(__procfs_stat) &&
+             (rc = _weaken(__procfs_stat)(AT_FDCWD, path, &st, 0)) != -2) {
+    if (!rc)
+      _weaken(__procfs_statfs)(path, sf);
   } else if (!IsWindows()) {
     if ((rc = sys_statfs(path, &m)) != -1) {
       statfs2cosmo(sf, &m);
