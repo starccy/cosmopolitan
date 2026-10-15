@@ -14,16 +14,18 @@
 #include "libc/sysv/consts/tcp.h"
 #include "libc/sysv/errfuns.h"
 
-// TCP_QUICKACK and TCP_DEFER_ACCEPT off linux, where no host has them:
-// setsockopt() takes them on a tcp socket and getsockopt() answers with
-// what was set, kept in the descriptor table
+// TCP_QUICKACK and TCP_DEFER_ACCEPT off linux, where no host has them,
+// and TCP_CORK on windows, which has no TCP_NOPUSH either: setsockopt()
+// takes them on a tcp socket and getsockopt() answers with what was set,
+// kept in the descriptor table. quickack starts on, as on linux
 
 bool __tcphint(int level, int optname) {
   return !IsLinux() && level == SOL_TCP &&
-         (optname == TCP_QUICKACK || optname == TCP_DEFER_ACCEPT);
+         (optname == TCP_QUICKACK || optname == TCP_DEFER_ACCEPT ||
+          (IsWindows() && optname == TCP_CORK));
 }
 
-static int TcpHintCheck(int fd) {
+int __tcphint_check(int fd) {
   if (IsWindows()) {
     if (!__isfdopen(fd))
       return ebadf();
@@ -57,7 +59,7 @@ static int TcpHintCheck(int fd) {
 int __tcphint_set(int fd, int optname, const void *optval, uint32_t optlen) {
   if (optlen < sizeof(int))
     return einval();
-  if (TcpHintCheck(fd) == -1)
+  if (__tcphint_check(fd) == -1)
     return -1;
   int v = *(const int *)optval;
   __fds_lock();
@@ -67,7 +69,9 @@ int __tcphint_set(int fd, int optname, const void *optval, uint32_t optlen) {
   }
   struct Fd *f = __get_pib()->fds.p + fd;
   if (optname == TCP_QUICKACK) {
-    f->quickack = !!v;
+    f->noquickack = !v;
+  } else if (optname == TCP_CORK) {
+    f->cork = !!v;
   } else {
     f->deferaccept = MAX(v, 0);
   }
@@ -78,12 +82,14 @@ int __tcphint_set(int fd, int optname, const void *optval, uint32_t optlen) {
 int __tcphint_get(int fd, int optname, void *optval, uint32_t *optlen) {
   if (!optval || !optlen)
     return efault();
-  if (TcpHintCheck(fd) == -1)
+  if (__tcphint_check(fd) == -1)
     return -1;
-  int v = 0;
+  int v = optname == TCP_QUICKACK;
   if (fd < __get_pib()->fds.n) {
     struct Fd *f = __get_pib()->fds.p + fd;
-    v = optname == TCP_QUICKACK ? f->quickack : f->deferaccept;
+    v = optname == TCP_QUICKACK     ? !f->noquickack
+        : optname == TCP_CORK ? f->cork
+                              : f->deferaccept;
   }
   uint32_t n = MIN(*optlen, sizeof(v));
   memcpy(optval, &v, n);
@@ -95,8 +101,9 @@ int __tcphint_get(int fd, int optname, void *optval, uint32_t *optlen) {
 // other socket's with hints or SO_PASSCRED set
 void __tcphint_reset(int fd) {
   if (!IsLinux() && !IsWindows() && fd >= 0 && fd < __get_pib()->fds.n) {
-    __get_pib()->fds.p[fd].quickack = 0;
+    __get_pib()->fds.p[fd].noquickack = 0;
     __get_pib()->fds.p[fd].deferaccept = 0;
+    __get_pib()->fds.p[fd].usertimeout = 0;
     __get_pib()->fds.p[fd].passcred = 0;
     __get_pib()->fds.p[fd].sockbuf = 0;
   }

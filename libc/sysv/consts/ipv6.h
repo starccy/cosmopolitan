@@ -9,7 +9,9 @@
 #define IPV6_JOIN_GROUP     20
 #define IPV6_LEAVE_GROUP    21
 #define IPV6_MTU_DISCOVER   23
+#define IPV6_MTU            24
 #define IPV6_V6ONLY         26
+#define IPV6_HDRINCL        36
 #define IPV6_RECVPKTINFO    49
 #define IPV6_PKTINFO        50
 #define IPV6_RECVHOPLIMIT   51
@@ -20,6 +22,7 @@
 #define IPV6_DONTFRAG       62
 #define IPV6_RECVTCLASS     66
 #define IPV6_TCLASS         67
+#define IPV6_UNICAST_IF     76
 
 #define IPV6_PMTUDISC_DONT      0
 #define IPV6_PMTUDISC_WANT      1

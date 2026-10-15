@@ -17,6 +17,7 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
+#include "libc/calls/state.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/describeflags.h"
@@ -30,6 +31,7 @@
 #include "libc/stdio/sysparam.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/ipproto.h"
+#include "libc/sock/struct/ip_mreq.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sock/struct/sockaddr.internal.h"
 #include "libc/sock/syscall_fd.internal.h"
@@ -50,6 +52,22 @@ static void setsockopt_xnu_ipv4_on_ipv6(int fd, int level) {
       __sys_getsockname(fd, &ss, &len) != -1 &&
       ss.sa.sa_family == __af2host(AF_INET6))
     errno = ENOPROTOOPT;
+}
+
+// linux takes IP_MULTICAST_TTL and IP_MULTICAST_LOOP on an ipv6 socket
+// as well, where xnu wants the ipv6 options; they share the value
+bool __sockopt_xnu_v4mcast_on_v6(int fd, int level, int optname,
+                                 int *hopt) {
+  union sockaddr_storage_bsd ss;
+  uint32_t len = sizeof(ss);
+  if (!IsXnu() || level != SOL_IP ||
+      (optname != IP_MULTICAST_TTL && optname != IP_MULTICAST_LOOP))
+    return false;
+  if (__sys_getsockname(fd, &ss, &len) == -1 ||
+      ss.sa.sa_family != __af2host(AF_INET6))
+    return false;
+  *hopt = optname == IP_MULTICAST_TTL ? 10 : 11;  // IPV6_MULTICAST_HOPS/LOOP
+  return true;
 }
 
 // xnu binds a socket to an interface by index, with IP_BOUND_IF for
@@ -99,30 +117,77 @@ static bool setsockopt_polyfill(int *optname) {
  */
 int setsockopt(int fd, int level, int optname, const void *optval,
                uint32_t optlen) {
-  int e, rc;
+  int e, rc, hopt6;
+
+  // the bsds and windows order ip_mreq_source's fields differently
+  struct ip_mreq_source mrs;
+  bool shortmreq = false;
+  if (!IsLinux() && level == SOL_IP && optval &&
+      (optname == IP_ADD_SOURCE_MEMBERSHIP ||
+       optname == IP_DROP_SOURCE_MEMBERSHIP || optname == IP_BLOCK_SOURCE ||
+       optname == IP_UNBLOCK_SOURCE)) {
+    if (optlen < sizeof(mrs)) {
+      shortmreq = true;
+    } else {
+      const struct ip_mreq_source *m = optval;
+      mrs.imr_multiaddr = m->imr_multiaddr;
+      mrs.imr_interface = m->imr_sourceaddr;
+      mrs.imr_sourceaddr = m->imr_interface;
+      optval = &mrs;
+      optlen = sizeof(mrs);
+    }
+  }
+
+  // the forced sizes need a capability on linux; the hosts have no
+  // such thing, so they set the plain sizes
+  if (!IsLinux() && level == SOL_SOCKET) {
+    if (optname == SO_SNDBUFFORCE)
+      optname = SO_SNDBUF;
+    else if (optname == SO_RCVBUFFORCE)
+      optname = SO_RCVBUF;
+  }
 
   if (level == -1 || !optname) {
     rc = enoprotoopt();  // see libc/sysv/consts.sh
-  } else if ((!optval && optlen)) {
+  } else if (!optval && optlen && level != SOL_ALG) {
     rc = efault();
+  } else if (shortmreq) {
+    rc = einval();
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (__tcphint(level, optname)) {
     rc = __tcphint_set(fd, optname, optval, optlen);
+  } else if (__usertimeout(level, optname)) {
+    rc = __usertimeout_set(fd, optval, optlen);
   } else if (__credopt(level, optname)) {
     rc = __credopt_set(fd, optname, optval, optlen);
+  } else if (__bindif(level, optname)) {
+    rc = __bindif_set(fd, level, optname, optval, optlen);
   } else if (IsXnu() && level == SOL_SOCKET && optname == SO_BINDTODEVICE) {
     rc = setsockopt_xnu_bindtodevice(fd, optval, optlen);
+  } else if (__sockopt_xnu_v4mcast_on_v6(fd, level, optname, &hopt6)) {
+    int v = optlen == 1 ? *(const uint8_t *)optval : *(const int *)optval;
+    rc = optlen != 1 && optlen < sizeof(int)
+             ? einval()
+             : sys_setsockopt(fd, IPPROTO_IPV6, hopt6, &v, sizeof(v));
   } else if (IsXnu() && __is_pmtudisc(level, optname)) {
     // xnu only has the don't fragment bit, IP_DONTFRAG and IPV6_DONTFRAG
     if (optlen < sizeof(int)) {
       rc = einval();
     } else {
-      int df = *(const int *)optval >= IP_PMTUDISC_DO;
+      int mode = *(const int *)optval;
+      int df = mode >= IP_PMTUDISC_DO;
       rc = sys_setsockopt(fd, level, level == SOL_IP ? 28 : 62, &df,
                           sizeof(df));
-      if (rc == -1)
+      if (rc == -1) {
         setsockopt_xnu_ipv4_on_ipv6(fd, level);
+      } else {
+        // the mode itself, for getsockopt(), which the bit can't tell
+        __fds_lock();
+        if (__ensurefds_unlocked(fd) != -1)
+          __get_pib()->fds.p[fd].pmtudisc = mode + 1;
+        __fds_unlock();
+      }
     }
   } else if (!IsWindows()) {
     rc = -1;

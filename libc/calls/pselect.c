@@ -24,6 +24,7 @@
 #include "libc/calls/struct/timespec.internal.h"
 #include "libc/calls/struct/timeval.h"
 #include "libc/dce.h"
+#include "libc/macros.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
 #include "libc/sock/internal.h"
@@ -32,6 +33,7 @@
 #include "libc/sysv/consts/nrlinux.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
+#include "libc/str/str.h"
 
 /**
  * Checks status on multiple file descriptors at once.
@@ -64,7 +66,6 @@
  * @raise EBADF if an invalid file descriptor existed in an fd_set
  * @raise ECANCELED if thread was cancelled in masked mode
  * @raise EINVAL if `nfds` exceeded `RLIMIT_NOFILE`
- * @raise EINVAL if `nfds` exceeded `FD_SETSIZE`
  * @raise EINVAL if `nfds` was negative
  * @raise EINTR if signal was delivered
  * @cancelationpoint
@@ -88,21 +89,27 @@ int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
   fd_set *old_exceptfds_ptr = 0;
 
   BEGIN_CANCELATION_POINT;
-  if (nfds < 0 ||           //
-      nfds > FD_SETSIZE ||  //
-      nfds > ~__get_pib()->rlimit[RLIMIT_NOFILE].rlim_cur) {
+  // the kernels take sets wider than fd_set, up to the open file limit,
+  // and so does the windows emulation, which walks the bits up to nfds
+  if (nfds < 0 || nfds > ~__get_pib()->rlimit[RLIMIT_NOFILE].rlim_cur) {
     rc = einval();
   } else {
+    // a caller's set may hold only the bits up to nfds, as the kernel
+    // reads it, so the copies for the trace do the same
+    size_t setlen = MIN(sizeof(fd_set), (nfds + 7) / 8);
     if (readfds) {
-      old_readfds = *readfds;
+      bzero(&old_readfds, sizeof(old_readfds));
+      memcpy(&old_readfds, readfds, setlen);
       old_readfds_ptr = &old_readfds;
     }
     if (writefds) {
-      old_writefds = *writefds;
+      bzero(&old_writefds, sizeof(old_writefds));
+      memcpy(&old_writefds, writefds, setlen);
       old_writefds_ptr = &old_writefds;
     }
     if (exceptfds) {
-      old_exceptfds = *exceptfds;
+      bzero(&old_exceptfds, sizeof(old_exceptfds));
+      memcpy(&old_exceptfds, exceptfds, setlen);
       old_exceptfds_ptr = &old_exceptfds;
     }
     if (IsLinux()) {
@@ -133,11 +140,11 @@ int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
   END_CANCELATION_POINT;
 
   STRACE("pselect(%d, %s → [%s], %s → [%s], %s → [%s], %s, %s) → %d% m", nfds,
-         DescribeFdSet(0, nfds, old_readfds_ptr),
+         DescribeFdSet(0, MIN(nfds, FD_SETSIZE), old_readfds_ptr),
          DescribeFdSet(rc, nfds, readfds),
-         DescribeFdSet(0, nfds, old_writefds_ptr),
+         DescribeFdSet(0, MIN(nfds, FD_SETSIZE), old_writefds_ptr),
          DescribeFdSet(rc, nfds, writefds),
-         DescribeFdSet(0, nfds, old_exceptfds_ptr),
+         DescribeFdSet(0, MIN(nfds, FD_SETSIZE), old_exceptfds_ptr),
          DescribeFdSet(rc, nfds, exceptfds),  //
          DescribeTimespec(0, timeout),        //
          DescribeSigset(0, sigmask), rc);

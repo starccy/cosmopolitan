@@ -67,6 +67,11 @@
  * (socketpair-nt.c), where one message is one write. Their frame goes in
  * front of the data in the same message, and reads look for it there.
  *
+ * A SOCK_SEQPACKET socket made by socket() is a stream socket underneath
+ * (afunix has no other kind) on which every message is a frame, with or
+ * without descriptors, and a receive takes one frame: what doesn't fit
+ * is dropped and reported as MSG_TRUNC, as linux does.
+ *
  * The sender of what a receive returns, for SO_PASSCRED: a socket comes
  * from a process (Fd::credpid), the one that made it or accepted it. A
  * peer's SIO_AF_UNIX_GETPEERPID names that process, and for a pair it's
@@ -116,7 +121,14 @@ struct ScmRecvArgs {
 };
 
 textwindows bool __scm_stream_nt(struct Fd *f) {
-  return f->kind == kFdSocket && f->family == AF_UNIX && f->type == SOCK_STREAM;
+  return f->kind == kFdSocket && f->family == AF_UNIX &&
+         (f->type == SOCK_STREAM || f->type == SOCK_SEQPACKET);
+}
+
+// a socket() made SOCK_SEQPACKET, framed on a stream
+textwindows bool __scm_seqpacket_nt(struct Fd *f) {
+  return f->kind == kFdSocket && f->family == AF_UNIX &&
+         f->type == SOCK_SEQPACKET;
 }
 
 textwindows static int ScmRecvStart(int64_t handle, struct NtOverlapped *overlap,
@@ -414,12 +426,14 @@ textwindows ssize_t __scm_recv_nt(struct Fd *f, const struct iovec *iov,
                                   size_t iovlen, uint32_t flags, bool nonblock,
                                   uint64_t waitmask) {
   bool peek = flags & MSG_PEEK;
+  bool seq = f->type == SOCK_SEQPACKET;
   uint32_t pflags =
       __msg2host((flags & ~(MSG_DONTWAIT | MSG_WAITALL)) | MSG_PEEK);
   uint32_t hflags = __msg2host(flags & ~(MSG_DONTWAIT | MSG_WAITALL | MSG_PEEK));
   size_t room = 0;
   for (size_t i = 0; i < iovlen && i < 16; ++i)
     room += iov[i].iov_len;
+  f->msgtrunc = false;
   for (;;) {
     if (nonblock && !__winsock_recv_ready(f->handle, flags))
       return eagain();
@@ -435,6 +449,10 @@ textwindows ssize_t __scm_recv_nt(struct Fd *f, const struct iovec *iov,
     if (f->credleft) {
       // the rest of a framed message, from its sender
       want = MIN(want, f->credleft);
+    } else if (seq) {
+      // every message is a frame, so what's queued starts with one
+      f->credfrom = 0;
+      off = 0;
     } else {
       f->credfrom = 0;
       off = ViewFind(iov, iovlen, got, 0, &partial);
@@ -462,8 +480,11 @@ textwindows ssize_t __scm_recv_nt(struct Fd *f, const struct iovec *iov,
       ssize_t datalen = ScmTakeFrame(f, waitmask);
       if (datalen == -1)
         return -1;
-      if (!datalen)
+      if (!datalen) {
+        if (seq)
+          return 0;  // an empty message
         continue;  // nothing but descriptors, keep going
+      }
       want = (size_t)datalen < room ? datalen : room;
       if (nonblock && !__winsock_recv_ready(f->handle, flags))
         return eagain();
@@ -478,6 +499,17 @@ textwindows ssize_t __scm_recv_nt(struct Fd *f, const struct iovec *iov,
       rc = 0;
     if (rc > 0 && !peek)
       f->credleft -= MIN((size_t)rc, f->credleft);
+    // a message is one receive: the rest of it is thrown away
+    if (rc > 0 && !peek && seq && f->credleft) {
+      char drop[512];
+      while (f->credleft) {
+        size_t n = MIN(f->credleft, sizeof(drop));
+        if (ScmRecvAll(f->handle, drop, n, waitmask) == -1)
+          break;
+        f->credleft -= n;
+      }
+      f->msgtrunc = true;
+    }
     return rc;
   }
 }
@@ -805,12 +837,13 @@ textwindows ssize_t __scm_send_nt(int fd, const struct msghdr *msg, int flags) {
   if (n == -1)
     return -1;
   int32_t credpid = ScmCredPid(f);
-  if (!n && !credpid)
+  bool seq = f->type == SOCK_SEQPACKET;
+  if (!n && !credpid && !seq)
     return __winsock_send_nt(fd, msg->msg_iov, msg->msg_iovlen, flags);
   size_t datalen = 0;
   for (size_t i = 0; i < msg->msg_iovlen; ++i)
     datalen += msg->msg_iov[i].iov_len;
-  if (!datalen)
+  if (!datalen && !seq)
     return 0;
 
   uint32_t pid = GetCurrentProcessId(), br;
@@ -1225,7 +1258,7 @@ textwindows ssize_t sys_recv_msgpipe_nt(int fd, const struct iovec *iov,
       __scm_msgpipe_recv_nt(fd, iov, iovlen, flags, msg, cloexec, m);
   __sig_unblock(m);
   if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
-    _weaken(__epoll_rearm_in)(fd);
+    _weaken(__epoll_rearm_in)(fd, (flags & MSG_PEEK) ? 0 : rc);
   return rc;
 }
 

@@ -1,6 +1,7 @@
 #ifndef COSMOPOLITAN_LIBC_SOCK_INTERNAL_H_
 #define COSMOPOLITAN_LIBC_SOCK_INTERNAL_H_
 #include "libc/calls/struct/iovec.h"
+#include "libc/dce.h"
 #include "libc/calls/struct/sigset.h"
 #include "libc/calls/struct/timespec.h"
 #include "libc/intrin/fds.h"
@@ -114,9 +115,14 @@ ssize_t __winsock_block(int64_t, uint32_t, bool, uint32_t, uint64_t,
 
 struct msghdr;
 bool __scm_stream_nt(struct Fd *);
+bool __scm_seqpacket_nt(struct Fd *);
 bool __scm_msgpipe_nt(struct Fd *);
 bool __tcphint(int, int);
 void __xnu_unix_setup(int, bool, bool);
+void __xnu_unix_seq_setup(int);
+bool __xnu_unix_seq(int);
+void __xnu_unix_seq_closing(int);
+bool __sockopt_xnu_v4mcast_on_v6(int, int, int, int *);
 void __xnu_unix_passcred(int, bool);
 int __xnu_unix_cred(int);
 void __cred_prepend(struct msghdr *, size_t, int);
@@ -127,7 +133,19 @@ ssize_t __xnu_unix_sendto(int, const void *, size_t, int, const void *,
                           uint32_t);
 ssize_t __xnu_unix_recvmsg(int, void *, int);
 ssize_t __xnu_unix_sendmsg(int, const void *, int);
+int __tcphint_check(int);
 int __tcphint_set(int, int, const void *, uint32_t);
+bool __usertimeout(int, int);
+int __usertimeout_set(int, const void *, uint32_t);
+int __usertimeout_get(int, void *, uint32_t *);
+int __usertimeout_nt(struct Fd *, unsigned);
+bool __bindif(int, int);
+bool __bindif_name(int, int);
+int __bindif_set(int, int, int, const void *, uint32_t);
+int __bindif_get(int, int, int, void *, uint32_t *);
+int __bindif_name_get(int, void *, uint32_t *);
+int __bindif_nt_set(struct Fd *, bool, unsigned);
+int __bindif_nt_get(struct Fd *, bool, unsigned *);
 int __tcphint_get(int, int, void *, uint32_t *);
 void __tcphint_reset(int);
 void __sockbuf_set(int, int);
@@ -208,11 +226,15 @@ forceinline bool __sockpair_nt(const struct Fd *f) {
 
 // whether an address is too short to be one. an AF_UNIX address is the
 // family plus as much of the path as there is, so "\0name" (linux's
-// abstract namespace) or a short path is under sizeof(struct sockaddr)
+// abstract namespace) or a short path is under sizeof(struct sockaddr).
+// linux checks the length itself, and some of its families (netlink)
+// are shorter than sockaddr
 forceinline bool __sockaddr_too_short(const struct sockaddr *addr,
                                       uint32_t size) {
   if (size < sizeof(addr->sa_family))
     return true;
+  if (IsLinux())
+    return false;
   if (size >= sizeof(struct sockaddr))
     return false;
   return addr->sa_family != AF_UNIX;

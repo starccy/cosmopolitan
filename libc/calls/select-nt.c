@@ -29,6 +29,7 @@
 #include "libc/sock/struct/pollfd.internal.h"
 #include "libc/sysv/consts/poll.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/str/str.h"
 #if SupportsWindows()
 
 // <sync libc/sysv/consts.sh>
@@ -95,13 +96,15 @@ textwindows int sys_select_nt(int nfds, fd_set *readfds, fd_set *writefds,
     return -1;
   }
 
-  // convert pollfd back to bitsets
+  // convert pollfd back to bitsets, touching only the bytes up to nfds,
+  // since a caller's set may be no wider than that, as on linux
+  size_t setlen = (nfds + 7) / 8;
   if (readfds)
-    FD_ZERO(readfds);
+    bzero(readfds, setlen);
   if (writefds)
-    FD_ZERO(writefds);
+    bzero(writefds, setlen);
   if (exceptfds)
-    FD_ZERO(exceptfds);
+    bzero(exceptfds, setlen);
   int bits = 0;
   for (size_t i = 0; i < pfds; ++i) {
     if (fds[i].revents & (POLLIN_ | POLLHUP_ | POLLERR_ | POLLNVAL_)) {

@@ -60,11 +60,16 @@ __winsock_block(int64_t handle, uint32_t flags, bool nonblock,
     deadline = timespec_max;
   }
 
+  // WSARecv() and WSAGetOverlappedResult() write their output flags
+  // into the same word, so a retry is given the caller's flags again
+  uint32_t inflags = flags;
+
   for (;;) {
     int got_sig = 0;
     bool got_cancel = false;
     bool got_eagain = false;
     uint32_t other_error = 0;
+    flags = inflags;
 
     // create event handle for overlapped i/o
     //

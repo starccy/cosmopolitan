@@ -17,12 +17,16 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
+#include "libc/nt/thunk/msabi.h"
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/sock.h"
+#include "libc/sysv/consts/ipproto.h"
+#include "libc/sysv/consts/ipv6.h"
+#include "libc/sysv/consts/sol.h"
 #if SupportsWindows()
 #include "libc/calls/state.internal.h"
 #include "libc/dce.h"
@@ -34,6 +38,8 @@
 // stripped during final link.
 __static_yoink("GetAdaptersAddresses");
 __static_yoink("tprecode16to8");
+
+__msabi extern typeof(__sys_setsockopt_nt) *const __imp_setsockopt;
 
 textwindows int sys_socket_nt(int family, int type, int protocol) {
   int64_t h;
@@ -51,7 +57,12 @@ textwindows int sys_socket_nt(int family, int type, int protocol) {
     }
     return fd;
   }
-  if ((h = WSASocket(__af2host(family), truetype, protocol, NULL, 0,
+  // afunix has no SOCK_SEQPACKET: one is a stream socket whose every
+  // message goes out as a frame, see scmrights-nt.c
+  int hosttype = truetype;
+  if (family == AF_UNIX && truetype == SOCK_SEQPACKET)
+    hosttype = SOCK_STREAM;
+  if ((h = WSASocket(__af2host(family), hosttype, protocol, NULL, 0,
                      kNtWsaFlagOverlapped)) != -1) {
     oflags = O_RDWR;
     if (type & SOCK_CLOEXEC)
@@ -69,6 +80,12 @@ textwindows int sys_socket_nt(int family, int type, int protocol) {
     __get_pib()->fds.p[fd].was_created_during_vfork = __vforked;
     if (truetype == SOCK_DGRAM)
       __winsock_udp_connreset(h, false);
+    // winsock makes them ipv6 only; linux takes ipv4 on them too
+    if (family == AF_INET6) {
+      uint32_t v = 0;
+      __imp_setsockopt(h, IPPROTO_IPV6, __sockopt2host(SOL_IPV6, IPV6_V6ONLY),
+                       &v, sizeof(v));
+    }
     return fd;
   } else {
     __releasefd(fd);

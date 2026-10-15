@@ -47,10 +47,14 @@ static int close_impl(int fd) {
   if (fd == 2 && !__vforked && _weaken(kloghandle))
     _weaken(kloghandle)();
 
-  // unix isn't required to track fds
+  // unix isn't required to track fds. a vforked child (posix_spawn's
+  // too) skips the kqueue bookkeeping: its lock may be held by a thread
+  // of the parent
   if (fd >= __get_pib()->fds.n) {
     if (IsWindows() || IsMetal())
       return ebadf();
+    if (IsXnu() && !__vforked && _weaken(__epoll_forget_kq))
+      _weaken(__epoll_forget_kq)(fd);
     return sys_close(fd);
   }
 
@@ -65,6 +69,13 @@ static int close_impl(int fd) {
   // would then come back EBADF without ever reaching the kernel
   int rc = 0;
   struct Fd *f = __get_pib()->fds.p + fd;
+  f->zipdir = 0;
+  f->listening = false;
+  if (IsXnu() && _weaken(__epoll_forget_kq))
+    _weaken(__epoll_forget_kq)(fd);
+  if (f->xnuseq && _weaken(__xnu_unix_seq_closing))
+    _weaken(__xnu_unix_seq_closing)(fd);
+  f->xnuseq = false;
   if (!(IsWindows() || IsMetal()) &&
       atomic_load_explicit(&f->kind, memory_order_acquire) == kFdEmpty)
     return sys_close(fd);

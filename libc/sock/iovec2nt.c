@@ -45,5 +45,10 @@ textwindows size_t __iovec2nt(struct NtIovec iovnt[hasatleast 16],
       break;
     }
   }
+  if (!j && iovlen) {
+    iovnt[0].buf = iov[0].iov_base;
+    iovnt[0].len = 0;
+    j = 1;
+  }
   return j;
 }

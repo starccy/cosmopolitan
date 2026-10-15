@@ -53,6 +53,8 @@
 #include "libc/nt/ipc.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/nt/file.h"
+#include "libc/nt/ntdll.h"
+#include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/enum/fileinformationclass.h"
 #include "libc/nt/struct/afd.h"
@@ -106,6 +108,10 @@
 // sleep is cut into POLL_INTERVAL_MS pieces and any handles next to
 // the sockets are looked at on the pipe schedule.
 #define POLL_BUDGET_MS 250
+
+// a wait that ends on the caller's deadline gets the fine scheduler tick
+// for its last POLL_COARSE_MS only
+#define POLL_COARSE_MS 32
 
 textwindows static int sys_poll_nt_budget(void) {
   static int budget = -1;
@@ -315,6 +321,15 @@ textwindows static int sys_poll_nt_probe(struct pollfd *fds, int *indices,
 // a SOCK_DGRAM or SOCK_SEQPACKET socketpair end, answered the way linux
 // does: writable while the pipe has room or the peer is gone, and a gone
 // peer hangs up SOCK_SEQPACKET, which then reads end of file
+// a pipe whose other end is closed
+textwindows static bool sys_poll_nt_pipegone(int64_t h) {
+  struct NtFilePipeLocalInformation pi;
+  struct NtIoStatusBlock io;
+  return !NtQueryInformationFile(h, &io, &pi, sizeof(pi),
+                                 kNtFilePipeLocalInformation) &&
+         pi.NamedPipeState == 4;  // FILE_PIPE_CLOSING_STATE
+}
+
 textwindows static short sys_poll_nt_msgpipe(struct Fd *f, int64_t h,
                                              short ev) {
   struct NtFilePipeLocalInformation pi;
@@ -345,8 +360,7 @@ textwindows static int sys_poll_nt_actual_impl(
   bool gotconsole = false;
   bool canarm;
   bool sockwoke = false;
-  bool fast;
-  // a wait with a deadline gets the 1ms scheduler tick, like nanosleep()
+  bool fast, atdeadline;
   bool timed = timespec_cmp(deadline, timespec_max) < 0;
   uint32_t cm, fi, sn, pn, nh, avail, waitfor, pipems, already_slept;
 
@@ -453,6 +467,10 @@ textwindows static int sys_poll_nt_actual_impl(
                                               filehands[i], ev);
       } else if ((ev & POLLWRNORM_) && !(ev & POLLRDNORM_)) {
         fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
+        // linux errors a pipe writer with no readers left
+        if (GetFileType(filehands[i]) == kNtFileTypePipe &&
+            sys_poll_nt_pipegone(filehands[i]))
+          fds[fi].revents |= POLLERR_;
       } else if (GetFileType(filehands[i]) == kNtFileTypePipe) {
         gotpipe = true;
         // a pty master takes input through a second pipe, so it is
@@ -461,6 +479,9 @@ textwindows static int sys_poll_nt_actual_impl(
         if (PeekNamedPipe(filehands[i], 0, 0, 0, &avail, 0)) {
           if (avail) {
             fds[fi].revents = POLLRDNORM_;
+            // and hangs up a reader whose writers are gone
+            if (sys_poll_nt_pipegone(filehands[i]))
+              fds[fi].revents |= POLLHUP_;
           } else if (ptym && _weaken(__pty_hangup) &&
                      _weaken(__pty_hangup)(__get_pib()->fds.p + fds[fi].fd)) {
             fds[fi].revents = POLLHUP_;
@@ -504,7 +525,15 @@ textwindows static int sys_poll_nt_actual_impl(
       if (waitfor > pipems)
         waitfor = pipems;
     }
-    fast = timed || pipems == 1;
+    // a set that sleeps in WSAPoll() keeps the fine tick throughout,
+    // since it can only be given whole milliseconds
+    atdeadline =
+        timed && waitfor && waitfor == sys_poll_nt_waitms(deadline, false);
+    if (atdeadline && waitfor > POLL_COARSE_MS && (canarm || !sn)) {
+      waitfor -= POLL_COARSE_MS;
+      atdeadline = false;
+    }
+    fast = (timed && sn && !canarm) || atdeadline || pipems == 1;
 
     // check for events and/or readiness on sockets
     // we always do this due to issues with POLLOUT
@@ -581,11 +610,27 @@ textwindows static int sys_poll_nt_actual_impl(
       uint32_t wi = pn;
       if (!_is_canceled() &&
           !(_weaken(__sig_get) && (sig = _weaken(__sig_get)(waitmask)))) {
-        if (fast)
+        if (atdeadline) {
+          // in 100ns units from the deadline, since a millisecond count
+          // would be rounded up after a coarse wait
+          struct timespec left =
+              timespec_subz(deadline, sys_clock_gettime_monotonic_nt());
+          int64_t due = -(int64_t)((timespec_tonanos(left) + 99) / 100);
           __nt_fast_tick(true);
-        wi = __imp_WaitForMultipleObjects(nh, filehands, 0, waitfor);
-        if (fast)
+          wi = NtWaitForMultipleObjects(nh, filehands, kNtWaitAny, false,
+                                        &due);
           __nt_fast_tick(false);
+          if (wi >= 0xc0000000u) {
+            SetLastError(RtlNtStatusToDosError(wi));
+            wi = -1u;
+          }
+        } else {
+          if (fast)
+            __nt_fast_tick(true);
+          wi = __imp_WaitForMultipleObjects(nh, filehands, 0, waitfor);
+          if (fast)
+            __nt_fast_tick(false);
+        }
       }
       //!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!//
       __interruptible_end();
@@ -764,15 +809,22 @@ textwindows static int sys_poll_nt_impl(struct pollfd *fds, uint64_t nfds,
     // what's here is mostly pipes, or it would have fit in one call
     uint32_t pipems = sys_poll_nt_pipems(started);
     next = timespec_add(now, timespec_frommillis(pipems));
+    bool fast = pipems == 1;
     if (timespec_cmp(next, deadline) >= 0) {
       target = deadline;
+      struct timespec coarse =
+          timespec_sub(deadline, timespec_frommillis(POLL_COARSE_MS));
+      if (timespec_cmp(now, coarse) < 0) {
+        target = coarse;
+      } else {
+        fast = true;
+      }
     } else {
       target = next;
     }
     // _park_norestart() wants its deadline on the wall clock
     sys_clock_gettime_nt(0, &wall);
     wall = timespec_add(wall, timespec_sub(target, now));
-    bool fast = pipems == 1 || timespec_cmp(deadline, timespec_max) < 0;
     if (fast)
       __nt_fast_tick(true);
     rc = _park_norestart(wall, waitmask);

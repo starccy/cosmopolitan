@@ -38,8 +38,12 @@
 #include "libc/sysv/consts/ipproto.h"
 #include "libc/sysv/consts/ipv6.h"
 #include "libc/sysv/consts/so.h"
+#include "libc/sysv/consts/sock.h"
 #include "libc/sysv/consts/sol.h"
+#include "libc/sysv/consts/udp.h"
 #include "libc/sysv/errfuns.h"
+
+#define UDP_RECV_MAX_COALESCED_SIZE_NT 3
 #if SupportsWindows()
 
 __msabi extern typeof(__sys_setsockopt_nt) *const __imp_setsockopt;
@@ -151,6 +155,23 @@ textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
     if (optlen < sizeof(int))
       return einval();
     fd->tclass = *(const int *)optval;
+    return 0;
+  }
+
+  // linux's UDP_GRO is a boolean; winsock coalesces up to a byte count
+  // given with UDP_RECV_MAX_COALESCED_SIZE, which only WSARecvMsg()
+  // honors. the coalesced size comes back as UDP_COALESCED_INFO and
+  // cmsg-nt.c turns it into linux's UDP_GRO control message
+  uint32_t coalesced;
+  if (level == SOL_UDP && optname == UDP_GRO) {
+    if (fd->type != SOCK_DGRAM)
+      return enoprotoopt();
+    if (!optval || optlen < sizeof(int))
+      return einval();
+    coalesced = *(const int *)optval ? 65535 : 0;
+    if (__imp_setsockopt(fd->handle, IPPROTO_UDP, UDP_RECV_MAX_COALESCED_SIZE_NT,
+                         &coalesced, sizeof(coalesced)) == -1)
+      return __winsockerr();
     return 0;
   }
 

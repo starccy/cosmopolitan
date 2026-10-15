@@ -49,6 +49,7 @@ kIpOptnames:
 	.e	IP_MULTICAST_TTL,"MULTICAST_TTL"
 	.e	IP_PKTINFO,"PKTINFO"
 	.e	IP_RECVTOS,"RECVTOS"
+	.e	IP_UNICAST_IF,"UNICAST_IF"
 	.long	MAGNUM_TERMINATOR
 	.endobj	kIpOptnames,globl,hidden
 	.overrun

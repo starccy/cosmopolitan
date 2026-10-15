@@ -26,6 +26,8 @@
 #include "libc/sock/struct/ifconf.h"
 #include "libc/sock/struct/ifreq.h"
 #include "libc/sock/struct/sockaddr6.h"
+#include "libc/sock/ifname.h"
+#include "libc/sock/struct/sockaddr_ll.h"
 #include "libc/stdio/stdio.h"
 #include "libc/str/str.h"
 #include "libc/sysv/consts/af.h"
@@ -41,6 +43,14 @@ struct IfAddr {
   struct sockaddr_in netmask;
   struct sockaddr_in bstaddr;
   char pad[sizeof(struct sockaddr_storage)];
+};
+
+// linux's AF_PACKET entry for an interface, holding its link layer
+// address; ifa_data (linux's rtnl_link_stats) is left null
+struct IfAddrLL {
+  struct ifaddrs ifaddrs;
+  char name[IFNAMSIZ];
+  struct sockaddr_ll addr;
 };
 
 struct IfAddr6Info {
@@ -238,6 +248,46 @@ int getifaddrs(struct ifaddrs **out_ifpp) {
               res = (struct ifaddrs *)addr6;
             }
           }
+        }
+        // one AF_PACKET entry per interface, in front like linux
+        char names[64][IFNAMSIZ];
+        int nnames = 0;
+        for (struct ifreq *ifr = (struct ifreq *)data;
+             (char *)ifr < data + conf.ifc_len && nnames < 64; ++ifr) {
+          char base[IFNAMSIZ];
+          size_t len = strcspn(ifr->ifr_name, ":");
+          int dup = 0;
+          if (!len || len >= IFNAMSIZ)
+            continue;
+          memcpy(base, ifr->ifr_name, len);
+          base[len] = 0;
+          for (int i = 0; i < nnames; ++i)
+            if (!strcmp(names[i], base))
+              dup = 1;
+          if (dup)
+            continue;
+          strcpy(names[nnames++], base);
+          struct ifreq hw = {0};
+          strcpy(hw.ifr_name, base);
+          if (ioctl(fd, SIOCGIFHWADDR, &hw))
+            continue;
+          struct IfAddrLL *ll;
+          if (!(ll = calloc(1, sizeof(*ll))))
+            continue;
+          strcpy(ll->name, base);
+          ll->ifaddrs.ifa_name = ll->name;
+          ll->ifaddrs.ifa_addr = (struct sockaddr *)&ll->addr;
+          ll->addr.sll_family = AF_PACKET;
+          ll->addr.sll_ifindex = if_nametoindex(base);
+          ll->addr.sll_hatype = hw.ifr_hwaddr.sa_family;
+          ll->addr.sll_halen = 6;
+          memcpy(ll->addr.sll_addr, hw.ifr_hwaddr.sa_data, 6);
+          struct ifreq fl = {0};
+          strcpy(fl.ifr_name, base);
+          if (!ioctl(fd, SIOCGIFFLAGS, &fl))
+            ll->ifaddrs.ifa_flags = (unsigned short)fl.ifr_flags;
+          ll->ifaddrs.ifa_next = res;
+          res = (struct ifaddrs *)ll;
         }
         *out_ifpp = res;
         rc = 0;

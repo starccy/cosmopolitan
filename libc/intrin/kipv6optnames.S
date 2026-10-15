@@ -52,6 +52,8 @@ kIpv6Optnames:
 	.e	IPV6_PKTINFO,"PKTINFO"
 	.e	IPV6_RECVRTHDR,"RECVRTHDR"
 	.e	IPV6_RTHDR,"RTHDR"
+	.e	IPV6_UNICAST_IF,"UNICAST_IF"
+	.e	IPV6_MTU,"MTU"
 	.long	MAGNUM_TERMINATOR
 	.endobj	kIpv6Optnames,globl,hidden
 	.overrun

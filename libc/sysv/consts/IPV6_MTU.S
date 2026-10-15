@@ -1,2 +1,2 @@
 #include "libc/sysv/consts/syscon.internal.h"
-.syscon scm,SCM_TIMESTAMPNS,35,35,0,0,0,0,0,0
+.syscon ipv6,IPV6_MTU,24,24,0,0,0,0,0,72

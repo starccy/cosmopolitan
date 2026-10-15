@@ -32,9 +32,14 @@
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/so.h"
 #include "libc/sysv/consts/af.h"
+#include "libc/sysv/consts/ipproto.h"
 #include "libc/sysv/consts/ipv6.h"
+#include "libc/sysv/consts/sock.h"
 #include "libc/sysv/consts/sol.h"
+#include "libc/sysv/consts/udp.h"
 #include "libc/sysv/errfuns.h"
+
+#define UDP_RECV_MAX_COALESCED_SIZE_NT 3
 #include "libc/sysv/errno.h"
 #if SupportsWindows()
 
@@ -64,6 +69,21 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
     return 0;
   }
 
+  // UDP_GRO is on when winsock has a coalescing size, see setsockopt-nt.c
+  if (level == SOL_UDP && optname == UDP_GRO) {
+    uint32_t coalesced = 0, len = sizeof(coalesced);
+    if (fd->type != SOCK_DGRAM)
+      return enoprotoopt();
+    if (in_optlen < sizeof(int))
+      return einval();
+    if (__imp_getsockopt(fd->handle, IPPROTO_UDP, UDP_RECV_MAX_COALESCED_SIZE_NT,
+                         &coalesced, &len) == -1)
+      return __winsockerr();
+    *(int *)out_opt_optval = !!coalesced;
+    *inout_optlen = sizeof(int);
+    return 0;
+  }
+
   if ((level == SOL_SOCKET && optname == SO_REUSEPORT) ||
       (level == SOL_IPV6 && optname == IPV6_TCLASS)) {
     if (level == SOL_IPV6 && fd->family != AF_INET6)
@@ -76,6 +96,29 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
     return 0;
   }
 
+  if (level == SOL_SOCKET && optname == SO_TYPE) {
+    if (in_optlen < sizeof(int))
+      return einval();
+    *(int *)out_opt_optval = fd->type;
+    *inout_optlen = sizeof(int);
+    return 0;
+  }
+
+  if (level == SOL_SOCKET && (optname == SO_DOMAIN || optname == SO_PROTOCOL)) {
+    if (in_optlen < sizeof(int))
+      return einval();
+    int v = fd->family;
+    if (optname == SO_PROTOCOL) {
+      v = fd->protocol;
+      if (!v && (fd->family == AF_INET || fd->family == AF_INET6))
+        v = fd->type == SOCK_STREAM  ? IPPROTO_TCP
+            : fd->type == SOCK_DGRAM ? IPPROTO_UDP
+                                     : 0;
+    }
+    *(int *)out_opt_optval = v;
+    *inout_optlen = sizeof(int);
+    return 0;
+  }
   if (level == SOL_SOCKET && optname == SO_ERROR) {
     if (in_optlen < sizeof(int))
       return einval();

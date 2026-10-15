@@ -183,7 +183,7 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
                            msg->msg_name,
                            msg->msg_name ? &msg->msg_namelen : 0);
       if (rc != -1) {
-        msg->msg_flags = 0;
+        msg->msg_flags = f->msgtrunc ? MSG_TRUNC : 0;
         if (msg->msg_control) {
           if (__scm_stream_nt(f)) {
             __scm_take_nt(f, msg, cloexec);

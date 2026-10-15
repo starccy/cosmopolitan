@@ -2,6 +2,7 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/struct/stat.h"
+#include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/intrin/fds.h"
@@ -26,6 +27,7 @@
 #include "libc/sysv/consts/sock.h"
 #include "libc/sysv/consts/sol.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/thread/thread.h"
 
 // AF_UNIX datagram sockets on xnu, made to behave like linux's
 //
@@ -52,8 +54,22 @@
 // with its pid in front of each datagram, and the receiver takes it off
 // again. host programs never set the attribute and never see the head.
 // a connected socket's sender is the one LOCAL_PEERPID names
+//
+// a SOCK_SEQPACKET socket made by socket(), which xnu hasn't got, is a
+// stream socket on which every message is a frame: a 4 byte length in
+// front of the data. a receive takes one frame and drops what doesn't
+// fit, saying MSG_TRUNC, as linux does. a frame only goes out whole: a
+// nonblocking send that doesn't fit the room the peer has left is
+// EAGAIN, since the kernel would otherwise send part of it. passed
+// descriptors ride on the frame's first bytes, so the header is
+// received with the caller's control buffer and the data after it. the
+// ends are marked in the descriptor table like the pairs, and a socket
+// accept() takes from a marked listener is marked too
 
 #define LINUX_BUFSIZE 212992
+#define SEQ_HDR       4
+#define SEQ_MAX       (LINUX_BUFSIZE - SEQ_HDR)
+#define XNU_FIONSPACE 0x40046676
 #define XNU_SO_NREAD  0x1020
 #define SLICE_MS      50
 
@@ -148,6 +164,354 @@ void __xnu_unix_setup(int fd, bool seqpacket, bool pair) {
  */
 bool __xnu_seqpacket(int fd) {
   return Marked(fd) && Kind(fd) == KIND_SEQPACKET;
+}
+
+// whether fd carries a framed seqpacket mark, without asking the kernel
+static bool SeqMarked(int fd) {
+  return fd >= 0 && fd < __get_pib()->fds.n && __get_pib()->fds.p[fd].xnuseq;
+}
+
+// a framed seqpacket socket whose mark is still its own
+static bool Seq(int fd) {
+  if (!SeqMarked(fd))
+    return false;
+  if (Inode(fd) == __get_pib()->fds.p[fd].xnuino)
+    return true;
+  __get_pib()->fds.p[fd].xnuseq = false;
+  return false;
+}
+
+/**
+ * Marks a stream socket on xnu as a SOCK_SEQPACKET one, framed as
+ * described at the top of this file.
+ */
+void __xnu_unix_seq_setup(int fd) {
+  int v = LINUX_BUFSIZE;
+  int e = errno;
+  sys_setsockopt(fd, __sol2host(SOL_SOCKET),
+                 __sockopt2host(SOL_SOCKET, SO_SNDBUF), &v, sizeof(v));
+  sys_setsockopt(fd, __sol2host(SOL_SOCKET),
+                 __sockopt2host(SOL_SOCKET, SO_RCVBUF), &v, sizeof(v));
+  int64_t ino = Inode(fd);
+  errno = e;
+  __fds_lock();
+  if (__ensurefds_unlocked(fd) != -1) {
+    __get_pib()->fds.p[fd].xnuseq = ino != -1;
+    __get_pib()->fds.p[fd].xnupkt = false;
+    __get_pib()->fds.p[fd].xnudgram = false;
+    __get_pib()->fds.p[fd].xnuino = ino;
+  }
+  __fds_unlock();
+}
+
+/**
+ * Returns whether fd is a socket(SOCK_SEQPACKET) end on xnu.
+ */
+bool __xnu_unix_seq(int fd) {
+  return Seq(fd);
+}
+
+static bool NonBlocking(int, int);
+
+// the iovecs a receive or send moves: the host msghdr's, or the call's
+static const struct iovec *SeqIov(struct XnuIo *io, int *n) {
+  if (io->msg) {
+    struct msghdr *m = io->msg;
+    *n = (int)(uint32_t)m->msg_iovlen;
+    return m->msg_iov;
+  }
+  *n = io->iovlen;
+  return io->iov;
+}
+
+// the receive flags the kernel gets, with the ones handled here left out
+static int SeqHostFlags(int flags) {
+  return __msg2host(flags & ~(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT | MSG_WAITALL));
+}
+
+// MSG_TRUNC added to the host flags a receive packed above its control
+// length, see recvmsg.c
+static uint64_t SeqPack(uint64_t packed, bool trunc) {
+  uint32_t hostflags = packed >> 32;
+  if (trunc)
+    hostflags |= __msg2host(MSG_TRUNC);
+  return (uint32_t)packed | ((uint64_t)hostflags << 32);
+}
+
+// the rest of a frame a nonblocking send couldn't fit, which goes out
+// ahead of the next send on the socket. the room the peer has left
+// can't be asked for, so the kernel sends what fits and the rest is
+// kept here; the caller is told the whole message went, as it would
+// be if the kernel had it. a list inherited through fork() belongs to
+// the parent, which keeps sending it
+struct SeqTail {
+  struct SeqTail *next;
+  int fd;
+  int pid;
+  int64_t ino;
+  char *p;
+  size_t n;
+  size_t off;
+};
+
+static struct SeqTail *g_seqtails;
+static pthread_mutex_t g_seqtaillock = PTHREAD_MUTEX_INITIALIZER;
+
+// under g_seqtaillock: the tail of fd, dropping what's stale
+static struct SeqTail **SeqTailOf(int fd) {
+  int pid = getpid();
+  struct SeqTail **pp = &g_seqtails, *t;
+  while ((t = *pp)) {
+    if (t->pid != pid || (t->fd == fd && t->ino != Inode(fd))) {
+      *pp = t->next;
+      free(t->p);
+      free(t);
+      continue;
+    }
+    if (t->fd == fd)
+      return pp;
+    pp = &t->next;
+  }
+  return 0;
+}
+
+// sends what's kept for fd: 0 when nothing is left, -1 w/ errno
+static int SeqFlush(int fd, bool nonblock) {
+  int hdontwait = __msg2host(MSG_DONTWAIT);
+  int rc = 0;
+  pthread_mutex_lock(&g_seqtaillock);
+  struct SeqTail **pp = SeqTailOf(fd), *t = pp ? *pp : 0;
+  while (t && t->off < t->n) {
+    ssize_t r = sys_sendto(fd, t->p + t->off, t->n - t->off,
+                           nonblock ? hdontwait : 0, 0, 0);
+    if (r == -1) {
+      rc = -1;
+      break;
+    }
+    t->off += r;
+  }
+  if (pp && !rc) {
+    *pp = t->next;
+    free(t->p);
+    free(t);
+  }
+  pthread_mutex_unlock(&g_seqtaillock);
+  return rc;
+}
+
+// keeps what sendmsg() left of a frame: bytes from `sent` on
+static void SeqKeep(int fd, const struct iovec *iov, int n, size_t sent) {
+  struct SeqTail *t = calloc(1, sizeof(*t));
+  size_t total = 0;
+  for (int i = 0; i < n; ++i)
+    total += iov[i].iov_len;
+  if (!t || !(t->p = malloc(total - sent))) {
+    free(t);
+    return;
+  }
+  size_t at = 0;
+  for (int i = 0; i < n; ++i) {
+    const char *p = iov[i].iov_base;
+    size_t l = iov[i].iov_len;
+    if (sent >= l) {
+      sent -= l;
+      continue;
+    }
+    memcpy(t->p + at, p + sent, l - sent);
+    at += l - sent;
+    sent = 0;
+  }
+  t->n = at;
+  t->fd = fd;
+  t->pid = getpid();
+  t->ino = Inode(fd);
+  pthread_mutex_lock(&g_seqtaillock);
+  t->next = g_seqtails;
+  g_seqtails = t;
+  pthread_mutex_unlock(&g_seqtaillock);
+}
+
+/**
+ * Sends what's kept for a seqpacket socket on xnu before it closes,
+ * without waiting.
+ */
+void __xnu_unix_seq_closing(int fd) {
+  int e = errno;
+  SeqFlush(fd, true);
+  pthread_mutex_lock(&g_seqtaillock);
+  struct SeqTail **pp = SeqTailOf(fd), *t;
+  if (pp) {
+    t = *pp;
+    *pp = t->next;
+    free(t->p);
+    free(t);
+  }
+  pthread_mutex_unlock(&g_seqtaillock);
+  errno = e;
+}
+
+// one message out as a frame, see the top of this file
+static ssize_t SeqSend(int fd, int flags, struct XnuIo *io) {
+  int n;
+  const struct iovec *iov = SeqIov(io, &n);
+  size_t len = 0;
+  for (int i = 0; i < n; ++i)
+    len += iov[i].iov_len;
+  if (len > SEQ_MAX)
+    return emsgsize();
+  int hflags = __msg2host(flags);
+  if (hflags == -1)
+    return einval();
+  bool nonblock = NonBlocking(fd, flags);
+  if (SeqFlush(fd, nonblock) == -1)
+    return -1;
+  uint32_t hdr = len;
+  struct iovec *iov2 = alloca((n + 1) * sizeof(*iov2));
+  iov2[0].iov_base = &hdr;
+  iov2[0].iov_len = SEQ_HDR;
+  memcpy(iov2 + 1, iov, n * sizeof(*iov));
+  struct msghdr m = {.msg_iov = iov2, .msg_iovlen = n + 1};
+  if (io->msg) {
+    struct msghdr *um = io->msg;
+    m.msg_control = um->msg_control;
+    m.msg_controllen = (uint32_t)um->msg_controllen;
+  }
+  ssize_t rc = sys_sendmsg(fd, &m, hflags);
+  if (rc == -1)
+    return -1;
+  if ((size_t)rc < SEQ_HDR + len)
+    SeqKeep(fd, iov2, n + 1, rc);
+  return len;
+}
+
+// one frame in, see the top of this file
+static ssize_t SeqRecv(int fd, int flags, struct XnuIo *io) {
+  int n;
+  const struct iovec *iov = SeqIov(io, &n);
+  size_t room = 0;
+  for (int i = 0; i < n; ++i)
+    room += iov[i].iov_len;
+  bool nonblock = NonBlocking(fd, flags);
+  int hpeek = __msg2host(MSG_PEEK);
+  int hwaitall = __msg2host(MSG_WAITALL);
+  int hdontwait = __msg2host(MSG_DONTWAIT);
+  int hflags = SeqHostFlags(flags);
+  if (hflags == -1)
+    return einval();
+  struct msghdr *um = io->msg;
+  if (io->addrsize)
+    *io->addrsize = 0;
+  // linux names the sender, which is the peer
+  if (um) {
+    uint32_t len = um->msg_namelen;
+    int e = errno;
+    um->msg_namelen = 0;
+    if (um->msg_name && __sys_getpeername(fd, um->msg_name, &len) != -1)
+      um->msg_namelen = len;
+    errno = e;
+  }
+  // the whole frame has to be there before any of it is taken
+  uint32_t len;
+  for (int ms = 1;; ms = MIN(ms * 2, SLICE_MS)) {
+    int avail = GetSockInt(fd, XNU_SO_NREAD);
+    ssize_t r;
+    if (avail < SEQ_HDR) {
+      if (avail <= 0) {
+        // the peek waits for data or end of file
+        r = sys_recvfrom(fd, &len, 1, hpeek | (nonblock ? hdontwait : 0), 0,
+                         0);
+        if (r <= 0)
+          return r;
+        continue;
+      }
+    } else {
+      r = sys_recvfrom(fd, &len, SEQ_HDR, hpeek | hwaitall, 0, 0);
+      if (r <= 0)
+        return r;
+      if (len > SEQ_MAX)
+        return eproto();  // not framed by us
+      if (r == SEQ_HDR && avail >= (int)(SEQ_HDR + len))
+        break;
+    }
+    if (nonblock)
+      return eagain();
+    if (poll(0, 0, ms) == -1)
+      return -1;
+  }
+  size_t take = MIN((size_t)len, room);
+  bool trunc = len > room;
+  if (flags & MSG_PEEK) {
+    char *tmp;
+    if (!(tmp = malloc(SEQ_HDR + take)))
+      return enomem();
+    struct iovec piov = {tmp, SEQ_HDR + take};
+    struct msghdr m = {.msg_iov = &piov, .msg_iovlen = 1};
+    if (um) {
+      m.msg_control = um->msg_control;
+      m.msg_controllen = (uint32_t)um->msg_controllen;
+    }
+    ssize_t r = sys_recvmsg(fd, &m, hflags | hpeek | hwaitall);
+    if (r == -1) {
+      free(tmp);
+      return -1;
+    }
+    size_t got = r > SEQ_HDR ? r - SEQ_HDR : 0, at = 0;
+    for (int i = 0; i < n && at < got; ++i) {
+      size_t c = MIN(iov[i].iov_len, got - at);
+      memcpy(iov[i].iov_base, tmp + SEQ_HDR + at, c);
+      at += c;
+    }
+    free(tmp);
+    if (um)
+      um->msg_controllen = SeqPack(m.msg_controllen, trunc);
+    return trunc && (flags & MSG_TRUNC) ? len : (ssize_t)got;
+  }
+  // the header, with the descriptors that came on it
+  uint32_t hdr;
+  struct iovec hiov = {&hdr, SEQ_HDR};
+  struct msghdr hm = {.msg_iov = &hiov, .msg_iovlen = 1};
+  if (um) {
+    hm.msg_control = um->msg_control;
+    hm.msg_controllen = (uint32_t)um->msg_controllen;
+  }
+  ssize_t r = sys_recvmsg(fd, &hm, hflags | hwaitall);
+  if (r < SEQ_HDR)
+    return r < 0 ? r : 0;
+  // then the data, what fits of it
+  struct iovec *riov = alloca(n * sizeof(*riov));
+  size_t done = 0;
+  while (done < take) {
+    int k = 0;
+    size_t skip = done, left = take - done;
+    for (int i = 0; i < n && left; ++i) {
+      size_t l = iov[i].iov_len;
+      if (skip >= l) {
+        skip -= l;
+        continue;
+      }
+      riov[k].iov_base = (char *)iov[i].iov_base + skip;
+      riov[k].iov_len = MIN(l - skip, left);
+      left -= riov[k].iov_len;
+      skip = 0;
+      ++k;
+    }
+    struct msghdr dm = {.msg_iov = riov, .msg_iovlen = k};
+    r = sys_recvmsg(fd, &dm, hflags | hwaitall);
+    if (r <= 0)
+      return done ? (ssize_t)done : r;
+    done += r;
+  }
+  // and the rest of the frame is dropped
+  char drop[4096];
+  for (size_t left = len - take; left;) {
+    r = sys_recvfrom(fd, drop, MIN(left, sizeof(drop)), hwaitall, 0, 0);
+    if (r <= 0)
+      break;
+    left -= r;
+  }
+  if (um)
+    um->msg_controllen = SeqPack(hm.msg_controllen, trunc);
+  return trunc && (flags & MSG_TRUNC) ? len : (ssize_t)take;
 }
 
 // a datagram socket made by socket(), whose mark is still its own
@@ -325,6 +689,8 @@ static ssize_t RecvCore(int fd, int flags, ssize_t op(struct XnuIo *, int),
                         struct XnuIo *ctx) {
   int kind = -1;
   int nread = -1;
+  if (SeqMarked(fd) && Seq(fd))
+    return SeqRecv(fd, flags, ctx);
   if (Marked(fd) && (kind = Kind(fd)) == KIND_SEQPACKET) {
     if (SeqpacketEof(fd))
       return 0;
@@ -381,6 +747,8 @@ static ssize_t SendCore(int fd, int flags, ssize_t op(struct XnuIo *, int),
                         struct XnuIo *ctx) {
   int kind = -1;
   int ms = 1;
+  if (SeqMarked(fd) && Seq(fd))
+    return SeqSend(fd, flags, ctx);
   for (;;) {
     ssize_t rc = op(ctx, flags);
     if (rc != -1)
@@ -509,6 +877,47 @@ ssize_t __xnu_unix_send(int fd, int flags, ssize_t op(struct XnuIo *, int),
   return rc;
 }
 
+// a connected udp socket on linux sends to whatever address it's given:
+// the connected peer is sent to without one, and anyone else by taking
+// the connection down for the send and putting it back. -2 when fd is
+// no such socket
+static ssize_t InetSendtoConnected(int fd, const struct msghdr *msg,
+                                   int flags) {
+  union sockaddr_storage_bsd peer;
+  uint32_t len = sizeof(peer);
+  if (GetSockInt(fd, __sockopt2host(SOL_SOCKET, SO_TYPE)) != SOCK_DGRAM ||
+      __sys_getpeername(fd, &peer, &len) == -1 ||
+      (peer.sa.sa_family != __af2host(AF_INET) &&
+       peer.sa.sa_family != __af2host(AF_INET6)))
+    return -2;
+  union sockaddr_storage_bsd to;
+  uint32_t tolen;
+  if (sockaddr2bsd(msg->msg_name, msg->msg_namelen, &to, &tolen) == -1)
+    return -1;
+  struct msghdr m = *msg;
+  m.msg_name = 0;
+  m.msg_namelen = 0;
+  // family, port and address: sin_len and the padding are the kernel's
+  bool same = to.sa.sa_family == peer.sa.sa_family;
+  if (same && to.sa.sa_family == __af2host(AF_INET)) {
+    same = !memcmp(&to.sin.sin_port, &peer.sin.sin_port, 2) &&
+           !memcmp(&to.sin.sin_addr, &peer.sin.sin_addr, 4);
+  } else if (same) {
+    same = !memcmp(&to.sin6.sin6_port, &peer.sin6.sin6_port, 2) &&
+           !memcmp(&to.sin6.sin6_addr, &peer.sin6.sin6_addr, 16);
+  }
+  if (same)
+    return sendmsg(fd, &m, flags);
+  struct sockaddr_in_bsd unspec = {sizeof(unspec), 0 /* AF_UNSPEC */};
+  if (sys_connect(fd, &unspec, sizeof(unspec)) == -1)
+    return -1;
+  ssize_t rc = sendmsg(fd, msg, flags);
+  int e = errno;
+  sys_connect(fd, &peer, len);
+  errno = e;
+  return rc;
+}
+
 /**
  * Sends to an address on a connected AF_UNIX datagram socket on xnu,
  * which says EISCONN where linux sends there anyway. SOCK_SEQPACKET
@@ -518,14 +927,14 @@ ssize_t __xnu_unix_send(int fd, int flags, ssize_t op(struct XnuIo *, int),
 ssize_t __xnu_unix_sendto_connected(int fd, const struct msghdr *msg,
                                     int flags) {
   int kind = Kind(fd);
-  if (kind == KIND_SEQPACKET) {
+  if (kind == KIND_SEQPACKET || (SeqMarked(fd) && Seq(fd))) {
     struct msghdr m = *msg;
     m.msg_name = 0;
     m.msg_namelen = 0;
     return sendmsg(fd, &m, flags);
   }
   if (kind != KIND_DGRAM)
-    return -2;
+    return InetSendtoConnected(fd, msg, flags);
   int s = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
   if (s == -1)
     return -1;

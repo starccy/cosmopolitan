@@ -24,6 +24,7 @@ struct ifreq {
     struct sockaddr ifru_dstaddr;   /* SIOCGIFDSTADDR */
     struct sockaddr ifru_netmask;   /* SIOCGIFNETMASK */
     struct sockaddr ifru_broadaddr; /* SIOCGIFBRDADDR */
+    struct sockaddr ifru_hwaddr;    /* SIOCGIFHWADDR: sa_family is the ARPHRD_* type */
     short ifru_flags;               /* SIOCGIFFLAGS */
     int ifru_ivalue;                /* todo(jart) */
     char ifru_pad[24];              /* ifru_map is the largest, just pad */
@@ -36,6 +37,7 @@ struct ifreq {
 #define ifr_broadaddr ifr_ifru.ifru_broadaddr /* broadcast address */
 #define ifr_dstaddr   ifr_ifru.ifru_dstaddr   /* destination address */
 #define ifr_flags     ifr_ifru.ifru_flags     /* flags */
+#define ifr_hwaddr    ifr_ifru.ifru_hwaddr    /* hardware address */
 #define ifr_ifindex   ifr_ifru.ifru_ivalue
 
 #define ifr6_addr      ifr_ifru.in6.ifr6_addr      /* IP6 Addr */

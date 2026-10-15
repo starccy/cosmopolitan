@@ -45,6 +45,7 @@ kTcpOptnames:
 	.e	TCP_KEEPINTVL,"KEEPINTVL"		// int (seconds)
 	.e	TCP_FASTOPEN,"FASTOPEN"			// int
 	.e	TCP_KEEPCNT,"KEEPCNT"			// int
+	.e	TCP_USER_TIMEOUT,"USER_TIMEOUT"		// int (millis)
 	.e	TCP_MAXSEG,"MAXSEG"			// int
 	.e	TCP_SYNCNT,"SYNCNT"			// int
 	.e	TCP_NOTSENT_LOWAT,"NOTSENT_LOWAT"	// int

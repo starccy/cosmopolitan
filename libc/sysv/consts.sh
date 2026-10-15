@@ -340,6 +340,7 @@ syscon	so	SO_RCVTIMEO				20			20			0x1006			0x1006			0x1006			0x1006			0x100c			
 syscon	so	SO_SNDTIMEO				21			21			0x1005			0x1005			0x1005			0x1005			0x100b			0x1005			# send timeout; takes struct timeval; bsd consensus
 syscon	so	SO_RCVLOWAT				18			18			0x1004			0x1004			0x1004			0x1004			0x1004			0x1004			# bsd consensus
 syscon	so	SO_SNDLOWAT				19			19			0x1003			0x1003			0x1003			0x1003			0x1003			0x1003			# bsd consensus
+syscon	so	SO_TIMESTAMP				29			29			0x400			0x400			0x400			0x800			0x2000			0			# SCM_TIMESTAMP on received datagrams; windows has SO_TIMESTAMPING instead
 
 #	{set,get}sockopt(fd, level=SOL_TCP, X, ...)
 #	» most elite of all tuning groups
@@ -350,7 +351,7 @@ syscon	so	SO_SNDLOWAT				19			19			0x1003			0x1003			0x1003			0x1003			0x1003			
 #	group	name					GNU/Systemd		GNU/Systemd (Aarch64)	XNU's Not UNIX!		MacOS (Arm64)		FreeBSD			OpenBSD			NetBSD			The New Technology	Commentary
 syscon	tcp	TCP_NODELAY				1			1			1			1			1			1			1			1			# strong consensus for disabling nagle's algorithm; so be sure to disable it by turning this on
 syscon	tcp	TCP_CORK				3			3			4			4			4			16			4			0			# nagle's algorithm strikes again; TCP_NOPUSH on BSD; be sure to turn it off; protip: mmap+writev vs. write+sendfile; see also /proc/sys/net/ipv4/tcp_autocorking; netbsd is 4 but not implemented
-syscon	tcp	TCP_MAXSEG				2			2			2			2			2			2			2			0			# reduces tcp segment size; see also tcp offloading
+syscon	tcp	TCP_MAXSEG				2			2			2			2			2			2			2			4			# reduces tcp segment size; see also tcp offloading
 syscon	tcp	TCP_FASTOPEN				23			23			0x105			0x105			0x0401			0			0			15			# reduces roundtrips; for listener; Linux 3.7+ (c. 2012) / or is windows it 0x22? /proc/sys/net/ipv4/tcp_fastopen TODO(jart): MSG_FASTOPEN; XNU sources say 261 but not sure if that's true
 syscon	tcp	TCP_FASTOPEN_CONNECT			30			30			0			0			0			0			0			0			# reduces roundtrips; for listener; Linux 3.7+ (c. 2012) / or is windows it 0x22? /proc/sys/net/ipv4/tcp_fastopen TODO(jart): MSG_FASTOPEN; XNU sources say 261 but not sure if that's true
 syscon	tcp	TCP_KEEPIDLE				4			4			0x10			0x10			0x100			0			3			3			# start keepalives after this period
@@ -391,6 +392,10 @@ syscon	ip	IP_OPTIONS				4			4			1			1			1			1			1			1			# bsd consensus
 syscon	ip	IP_RECVTTL				12			12			24			24			65			31			23			21
 syscon	ip	IP_ADD_MEMBERSHIP			35			35			12			12			12			12			12			12			# bsd consensus
 syscon	ip	IP_DROP_MEMBERSHIP			36			36			13			13			13			13			13			13			# bsd consensus
+syscon	ip	IP_UNBLOCK_SOURCE			37			37			73			73			73			0			0			18
+syscon	ip	IP_BLOCK_SOURCE				38			38			72			72			72			0			0			17
+syscon	ip	IP_ADD_SOURCE_MEMBERSHIP		39			39			70			70			70			0			0			15
+syscon	ip	IP_DROP_SOURCE_MEMBERSHIP		40			40			71			71			71			0			0			16
 syscon	ip	IP_MULTICAST_IF				32			32			9			9			9			9			9			9			# bsd consensus
 syscon	ip	IP_MULTICAST_LOOP			34			34			11			11			11			11			11			11			# bsd consensus
 syscon	ip	IP_MULTICAST_TTL			33			33			10			10			10			10			10			10			# bsd consensus
@@ -402,6 +407,7 @@ syscon	ip	IP_MTU_DISCOVER				10			10			0			0			0			0			0			71
 #
 #	group	name					GNU/Systemd		GNU/Systemd (Aarch64)	XNU's Not UNIX!		MacOS (Arm64)		FreeBSD			OpenBSD			NetBSD			The New Technology	Commentary
 syscon	ipv6	IPV6_V6ONLY				26			26			27			27			27			27			27			27			# bsd consensus
+syscon	ipv6	IPV6_HDRINCL				36			36			0			0			0			0			0			2
 syscon	ipv6	IPV6_CHECKSUM				7			7			26			26			26			26			26			26			# bsd consensus
 syscon	ipv6	IPV6_JOIN_GROUP				20			20			12			12			12			12			12			12			# bsd consensus
 syscon	ipv6	IPV6_LEAVE_GROUP			21			21			13			13			13			13			13			13			# bsd consensus
@@ -412,6 +418,7 @@ syscon	ipv6	IPV6_UNICAST_HOPS			16			16			4			4			4			4			4			4			# bsd consensu
 syscon	ipv6	IPV6_RECVTCLASS				66			66			35			35			57			57			57			40
 syscon	ipv6	IPV6_TCLASS				67			67			36			36			61			61			61			39
 syscon	ipv6	IPV6_DONTFRAG				62			62			62			62			62			62			62			14
+syscon	ipv6	IPV6_MTU				24			24			0			0			0			0			0			72			# get the path mtu; windows and linux only
 syscon	ipv6	IPV6_HOPLIMIT				52			52			47			47			47			47			47			21
 syscon	ipv6	IPV6_HOPOPTS				54			54			49			49			49			49			49			1
 syscon	ipv6	IPV6_PKTINFO				50			50			46			46			46			46			46			19
@@ -463,11 +470,7 @@ syscon	ipport	IPPORT_USERRESERVED			5000			5000			5000			5000			5000			49151			5
 #
 #	group	name					GNU/Systemd		GNU/Systemd (Aarch64)	XNU's Not UNIX!		MacOS (Arm64)		FreeBSD			OpenBSD			NetBSD			The New Technology	Commentary
 syscon	scm	SCM_RIGHTS				1			1			1			1			1			1			1			1			# unix consensus; faked nt
-syscon	scm	SCM_TIMESTAMP				29			29			2			2			2			4			8			0
 syscon	scm	SCM_CREDENTIALS				2			2			0			0			0			0			0			0
-syscon	scm	SCM_TIMESTAMPING			37			37			0			0			0			0			0			0
-syscon	scm	SCM_TIMESTAMPNS				35			35			0			0			0			0			0			0
-syscon	scm	SCM_WIFI_STATUS				41			41			0			0			0			0			0			0
 
 #	clone() codes
 #

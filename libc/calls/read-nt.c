@@ -1193,7 +1193,9 @@ textwindows static ssize_t ReadBuffer(int fd, void *data, size_t size,
     return 0;
 
   if (f->kind == kFdDevRandom) {
-    if (f->devzero)
+    if (f->devdir)
+      return eisdir();
+    if (f->devzero || f->devfull)
       bzero(data, size);
     else
       ProcessPrng(data, size);
@@ -1287,7 +1289,7 @@ textwindows ssize_t sys_read_nt(int fd, const struct iovec *iov, size_t iovlen,
     rc = ReadIovecs(fd, iov, iovlen, opt_offset, m);
   __sig_unblock(m);
   if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
-    _weaken(__epoll_rearm_in)(fd);
+    _weaken(__epoll_rearm_in)(fd, rc);
   return rc;
 }
 

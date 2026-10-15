@@ -17,6 +17,7 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/internal.h"
+#include "libc/calls/state.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/strace.h"
@@ -43,10 +44,20 @@ int listen(int fd, int backlog) {
     rc = enotsock();
   } else if (!IsWindows()) {
     rc = sys_listen(fd, backlog);
+    if (!rc && IsXnu()) {
+      // xnu can't read SO_ACCEPTCONN back, so getsockopt() answers it
+      // from here
+      __fds_lock();
+      if (__ensurefds_unlocked(fd) != -1)
+        __get_pib()->fds.p[fd].listening = true;
+      __fds_unlock();
+    }
   } else if (!__isfdopen(fd)) {
     rc = ebadf();
   } else if (__isfdkind(fd, kFdSocket)) {
     rc = sys_listen_nt(&__get_pib()->fds.p[fd], backlog);
+    if (!rc)
+      __get_pib()->fds.p[fd].listening = true;  // SIO_TCP_INFO refuses listeners
   } else {
     rc = enotsock();
   }

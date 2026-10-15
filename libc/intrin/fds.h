@@ -83,7 +83,7 @@ struct Fd {
   uint32_t credleft;  // windows unix stream: bytes left of that message
   void *fifo;       // windows fifo: its registry, see fifo-nt.c
   long fifow;       // windows fifo opened O_RDWR: the write end
-  bool quickack;    // off linux: TCP_QUICKACK as set, see tcphint.c
+  bool noquickack;  // off linux: TCP_QUICKACK cleared, see tcphint.c
   bool cork;        // windows socket: TCP_CORK as set
   int deferaccept;  // off linux: TCP_DEFER_ACCEPT as set
   unsigned usertimeout;  // off linux: TCP_USER_TIMEOUT as set, millis

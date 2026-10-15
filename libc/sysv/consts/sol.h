@@ -10,5 +10,6 @@
 #define SOL_IPV6   41
 #define SOL_ICMPV6 58
 #define SOL_RAW    255
+#define SOL_ALG    279
 
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_SOL_H_ */

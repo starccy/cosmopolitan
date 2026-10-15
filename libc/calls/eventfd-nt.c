@@ -113,6 +113,6 @@ textwindows ssize_t sys_write_eventfd_nt(struct Fd *f, uint64_t v) {
   }
   SetEvent(f->handle);
   if (_weaken(__epoll_rearm_in))
-    _weaken(__epoll_rearm_in)(f - __get_pib()->fds.p);
+    _weaken(__epoll_rearm_in)(f - __get_pib()->fds.p, 0);
   return sizeof(v);
 }

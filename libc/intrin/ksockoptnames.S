@@ -49,6 +49,10 @@ kSockOptnames:
 	.e	SO_TYPE,"TYPE"				// int
 	.e	SO_SNDBUF,"SNDBUF"			// int
 	.e	SO_RCVBUF,"RCVBUF"			// int
+	.e	SO_SNDBUFFORCE,"SNDBUFFORCE"		// int
+	.e	SO_RCVBUFFORCE,"RCVBUFFORCE"		// int
+	.e	SO_BINDTOIFINDEX,"BINDTOIFINDEX"	// int
+	.e	SO_TIMESTAMP,"TIMESTAMP"		// bool32
 	.e	SO_RCVLOWAT,"RCVLOWAT"			// int
 	.e	SO_SNDLOWAT,"SNDLOWAT"			// int
 	.e	SO_ERROR,"ERROR"			// int

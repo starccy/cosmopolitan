@@ -109,17 +109,22 @@ textwindows static ssize_t sys_send_nt_impl(int fd, const struct iovec *iov,
     return __udg_sendto_nt(fd, iov, iovlen, flags, 0, 0, 0);
   uint32_t hostflags = __msg2host(flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL));
   __sockopt_replay(f);
-  if (f->flags & O_NONBLOCK) {
+  // a seqpacket message is a frame that must not be cut, so it's sent
+  // the waiting way once WSAPoll says there's room
+  bool seq = __scm_seqpacket_nt(f);
+  if ((f->flags & O_NONBLOCK) && !seq) {
     iovlen = __winsock_clamp_send(clamped, iov, iovlen);
     rc = __winsock_send_nonblock(f, clamped, iovlen, hostflags, 0, 0);
   } else {
     // MSG_DONTWAIT on a blocking socket can't change its mode under
     // another thread's blocking call, so it asks WSAPoll instead
-    if (flags & MSG_DONTWAIT) {
+    if ((flags & MSG_DONTWAIT) || (f->flags & O_NONBLOCK)) {
       if (!__winsock_send_ready(f->handle))
         return eagain();
-      iovlen = __winsock_clamp_send(clamped, iov, iovlen);
-      iov = clamped;
+      if (!seq) {
+        iovlen = __winsock_clamp_send(clamped, iov, iovlen);
+        iov = clamped;
+      }
     }
     sigset_t waitmask = __sig_block();
     rc = __winsock_block(f->handle, hostflags, false, f->sndtimeo, waitmask,
@@ -155,7 +160,8 @@ textwindows ssize_t __winsock_send_nt(int fd, const struct iovec *iov,
 textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
                                 uint32_t flags) {
   struct Fd *f = __get_pib()->fds.p + fd;
-  if (__scm_stream_nt(f) && f->credpid != __get_pib()->pid)
+  if (__scm_stream_nt(f) &&
+      (f->credpid != __get_pib()->pid || __scm_seqpacket_nt(f)))
     return __scm_send_nt(
         fd, &(struct msghdr){.msg_iov = (void *)iov, .msg_iovlen = iovlen},
         flags);

@@ -39,6 +39,7 @@
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/afd.h"
+#include "libc/nt/struct/filepipelocalinformation.h"
 #include "libc/nt/struct/iostatusblock.h"
 #include "libc/nt/struct/objectattributes.h"
 #include "libc/nt/struct/overlapped.h"
@@ -53,11 +54,14 @@
 #include "libc/sysv/consts/af.h"
 #include "libc/sysv/consts/epoll.h"
 #include "libc/sysv/consts/f.h"
+#include "libc/sysv/consts/fio.h"
+#include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/poll.h"
 #include "libc/sysv/consts/s.h"
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/sig.h"
+#include "libc/sysv/consts/sock.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 #include "libc/thread/posixthread.internal.h"
@@ -77,7 +81,11 @@
  * zero byte reads for pipes: an edge-triggered registration is armed
  * per direction, reported once, and armed again when the read or
  * write paths see EAGAIN, data, or a short write, or when epoll_ctl()
- * modifies it.
+ * modifies it. A stream socket's input edge is what linux calls one,
+ * data that arrived since the last report: the report notes how much
+ * was there, a read takes what it consumed off that, and a completion
+ * that finds no more than the remainder is old news, watched for
+ * growth on the slow tick instead.
  */
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -94,6 +102,8 @@
 #define EV_DISPATCH 0x0080
 #define EV_ERROR   0x4000
 #define EV_EOF     0x8000
+#define EV_OOBAND  0x2000  // xnu
+#define NOTE_OOB   0x0002  // xnu
 // </sync with the host headers>
 
 struct KeventXnu {  // also openbsd
@@ -143,13 +153,14 @@ static int KqWrite(void) {
 }
 
 dontinline static void KeventSet(void *buf, int i, uint64_t ident, int filter,
-                      uint32_t flags, uint64_t udata) {
+                      uint32_t flags, uint32_t fflags, uint64_t udata) {
   if (IsFreebsd()) {
     struct KeventFreebsd *k = (struct KeventFreebsd *)buf + i;
     bzero(k, sizeof(*k));
     k->ident = ident;
     k->filter = filter;
     k->flags = flags;
+    k->fflags = fflags;
     k->udata = udata;
   } else if (IsNetbsd()) {
     struct KeventNetbsd *k = (struct KeventNetbsd *)buf + i;
@@ -157,6 +168,7 @@ dontinline static void KeventSet(void *buf, int i, uint64_t ident, int filter,
     k->ident = ident;
     k->filter = filter;
     k->flags = flags;
+    k->fflags = fflags;
     k->udata = udata;
   } else {
     struct KeventXnu *k = (struct KeventXnu *)buf + i;
@@ -164,6 +176,7 @@ dontinline static void KeventSet(void *buf, int i, uint64_t ident, int filter,
     k->ident = ident;
     k->filter = filter;
     k->flags = flags;
+    k->fflags = fflags;
     k->udata = udata;
   }
 }
@@ -205,19 +218,126 @@ static int sys_epoll_create_kq(int flags) {
   return fd;
 }
 
+// kqueue takes an add of a filter that's there as an update, where
+// linux's ADD of an fd already in the set is EEXIST, and its MOD or DEL
+// of one that isn't is ENOENT: so each kqueue's members are kept here.
+// an fd's bit goes when it's closed or dup'd over. a child gets the
+// list from fork() but not the kqueues, so an entry made by another
+// process is dropped
+struct KqSet {
+  struct KqSet *next;
+  int kq;
+  int pid;
+  int nbits;
+  uint64_t *bits;
+};
+
+static struct KqSet *g_kqsets;
+static pthread_mutex_t g_kqlock = PTHREAD_MUTEX_INITIALIZER;
+
+// fork() takes g_kqlock while the other threads still run, so the
+// child's copy isn't held by a thread it doesn't have (the posix_spawn
+// child closes fds before it execs, and close() comes here). it nests
+// above the allocator's locks, so fork takes it before those
+void __epoll_kq_fork_prepare(void) {
+  pthread_mutex_lock(&g_kqlock);
+}
+
+void __epoll_kq_fork_parent(void) {
+  pthread_mutex_unlock(&g_kqlock);
+}
+
+void __epoll_kq_fork_child(void) {
+  pthread_mutex_wipe_np(&g_kqlock);
+}
+
+// under g_kqlock
+static struct KqSet *KqSetOf(int kq, bool make) {
+  int pid = getpid();
+  struct KqSet **pp = &g_kqsets, *s;
+  while ((s = *pp)) {
+    if (s->pid != pid) {
+      *pp = s->next;
+      free(s->bits);
+      free(s);
+      continue;
+    }
+    if (s->kq == kq)
+      return s;
+    pp = &s->next;
+  }
+  if (!make || !(s = calloc(1, sizeof(*s))))
+    return 0;
+  s->kq = kq;
+  s->pid = pid;
+  s->next = g_kqsets;
+  g_kqsets = s;
+  return s;
+}
+
+static bool KqHas(const struct KqSet *s, int fd) {
+  return s && fd / 64 < s->nbits && (s->bits[fd / 64] >> (fd % 64)) & 1;
+}
+
+static void KqMark(struct KqSet *s, int fd, bool on) {
+  if (fd / 64 >= s->nbits) {
+    if (!on)
+      return;
+    int n = fd / 64 + 1;
+    uint64_t *b = realloc(s->bits, n * sizeof(*b));
+    if (!b)
+      return;
+    bzero(b + s->nbits, (n - s->nbits) * sizeof(*b));
+    s->bits = b;
+    s->nbits = n;
+  }
+  if (on) {
+    s->bits[fd / 64] |= 1ull << (fd % 64);
+  } else {
+    s->bits[fd / 64] &= ~(1ull << (fd % 64));
+  }
+}
+
+/**
+ * Forgets fd on xnu and the bsds: as a member of every kqueue, and as a
+ * kqueue of its own. Called when it's closed or dup'd over.
+ */
+void __epoll_forget_kq(int fd) {
+  pthread_mutex_lock(&g_kqlock);
+  struct KqSet **pp = &g_kqsets, *s;
+  while ((s = *pp)) {
+    if (s->kq == fd) {
+      *pp = s->next;
+      free(s->bits);
+      free(s);
+      continue;
+    }
+    KqMark(s, fd, false);
+    pp = &s->next;
+  }
+  pthread_mutex_unlock(&g_kqlock);
+}
+
 // a wanted filter is deleted and added back rather than re-added in
 // place: xnu keeps the EV_CLEAR and EV_DISPATCH bits a knote was
 // created with, so that's the only way a MOD can change them. each
 // change carries a receipt, so a delete of a filter that was never
-// added is told apart from a real failure.
-static int sys_epoll_ctl_kq(int kq, int op, int fd, struct epoll_event *ev) {
+// added is told apart from a real failure. EPOLLPRI on xnu asks the
+// read filter about out of band data too
+static int sys_epoll_ctl_kq_locked(struct KqSet *s, int kq, int op, int fd,
+                                   struct epoll_event *ev) {
   uint32_t events = op == EPOLL_CTL_DEL ? 0 : ev->events;
   uint64_t data = op == EPOLL_CTL_DEL ? 0 : ev->data.u64;
   uint32_t add = EV_ADD | EV_ENABLE | EV_RECEIPT;
+  uint32_t rdflags = 0, rdfflags = 0;
   if (events & EPOLLET)
     add |= EV_CLEAR;
   if (events & EPOLLONESHOT)
     add |= EV_DISPATCH;
+  if (IsXnu() && (events & EPOLLPRI)) {
+    rdflags = EV_OOBAND;
+    rdfflags = NOTE_OOB;
+  }
   bool want[2] = {!!(events & (EPOLLIN | EPOLLPRI | EPOLLRDHUP)),
                   !!(events & EPOLLOUT)};
   int filter[2] = {KqRead(), KqWrite()};
@@ -227,10 +347,11 @@ static int sys_epoll_ctl_kq(int kq, int op, int fd, struct epoll_event *ev) {
   int n = 0;
   for (int i = 0; i < 2; ++i) {
     isdel[n] = true;
-    KeventSet(changes, n++, fd, filter[i], EV_DELETE | EV_RECEIPT, 0);
+    KeventSet(changes, n++, fd, filter[i], EV_DELETE | EV_RECEIPT, 0, 0);
     if (want[i]) {
       isdel[n] = false;
-      KeventSet(changes, n++, fd, filter[i], add, data);
+      KeventSet(changes, n++, fd, filter[i], add | (i ? 0 : rdflags),
+                i ? 0 : rdfflags, data);
     }
   }
   if (sys_kevent(kq, changes, n, receipts, n, 0) == -1)
@@ -253,7 +374,23 @@ static int sys_epoll_ctl_kq(int kq, int op, int fd, struct epoll_event *ev) {
   }
   if (op == EPOLL_CTL_DEL && missing == 2)
     return enoent();
+  if (s)
+    KqMark(s, fd, op != EPOLL_CTL_DEL);
   return 0;
+}
+
+static int sys_epoll_ctl_kq(int kq, int op, int fd, struct epoll_event *ev) {
+  int rc;
+  pthread_mutex_lock(&g_kqlock);
+  struct KqSet *s = KqSetOf(kq, op == EPOLL_CTL_ADD);
+  bool has = KqHas(s, fd);
+  if (op == EPOLL_CTL_ADD ? has : !has) {
+    rc = op == EPOLL_CTL_ADD ? eexist() : enoent();
+  } else {
+    rc = sys_epoll_ctl_kq_locked(s, kq, op, fd, ev);
+  }
+  pthread_mutex_unlock(&g_kqlock);
+  return rc;
 }
 
 // the caller's array doubles as the kevent array: a kevent is bigger
@@ -308,7 +445,10 @@ static int sys_epoll_wait_kq(int kq, struct epoll_event *out, int maxevents,
       if (flags & EV_EOF)
         events |= EPOLLHUP | (fflags ? EPOLLERR : 0);
     } else {
-      events = EPOLLIN;
+      bool oob = IsXnu() && (fflags & NOTE_OOB);
+      events = oob ? EPOLLPRI : 0;
+      if (!oob || data > 0 || (flags & EV_EOF))
+        events |= EPOLLIN;
       if (flags & EV_EOF) {
         // a socket's peer that stopped writing is a read hangup, but a
         // pipe with no writers left is a hangup, as on linux
@@ -322,7 +462,7 @@ static int sys_epoll_wait_kq(int kq, struct epoll_event *out, int maxevents,
     // didn't fire is disabled too, until epoll_ctl() arms the fd again
     if ((flags & EV_DISPATCH) && !(flags & EV_ERROR) && noff < 32)
       KeventSet(off, noff++, ident, filter == KqWrite() ? KqRead() : KqWrite(),
-                EV_DISABLE | EV_RECEIPT, 0);
+                EV_DISABLE | EV_RECEIPT, 0, 0);
     int j = 0;
     if (ids)
       for (j = 0; j < k; ++j)
@@ -383,6 +523,8 @@ static int sys_epoll_wait_kq(int kq, struct epoll_event *out, int maxevents,
 // reported then only completes for what's really there, so what it
 // brings back within the same epoll_wait() is handed out as is.
 
+__msabi extern typeof(__sys_ioctlsocket_nt) *const __imp_ioctlsocket;
+
 #define EPOLL_ARM_IN  1u
 #define EPOLL_ARM_OUT 2u
 #define EPOLL_ARM_HUP 4u
@@ -394,6 +536,7 @@ static int sys_epoll_wait_kq(int kq, struct epoll_event *out, int maxevents,
 
 #define EPOLL_GROUP_SIZE 32
 #define EPOLL_POLL_MS    10
+#define EPOLL_COARSE_MS  32
 
 #define EPOLL_IN_BITS \
   (EPOLLIN | EPOLLRDNORM | EPOLLPRI | EPOLLRDBAND | EPOLLRDHUP)
@@ -443,6 +586,9 @@ struct EpollEntry {
   bool dead;       // out of the set; freed once nothing's in flight
   bool queued;     // waiting for the update list to be flushed
   bool console;    // poll entry for a console
+  bool stream;     // a stream socket, whose input edges are counted
+  bool watch;      // waiting for the socket's input to grow past level
+  uint32_t level;  // bytes in the socket's input not yet an edge
   int64_t handle;
   int64_t evt;   // pipe: signaled by the zero byte read
   int64_t pkt;   // pipe: posts to the port when evt is
@@ -475,6 +621,7 @@ struct EpollSet {
   struct Dll *updates;
   int npoll;   // misc entries that go through poll()
   int nslice;  // of those, the ones with nothing to wait on
+  int nwatch;  // stream sockets watched for input growth
   uint32_t pass;     // counts the epoll_wait() calls
   int64_t cin;       // console input handle, once a console is added
   int64_t conpkt;    // posts to the port when cin is signaled
@@ -490,10 +637,24 @@ static int g_epoll_byfd_n;
 static char g_epoll_dummy;
 static pthread_mutex_t g_epoll_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// same for g_epoll_lock, which dup-nt.c takes under the fd table's
+// lock, so fork takes it after that one
+void __epoll_nt_fork_prepare(void) {
+  pthread_mutex_lock(&g_epoll_lock);
+}
+
+void __epoll_nt_fork_parent(void) {
+  pthread_mutex_unlock(&g_epoll_lock);
+}
+
+void __epoll_nt_fork_child(void) {
+  pthread_mutex_wipe_np(&g_epoll_lock);
+}
+
 static uint32_t EpollDirs(const struct EpollEntry *e) {
   if (!(e->events & (EPOLLET | EPOLLONESHOT)))
     return EPOLL_ARM_IN | EPOLL_ARM_OUT | EPOLL_ARM_HUP;
-  return e->armed;
+  return e->watch ? e->armed & ~EPOLL_ARM_IN : e->armed;
 }
 
 // a peer that went away is an input event on linux, whichever
@@ -547,11 +708,53 @@ static uint32_t EpollFromAfd(uint32_t a) {
   if (a & kNtAfdPollDisconnect)
     e |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
   if (a & kNtAfdPollAbort)
-    e |= EPOLLHUP;
+    e |= EPOLLIN | EPOLLRDNORM | EPOLLERR | EPOLLHUP | EPOLLRDHUP;
   if (a & (kNtAfdPollConnectFail | kNtAfdPollLocalClose))
     e |= EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM | EPOLLWRNORM |
          EPOLLRDHUP;
   return e;
+}
+
+// what shutdown() made the socket report, as on linux: a shut read side
+// is readable at end of file with a read hangup, both sides shut is a
+// hangup too
+textwindows static uint32_t EpollShut(int fd) {
+  char shut = fd < __get_pib()->fds.n ? __get_pib()->fds.p[fd].shut : 0;
+  uint32_t e = 0;
+  if (shut & 1)
+    e |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
+  if (shut == 3)
+    e |= EPOLLHUP;
+  return e;
+}
+
+// bytes waiting in a socket's input, or -1 when it can't say
+textwindows static uint32_t EpollAvail(const struct EpollEntry *e) {
+  uint32_t n = 0;
+  if (__imp_ioctlsocket(e->handle, __ioctl2host(FIONREAD), &n) == -1)
+    return -1u;
+  return n;
+}
+
+textwindows static bool EpollCounted(const struct EpollEntry *e) {
+  return e->stream && (e->events & EPOLLET) && !(e->events & EPOLLONESHOT);
+}
+
+textwindows static void EpollWatch(struct EpollSet *s, struct EpollEntry *e,
+                                   bool on) {
+  if (e->watch == on)
+    return;
+  e->watch = on;
+  s->nwatch += on ? 1 : -1;
+}
+
+// a pipe whose other end is closed
+textwindows static bool EpollPipeGone(int64_t h) {
+  struct NtFilePipeLocalInformation pi;
+  struct NtIoStatusBlock io;
+  return !NtQueryInformationFile(h, &io, &pi, sizeof(pi),
+                                 kNtFilePipeLocalInformation) &&
+         pi.NamedPipeState == 4;  // FILE_PIPE_CLOSING_STATE
 }
 
 static short EpollToPoll(uint32_t m) {
@@ -839,11 +1042,25 @@ textwindows static void EpollComplete(struct EpollSet *s,
     } else if (e->info.NumberOfHandles) {
       ev = EpollFromAfd(e->info.Handles[0].Events);
     }
+    if (ev)
+      ev |= EpollShut(e->fd);
+    // input no larger than what the last report already counted is
+    // no edge; the entry waits for it to grow. a listener's input is
+    // connections, which the count can't see
+    uint32_t afd = e->info.NumberOfHandles ? e->info.Handles[0].Events : 0;
+    if ((ev & EPOLLIN) && !(ev & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) &&
+        (afd & kNtAfdPollReceive) && !(afd & kNtAfdPollAccept) &&
+        EpollCounted(e) && EpollAvail(e) <= e->level) {
+      ev &= ~EPOLL_IN_BITS;
+      EpollWatch(s, e, true);
+    }
   } else {
     NtStatus st = e->ov.Internal;
     if (st == kNtStatusCancelled) {
     } else if (NtSuccess(st) || st == kNtStatusBufferOverflow) {
       ev = EPOLLIN | EPOLLRDNORM;
+      if (EpollPipeGone(e->handle))
+        ev |= EPOLLHUP;
     } else if (st == kNtStatusPipeBroken || st == kNtStatusEndOfFile ||
                st == kNtStatusPipeDisconnected || st == kNtStatusPipeClosing) {
       ev = EPOLLHUP;
@@ -969,6 +1186,7 @@ textwindows static int EpollAdd(struct EpollSet *s, int fd,
       return -1;
     }
     e->kind = kEpollSock;
+    e->stream = f->type == SOCK_STREAM;
     e->base = EpollBaseSocket(f->handle);
   } else if (f->kind == kFdFile && GetFileType(f->handle) == kNtFileTypePipe) {
     if ((f->flags & O_ACCMODE) == O_WRONLY) {
@@ -1011,6 +1229,7 @@ textwindows static void EpollDrop(struct EpollSet *s, struct EpollEntry *e) {
     e->queued = false;
   }
   if (e->kind == kEpollSock) {
+    EpollWatch(s, e, false);
     dll_remove(&s->socks, &e->elem);
     --e->group->n;
   } else {
@@ -1235,7 +1454,8 @@ void __epoll_forget(int fd) {
 // EPOLLONESHOT registrations only come back through epoll_ctl(). a
 // waiter is woken for anything the pass looks at rather than gets a
 // completion for, so a level triggered eventfd is seen right away.
-static void EpollRearm(int fd, uint32_t bits) {
+// `got` is what a read took, or -1 when it found the input empty
+static void EpollRearm(int fd, uint32_t bits, ssize_t got) {
   if (!atomic_load_explicit(&g_epoll_count, memory_order_relaxed))
     return;
   sigset_t m = __sig_block();
@@ -1244,6 +1464,16 @@ static void EpollRearm(int fd, uint32_t bits) {
        e = e->fdnext) {
     struct EpollSet *s = e->set;
     pthread_mutex_lock(&s->lock);
+    if ((bits & EPOLL_ARM_IN) && EpollCounted(e)) {
+      if (got < 0 || (size_t)got >= e->level)
+        e->level = 0;
+      else
+        e->level -= got;
+      if (e->watch) {
+        EpollWatch(s, e, false);
+        EpollUpdate(e);
+      }
+    }
     if ((e->events & EPOLLET) && !(e->events & EPOLLONESHOT) &&
         (e->armed | bits) != e->armed) {
       e->armed |= bits;
@@ -1257,12 +1487,37 @@ static void EpollRearm(int fd, uint32_t bits) {
   __sig_unblock(m);
 }
 
-void __epoll_rearm_in(int fd) {
-  EpollRearm(fd, EPOLL_ARM_IN);
+// shutdown() on a socket: no completion will say so, so every set it is
+// registered with hears it here
+void __epoll_shutdown(int fd) {
+  if (!atomic_load_explicit(&g_epoll_count, memory_order_relaxed))
+    return;
+  uint32_t ev = EpollShut(fd);
+  if (!ev)
+    return;
+  sigset_t m = __sig_block();
+  pthread_mutex_lock(&g_epoll_lock);
+  for (struct EpollEntry *e = fd < g_epoll_byfd_n ? g_epoll_byfd[fd] : 0; e;
+       e = e->fdnext) {
+    struct EpollSet *s = e->set;
+    pthread_mutex_lock(&s->lock);
+    // a new edge for an edge triggered registration, whatever it
+    // already reported
+    e->armed |= EPOLL_ARM_HUP | ((ev & EPOLLIN) ? EPOLL_ARM_IN : 0);
+    EpollGot(s, e, ev);
+    EpollWake(s);
+    pthread_mutex_unlock(&s->lock);
+  }
+  pthread_mutex_unlock(&g_epoll_lock);
+  __sig_unblock(m);
+}
+
+void __epoll_rearm_in(int fd, ssize_t got) {
+  EpollRearm(fd, EPOLL_ARM_IN, got);
 }
 
 void __epoll_rearm_out(int fd) {
-  EpollRearm(fd, EPOLL_ARM_OUT);
+  EpollRearm(fd, EPOLL_ARM_OUT, 0);
 }
 
 textwindows static int sys_epoll_ctl_nt(int epfd, int op, int fd,
@@ -1299,6 +1554,8 @@ textwindows static int sys_epoll_ctl_nt(int epfd, int op, int fd,
         e->events = ev->events;
         e->data = ev->data.u64;
         e->armed = EPOLL_ARM_IN | EPOLL_ARM_OUT | EPOLL_ARM_HUP;
+        e->level = 0;
+        EpollWatch(s, e, false);
         ++e->epoch;
         EpollUpdate(e);
       }
@@ -1344,9 +1601,17 @@ textwindows static int EpollScanMisc(struct EpollSet *s, struct epoll_event *out
       if (m & EPOLL_OUT_BITS)
         ev |= m & EPOLL_OUT_BITS;
     } else if (e->kind == kEpollPipe) {
-      if ((m & EPOLL_OUT_BITS) &&
-          (__get_pib()->fds.p[e->fd].flags & O_ACCMODE) != O_RDONLY)
+      bool rd = (__get_pib()->fds.p[e->fd].flags & O_ACCMODE) == O_RDONLY;
+      if ((m & EPOLL_OUT_BITS) && !rd)
         ev |= m & EPOLL_OUT_BITS;
+      // linux hangs up a reader with no writers left, readable too
+      // while data is left, and errors a writer with no readers
+      if (EpollPipeGone(e->handle)) {
+        uint32_t avail;
+        ev |= rd ? EPOLLHUP : EPOLLERR;
+        if (rd && PeekNamedPipe(e->handle, 0, 0, 0, &avail, 0) && avail)
+          ev |= m & EPOLL_IN_BITS;
+      }
     } else {
       for (int i = 0; i < np; ++i) {
         if (pfds[i].fd == e->fd) {
@@ -1354,6 +1619,10 @@ textwindows static int EpollScanMisc(struct EpollSet *s, struct epoll_event *out
             ev = 0;
           } else {
             ev = PollToEpoll(pfds[i].revents) & m;
+            // poll() lights the read hangup along with any hangup,
+            // which linux only does for sockets
+            if (__get_pib()->fds.p[e->fd].kind != kFdSocket)
+              ev &= ~EPOLLRDHUP;
             ev = EpollWithHup(ev);
           }
           break;
@@ -1392,7 +1661,7 @@ textwindows static uint32_t EpollFresh(struct EpollEntry *e, uint32_t ev,
     int rc = WSAPoll(&p, 1, 0);
     if (rc == -1)
       return ev;
-    uint32_t fresh = EPOLLERR | EPOLLHUP;
+    uint32_t fresh = EPOLLERR | EPOLLHUP | EpollShut(e->fd);
     if (p.revents & (POLLRDNORM_ | POLLRDBAND_ | POLLHUP_ | POLLERR_))
       fresh |= EPOLL_IN_BITS;
     if (p.revents & POLLWRNORM_)
@@ -1431,6 +1700,10 @@ textwindows static int EpollScanReady(struct EpollSet *s,
       out[got].events = ev;
       out[got].data.u64 = e->data;
       ++got;
+      if ((ev & EPOLLIN) && EpollCounted(e)) {
+        uint32_t avail = EpollAvail(e);
+        e->level = avail == -1u ? 0 : avail;
+      }
       EpollDisarm(e, ev);
     }
     EpollUpdate(e);
@@ -1503,6 +1776,19 @@ textwindows static int sys_epoll_wait_nt_impl(struct EpollSet *s,
         ++np;
       }
     }
+    if (s->nwatch) {
+      for (struct Dll *d = dll_first(s->socks); d; d = dll_next(s->socks, d)) {
+        struct EpollEntry *e = DLL_CONTAINER(struct EpollEntry, elem, d);
+        if (!e->watch)
+          continue;
+        uint32_t avail = EpollAvail(e);
+        if (avail > e->level || !avail) {
+          // grown, or gone: the request finds out which
+          EpollWatch(s, e, false);
+          EpollUpdate(e);
+        }
+      }
+    }
     pthread_mutex_unlock(&s->lock);
     if (np) {
       struct timespec zero = {0};
@@ -1533,7 +1819,7 @@ textwindows static int sys_epoll_wait_nt_impl(struct EpollSet *s,
               0)))
         s->conarmed = true;
     }
-    bool sliced = s->nslice > 0 || (conwant && !s->conarmed);
+    bool sliced = s->nslice > 0 || s->nwatch > 0 || (conwant && !s->conarmed);
     bool parking = !got && !closed;
     if (parking)
       atomic_fetch_add_explicit(&s->waiters, 1, memory_order_relaxed);
@@ -1566,8 +1852,17 @@ textwindows static int sys_epoll_wait_nt_impl(struct EpollSet *s,
         ms = left < 0xfffffffe ? left : 0xfffffffe;
       }
     }
-    if (sliced)
-      ms = MIN(ms, EPOLL_POLL_MS);
+    // only a wait that ends on the caller's deadline needs the fine tick,
+    // so a long one first runs on the coarse tick until the last stretch
+    bool timed = ms && ms != -1u;
+    if (timed && ms > EPOLL_COARSE_MS) {
+      ms -= EPOLL_COARSE_MS;
+      timed = false;
+    }
+    if (sliced && ms > EPOLL_POLL_MS) {
+      ms = EPOLL_POLL_MS;
+      timed = false;
+    }
 
     // parks on the port. a signal for this thread is posted there by
     // __sig_wake(), and one that's already queued is taken up front.
@@ -1581,13 +1876,31 @@ textwindows static int sys_epoll_wait_nt_impl(struct EpollSet *s,
     } else if (_weaken(__sig_get) && (sig = _weaken(__sig_get)(waitmask))) {
     } else {
       // a timed wait is a timer for the caller, so it gets the fine
-      // scheduler tick that nanosleep() asks for, not the 15ms one
-      bool timed = ms && ms != -1u && _weaken(__nt_fast_tick);
-      if (timed)
-        _weaken(__nt_fast_tick)(true);
-      ok = GetQueuedCompletionStatusEx(s->port, ents, ecap, &n, ms, false);
-      if (timed)
-        _weaken(__nt_fast_tick)(false);
+      // scheduler tick that nanosleep() asks for, not the 15ms one,
+      // unless the port already holds something
+      if (timed && _weaken(__nt_fast_tick)) {
+        ok = GetQueuedCompletionStatusEx(s->port, ents, ecap, &n, 0, false);
+        if (!ok && GetLastError() == kNtWaitTimeout) {
+          // in 100ns units from the deadline, since a millisecond count
+          // would be rounded up after a coarse wait
+          struct timespec left = timespec_subz(deadline, timespec_mono());
+          int64_t due = -(int64_t)((timespec_tonanos(left) + 99) / 100);
+          _weaken(__nt_fast_tick)(true);
+          NtStatus st = NtRemoveIoCompletionEx(s->port, ents, ecap, &n, &due,
+                                               false);
+          _weaken(__nt_fast_tick)(false);
+          if (st == kNtStatusSuccess) {
+            ok = true;
+          } else {
+            ok = false;
+            n = 0;
+            SetLastError(st == kNtStatusTimeout ? kNtWaitTimeout
+                                                : RtlNtStatusToDosError(st));
+          }
+        }
+      } else {
+        ok = GetQueuedCompletionStatusEx(s->port, ents, ecap, &n, ms, false);
+      }
     }
     for (;;)
       if (atomic_exchange(&pt->pt_blocker, 0))

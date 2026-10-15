@@ -34,13 +34,13 @@ int sys_accept4(int server, struct sockaddr_storage *addr, uint32_t *out_size,
   uint32_t size = sizeof(*addr);
   int olderr, client, file_mode;
   olderr = errno;
-  client = __sys_accept4(server, addr, &size, __socktype2host(flags));
+  client = __sys_accept4(server, addr, addr ? &size : 0, __socktype2host(flags));
   if (client == -1 && errno == ENOSYS) {
     // XNU/RHEL5/etc. don't support accept4(), but it's easilly polyfilled
     errno = olderr;
     if (flags & ~(SOCK_CLOEXEC | SOCK_NONBLOCK))
       return einval();
-    if ((client = __sys_accept(server, addr, &size, 0)) != -1) {
+    if ((client = __sys_accept(server, addr, addr ? &size : 0, 0)) != -1) {
       // __sys_accept() has inconsistent flag inheritance across platforms
       // this is one of the issues that accept4() was invented for solving
       unassert((file_mode = __sys_fcntl(client, F_GETFD)) != -1);

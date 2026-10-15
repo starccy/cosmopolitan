@@ -1,2 +1,2 @@
 #include "libc/sysv/consts/syscon.internal.h"
-.syscon scm,SCM_WIFI_STATUS,41,41,0,0,0,0,0,0
+.syscon ipv6,IPV6_HDRINCL,36,36,0,0,0,0,0,2

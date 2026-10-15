@@ -50,10 +50,17 @@ int socket(int family, int type, int protocol) {
   if (hfam == -1) {
     rc = eafnosupport();
   } else if (!IsWindows()) {
-    rc = sys_socket(hfam, type, protocol);
+    int truetype = type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK);
+    // xnu has no SOCK_SEQPACKET for AF_UNIX: one is a stream socket
+    // whose every message goes out as a frame, see unixpair-xnu.c
+    bool seq = IsXnu() && family == AF_UNIX && truetype == SOCK_SEQPACKET;
+    rc = sys_socket(hfam, seq ? (type & ~SOCK_SEQPACKET) | SOCK_STREAM : type,
+                    protocol);
     __tcphint_reset(rc);
-    if (rc != -1 && IsXnu() && family == AF_UNIX &&
-        (type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) == SOCK_DGRAM)
+    if (rc != -1 && seq)
+      __xnu_unix_seq_setup(rc);
+    else if (rc != -1 && IsXnu() && family == AF_UNIX &&
+             truetype == SOCK_DGRAM)
       __xnu_unix_setup(rc, false, false);
   } else {
     rc = sys_socket_nt(family, type, protocol);

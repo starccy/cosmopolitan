@@ -62,8 +62,12 @@ int accept4(int fd, struct sockaddr *opt_out_addr, uint32_t *opt_inout_addrsize,
   if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();
   } else if (!IsWindows()) {
-    rc = sys_accept4(fd, &ss, &size, flags);
+    // the kernel only asks the peer's name when a buffer is given,
+    // and AF_ALG has no name to give (ECONNABORTED)
+    rc = sys_accept4(fd, opt_out_addr ? &ss : 0, &size, flags);
     __tcphint_reset(rc);
+    if (rc != -1 && IsXnu() && __xnu_unix_seq(fd))
+      __xnu_unix_seq_setup(rc);
   } else if (!__isfdopen(fd)) {
     rc = ebadf();
   } else if (__isfdkind(fd, kFdSocket)) {

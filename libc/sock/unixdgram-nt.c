@@ -643,6 +643,8 @@ textwindows int __udg_getname_nt(struct Fd *f, bool peer,
   sun->sun_family = AF_UNIX;
   memcpy(sun->sun_path, peer ? u->peer : u->bound, len);
   *size = offsetof(struct sockaddr_un, sun_path) + len;
+  if (len && sun->sun_path[0])
+    ++*size;  // the nul, counted on linux
   return 0;
 }
 

@@ -155,7 +155,7 @@ textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
     rc = 0;
   }
   if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
-    _weaken(__epoll_rearm_in)(fd);
+    _weaken(__epoll_rearm_in)(fd, (flags & MSG_PEEK) ? 0 : rc);
   return rc;
 }
 

@@ -42,6 +42,21 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
+// what shutdown() made a windows socket report, in linux's bits: a
+// shut read side is readable at end of file with a read hangup, both
+// sides shut is a hangup too
+static int __poll_shut_nt(int fd) {
+  if (!__isfdkind(fd, kFdSocket))
+    return 0;
+  char shut = __get_pib()->fds.p[fd].shut;
+  int r = 0;
+  if (shut & 1)
+    r |= POLLIN | POLLRDNORM | POLLRDHUP;
+  if (shut == 3)
+    r |= POLLHUP;
+  return r;
+}
+
 static int ppoll_impl(struct pollfd *fds, size_t nfds,
                       const struct timespec *timeout, const sigset_t *sigmask) {
   int e, fdcount;
@@ -149,9 +164,17 @@ static int ppoll_impl(struct pollfd *fds, size_t nfds,
     fds = fds2;
     fds2 = swap;
     if (fdcount != -1)
-      for (size_t i = 0; i < nfds; ++i)
+      for (size_t i = 0; i < nfds; ++i) {
         fds[i].revents = __poll2linux(fds2[i].revents) &
                          (fds[i].events | POLLERR | POLLHUP | POLLNVAL);
+        // what a local shutdown() makes a windows socket report
+        if (IsWindows() && fds[i].fd >= 0 && !(fds[i].revents & POLLNVAL)) {
+          int shut = __poll_shut_nt(fds[i].fd) & (fds[i].events | POLLHUP);
+          if (shut && !fds[i].revents)
+            ++fdcount;
+          fds[i].revents |= shut;
+        }
+      }
   }
 
   // One of the use cases for poll() is checking if a large number of

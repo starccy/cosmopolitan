@@ -32,7 +32,8 @@ struct SockOpt {
   X(SO_SNDTIMEO)       \
   X(SO_RCVLOWAT)       \
   X(SO_SNDLOWAT)       \
-  X(SO_REUSEPORT)
+  X(SO_REUSEPORT)      \
+  X(SO_TIMESTAMP)
 
 #define TCP_OPTS(X)             \
   X(TCP_NODELAY)                \
@@ -81,7 +82,11 @@ struct SockOpt {
   X(IP_MULTICAST_TTL)     \
   X(IP_MULTICAST_LOOP)    \
   X(IP_ADD_MEMBERSHIP)    \
-  X(IP_DROP_MEMBERSHIP)
+  X(IP_DROP_MEMBERSHIP)   \
+  X(IP_UNBLOCK_SOURCE)    \
+  X(IP_BLOCK_SOURCE)      \
+  X(IP_ADD_SOURCE_MEMBERSHIP) \
+  X(IP_DROP_SOURCE_MEMBERSHIP)
 
 #define IPV6_OPTS(X)        \
   X(IPV6_CHECKSUM)          \
@@ -92,11 +97,13 @@ struct SockOpt {
   X(IPV6_JOIN_GROUP)        \
   X(IPV6_LEAVE_GROUP)       \
   X(IPV6_V6ONLY)            \
+  X(IPV6_HDRINCL)           \
   X(IPV6_PKTINFO)           \
   X(IPV6_RECVPKTINFO)       \
   X(IPV6_HOPLIMIT)          \
   X(IPV6_RECVHOPLIMIT)      \
   X(IPV6_MTU_DISCOVER)      \
+  X(IPV6_MTU)               \
   X(IPV6_HOPOPTS)           \
   X(IPV6_RECVRTHDR)         \
   X(IPV6_RTHDR)             \

@@ -153,6 +153,13 @@ textwindows ssize_t __winsock_recvfrom_nt(int fd, const struct iovec *iov,
     if (opt_out_srcaddr && opt_inout_srcaddrsize && *opt_inout_srcaddrsize >= 2)
       ((struct sockaddr *)opt_out_srcaddr)->sa_family =
           __af2linux(((struct sockaddr *)opt_out_srcaddr)->sa_family);
+    // a seqpacket message comes with its sender's name, as on linux,
+    // and an unbound peer has none
+    if (__scm_seqpacket_nt(f) && opt_out_srcaddr && opt_inout_srcaddrsize) {
+      uint32_t cap = addrcapacity;
+      if (!getpeername(fd, opt_out_srcaddr, &cap) && cap > sizeof(uint16_t))
+        *opt_inout_srcaddrsize = cap;
+    }
   }
   __sig_unblock(waitmask);
   return rc;
@@ -183,7 +190,7 @@ textwindows static ssize_t sys_recvfrom_nt_rearm(int fd, const struct iovec *iov
     }
   }
   if ((rc > 0 || (rc == -1 && errno == EAGAIN)) && _weaken(__epoll_rearm_in))
-    _weaken(__epoll_rearm_in)(fd);
+    _weaken(__epoll_rearm_in)(fd, (flags & MSG_PEEK) ? 0 : rc);
   return rc;
 }
 

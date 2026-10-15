@@ -130,7 +130,7 @@ textwindows int sys_accept_nt(struct Fd *f, struct sockaddr_storage *addr,
   rc = sys_accept_nt_impl(f, addr, accept4_flags, _SigMask);
   ALLOW_SIGNALS;
   if ((rc >= 0 || errno == EAGAIN) && _weaken(__epoll_rearm_in))
-    _weaken(__epoll_rearm_in)(f - __get_pib()->fds.p);
+    _weaken(__epoll_rearm_in)(f - __get_pib()->fds.p, 0);
   return rc;
 }
 

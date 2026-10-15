@@ -30,8 +30,7 @@ COSMOPOLITAN_C_START_
   ((unsigned char *)(mhdr)->msg_control + (mhdr)->msg_controllen)
 
 struct cmsghdr { /* linux abi */
-  uint32_t cmsg_len;
-  uint32_t __pad1;
+  size_t cmsg_len;
   int32_t cmsg_level;
   int32_t cmsg_type;
 };

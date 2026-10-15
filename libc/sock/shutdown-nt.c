@@ -16,7 +16,10 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/calls/internal.h"
 #include "libc/dce.h"
+#include "libc/intrin/weaken.h"
+#include "libc/sysv/pib.h"
 #include "libc/nt/thread.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/nt/winsock.h"
@@ -34,6 +37,9 @@ textwindows int sys_shutdown_nt(struct Fd *fd, int how) {
   // a cancelled receive starts over and reads eof, a send starts over
   if (how == SHUT_RD || how == SHUT_RDWR)
     CancelIoEx(fd->handle, 0);
+  fd->shut |= how == SHUT_RD ? 1 : how == SHUT_WR ? 2 : 3;
+  if (_weaken(__epoll_shutdown))
+    _weaken(__epoll_shutdown)(fd - __get_pib()->fds.p);
   return 0;
 }
 

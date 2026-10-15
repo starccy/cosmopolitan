@@ -73,6 +73,8 @@ int dup3(int oldfd, int newfd, int flags) {
   } else if (oldfd < 0 || newfd < 0) {
     rc = ebadf();
   } else if (!IsWindows()) {
+    if (IsXnu() && oldfd != newfd && !__vforked && _weaken(__epoll_forget_kq))
+      _weaken(__epoll_forget_kq)(newfd);
     if (__isfdkind(oldfd, kFdZip) || __isfdkind(newfd, kFdZip) ||
         __isfdkind(oldfd, kFdProc) || __isfdkind(newfd, kFdProc)) {
       if (__vforked) {
@@ -81,8 +83,8 @@ int dup3(int oldfd, int newfd, int flags) {
         rc = sys_dup3(oldfd, newfd, flags);
         if (rc != -1) {
           if (_weaken(__zipos_postdup))
-            _weaken(__zipos_postdup)(oldfd, newfd);
-          if (_weaken(__procfs_postdup))
+            rc = _weaken(__zipos_postdup)(oldfd, newfd);
+          if (rc != -1 && _weaken(__procfs_postdup))
             _weaken(__procfs_postdup)(oldfd, newfd);
         }
       }
@@ -92,6 +94,10 @@ int dup3(int oldfd, int newfd, int flags) {
   } else {
     rc = sys_dup_nt(oldfd, newfd, flags, -1);
   }
+  if (!IsWindows() && rc != -1 && oldfd != newfd &&
+      !__isfdkind(oldfd, kFdZip) && !__isfdkind(oldfd, kFdProc) &&
+      _weaken(__zipos_postdup))
+    rc = _weaken(__zipos_postdup)(oldfd, newfd);
   STRACE("dup3(%d, %d, %d) → %d% m", oldfd, newfd, flags, rc);
   return rc;
 }

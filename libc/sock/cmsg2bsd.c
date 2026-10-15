@@ -29,9 +29,14 @@ static void level2host(int32_t *level, int32_t *type) {
   }
 }
 
+// xnu's SCM_TIMESTAMP, which linux numbers like SO_TIMESTAMP
+#define SCM_TIMESTAMP_XNU 2
+
 static void level2linux(int32_t *level, int32_t *type) {
   if (*level == __host_SOL_SOCKET) {
     *level = SOL_SOCKET;
+    if (IsXnu() && *type == SCM_TIMESTAMP_XNU)
+      *type = SCM_TIMESTAMP;
   } else if (*level == SOL_IP || *level == SOL_IPV6) {
     *type = __sockopt2linux(*level, *type);
     // the bsds tag the received tos with the option that asked for it
@@ -52,6 +57,7 @@ ssize_t __cmsg2bsd(const void *src, size_t srclen, void *dst, size_t dstcap) {
   const unsigned char *s = src;
   unsigned char *d = dst;
   size_t si = 0, di = 0;
+  ssize_t rights = -1;
   while (si + sizeof(struct cmsghdr) <= srclen) {
     struct cmsghdr h;
     memcpy(&h, s + si, sizeof(h));
@@ -71,6 +77,23 @@ ssize_t __cmsg2bsd(const void *src, size_t srclen, void *dst, size_t dstcap) {
       data = (const unsigned char *)&tos;
       payload = sizeof(tos);
     }
+    // xnu wants the descriptors of a message in one SCM_RIGHTS entry,
+    // where linux takes several: a second one is appended to the first
+    if (IsXnu() && h.cmsg_level == SOL_SOCKET && h.cmsg_type == SCM_RIGHTS &&
+        rights >= 0) {
+      uint32_t have;
+      memcpy(&have, d + rights, 4);
+      if (align_bsd(have + payload) > dstcap - rights)
+        return -1;
+      memmove(d + rights + have, data, payload);
+      have += payload;
+      memcpy(d + rights, &have, 4);
+      di = rights + align_bsd(have);
+      si += CMSG_ALIGN(h.cmsg_len);
+      continue;
+    }
+    if (h.cmsg_level == SOL_SOCKET && h.cmsg_type == SCM_RIGHTS)
+      rights = di;
     size_t blen = BSD_HDR + payload;
     if (align_bsd(blen) > dstcap - di)
       return -1;
@@ -113,6 +136,16 @@ size_t __cmsg2linux(const void *src, size_t srclen, void *dst, size_t dstcap) {
     level2linux(&h.cmsg_level, &h.cmsg_type);
     memcpy(d + di, &h, sizeof(h));
     memcpy(d + di + sizeof(h), s + si + BSD_HDR, payload);
+    // xnu's timeval has a 32-bit tv_usec and padding where linux's has
+    // a 64-bit one
+    if (IsXnu() && h.cmsg_level == SOL_SOCKET &&
+        h.cmsg_type == SCM_TIMESTAMP && payload == 16) {
+      int32_t usec;
+      int64_t usec64;
+      memcpy(&usec, s + si + BSD_HDR + 8, sizeof(usec));
+      usec64 = usec;
+      memcpy(d + di + sizeof(h) + 8, &usec64, sizeof(usec64));
+    }
     di += CMSG_ALIGN(h.cmsg_len);
     si += align_bsd(blen);
   }
