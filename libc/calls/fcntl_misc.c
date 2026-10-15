@@ -22,6 +22,13 @@
 #include "libc/intrin/strace.h"
 #include "libc/sysv/consts/f.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/calls/internal.h"
+#include "libc/nt/enum/filetype.h"
+#include "libc/nt/files.h"
+#include "libc/calls/calls.h"
+#include "libc/calls/struct/stat.h"
+#include "libc/sysv/consts/s.h"
+#include "libc/sysv/pib.h"
 
 int __fcntl_misc(int fd, int cmd, ...) {
   int rc;
@@ -30,7 +37,30 @@ int __fcntl_misc(int fd, int cmd, ...) {
   va_start(va, cmd);
   arg = va_arg(va, uintptr_t);
   va_end(va);
-  if (IsWindows() || IsMetal()) {
+  if (IsWindows() && (cmd == F_GETPIPE_SZ || cmd == F_SETPIPE_SZ)) {
+    if (!__isfdopen(fd)) {
+      rc = ebadf();
+    } else if (!__isfdkind(fd, kFdFile) ||
+               GetFileType(__get_pib()->fds.p[fd].handle) != kNtFileTypePipe) {
+      rc = ebadf();
+    } else if (cmd == F_GETPIPE_SZ) {
+      rc = 65536;  // what pipe-nt.c makes them with
+    } else {
+      rc = eperm();  // a pipe's buffer is sized when it's made
+    }
+  } else if (IsXnu() && (cmd == F_GETPIPE_SZ || cmd == F_SETPIPE_SZ)) {
+    // a pipe grows to 64kb for a big write and no further
+    struct stat st;
+    if (fstat(fd, &st) == -1) {
+      rc = -1;
+    } else if (!S_ISFIFO(st.st_mode)) {
+      rc = ebadf();
+    } else if (cmd == F_GETPIPE_SZ || arg <= 65536) {
+      rc = 65536;
+    } else {
+      rc = eperm();
+    }
+  } else if (IsWindows() || IsMetal()) {
     rc = einval();
   } else {
     rc = __sys_fcntl(fd, cmd, arg);

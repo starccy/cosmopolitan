@@ -92,6 +92,7 @@ bool32 GetFileInformationByHandleEx(int64_t hFile,
                                     void *out_lpFileInformation,
                                     uint32_t dwBufferSize);
 
+bool32 GetFileSizeEx(int64_t hFile, int64_t *lpFileSize);
 bool32 GetFileInformationByHandle(
     int64_t hFile, struct NtByHandleFileInformation *lpFileInformation);
 bool32 SetFileInformationByHandle(int64_t hFile, int FileInformationClass,

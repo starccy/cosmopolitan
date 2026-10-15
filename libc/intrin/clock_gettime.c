@@ -24,6 +24,7 @@
 #include "libc/errno.h"
 #include "libc/intrin/describeflags.h"
 #include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
 #include "libc/runtime/syslib.internal.h"
 #include "libc/sysv/consts/clock.h"
 #include "libc/sysv/consts/host.internal.h"
@@ -36,7 +37,26 @@
 
 typedef int clock_gettime_f(int, struct timespec *);
 
+// linux's CLOCK_BOOTTIME is CLOCK_MONOTONIC plus the time spent asleep.
+// xnu's clock that counts sleep is kept in microseconds and can trail
+// its uptime clock by a few milliseconds, so the later of the two is
+// answered
+static int sys_clock_gettime_boottime_xnu(struct timespec *ts) {
+  struct timespec up;
+  int rc;
+  if ((rc = __syslib->__clock_gettime(__clock2host(CLOCK_MONOTONIC), &up)))
+    return rc;
+  if ((rc = __syslib->__clock_gettime(__clock2host(CLOCK_BOOTTIME), ts)))
+    return rc;
+  if (ts->tv_sec < up.tv_sec ||
+      (ts->tv_sec == up.tv_sec && ts->tv_nsec < up.tv_nsec))
+    *ts = up;
+  return 0;
+}
+
 static int sys_clock_gettime_syslib(int clock, struct timespec *ts) {
+  if (IsXnu() && clock == CLOCK_BOOTTIME)
+    return sys_clock_gettime_boottime_xnu(ts);
   return __syslib->__clock_gettime(__clock2host(clock), ts);
 }
 
@@ -80,6 +100,12 @@ static int clock_gettime_impl(int clock, struct timespec *ts) {
   struct timespec memory;
   if (!ts)
     ts = &memory;
+  // another process's cpu clock, as clock_getcpuclockid() hands out
+  if (clock < 0 && !IsLinux()) {
+    if (_weaken(__clock_gettime_pid))
+      return _weaken(__clock_gettime_pid)(clock, ts);
+    return -EINVAL;
+  }
   return __clock_gettime(clock, ts);
 }
 

@@ -41,6 +41,9 @@ int clock_settime(int clockid, const struct timespec *ts) {
     } else {
       rc = einval();
     }
+  } else if (IsWindows()) {
+    // setting the clock takes a privilege we don't ask for
+    rc = clockid == CLOCK_REALTIME ? eperm() : einval();
   } else if (__clock2host(clockid) == 127) {
     rc = einval();  // 127 is used by consts.sh to mean unsupported
   } else {

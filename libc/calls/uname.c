@@ -124,8 +124,8 @@ static const char *Str(int rc, const char *s) {
  *   host. This is equivalent to getdomainname(), except we guarantee a
  *   NUL-terminator here with truncation, which should never happen w/o
  *   violating the DNS standard. If this field is not present, it'll be
- *   coerced to empty string. On Linux, this is the same as the content
- *   of `/proc/sys/kernel/domainname`.
+ *   `(none)`, which is what Linux reports then. On Linux, this is the
+ *   same as the content of `/proc/sys/kernel/domainname`.
  *
  * The returned fields are guaranteed to be nul-terminated.
  *
@@ -146,9 +146,6 @@ int uname(struct utsname *uts) {
       strlcpy(uts->version, linux.version, SYS_NMLN);
       strlcpy(uts->machine, linux.machine, SYS_NMLN);
       strlcpy(uts->domainname, linux.domainname, SYS_NMLN);
-      if (!strcmp(uts->domainname, "(none)")) {
-        uts->domainname[0] = 0;
-      }
     }
   } else if (IsBsd()) {
     GetBsdStr(CTL_KERN, KERN_OSTYPE, uts->sysname);
@@ -180,6 +177,8 @@ int uname(struct utsname *uts) {
       strlcat(buf, uts->version, SYS_NMLN);
     }
     strlcpy(uts->version, buf, SYS_NMLN);
+    if (!uts->domainname[0])
+      stpcpy(uts->domainname, "(none)");
   }
   STRACE("uname([{%#s, %#s, %#s, %#s, %#s, %#s}]) → %d% m",
          Str(rc, uts->sysname), Str(rc, uts->nodename), Str(rc, uts->release),

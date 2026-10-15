@@ -20,6 +20,8 @@
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/pty.internal.h"
+#include "libc/fmt/itoa.h"
 #include "libc/calls/sig.internal.h"
 #include "libc/calls/struct/dirent.h"
 #include "libc/calls/struct/stat.h"
@@ -71,6 +73,7 @@
 #include "libc/thread/tls.h"
 #include "libc/zip.h"
 #include "libc/procfs/procfs.internal.h"
+#include "libc/nt/struct/filestandardinformation.h"
 
 textwindows static uint32_t GetVirtualRoots(void);
 
@@ -92,6 +95,15 @@ int sys_getdents(unsigned, void *, unsigned, long *) libcesque;
 struct dirstream {
   int fd;
   bool iszip;
+  bool isvirtual;
+  bool mergedone;
+  bool zipcheck;
+  bool failed;  // the entry reader stopped on an error, not the end
+  bool ziproot;  // a unix root listing, which gets a "zip" entry
+  char isdev;    // windows: 1 /dev, 2 /dev/pts, 3 /dev/fd, made up here
+  bool gotzip;
+  size_t zipdir, zipchild;
+  struct critbit0 merged;
   bool isproc;
   long index;
   long offset;
@@ -312,14 +324,31 @@ textwindows static uint32_t GetVirtualRoots(void) {
   return virts;
 }
 
+// a directory that was removed keeps its handle, which would still
+// list the dot entries; linux lists nothing
+textwindows static bool readdir_nt_gone(DIR *dir) {
+  struct NtIoStatusBlock iosb;
+  struct NtFileStandardInformation fsi;
+  return !dir->isroot &&
+         !NtQueryInformationFile(__get_pib()->fds.p[dir->fd].handle, &iosb,
+                                 &fsi, sizeof(fsi),
+                                 kNtFileStandardInformation) &&
+         fsi.DeletePending;
+}
+
 textwindows dontinline static struct dirent *readdir_nt(DIR *dir) {
   struct NtByHandleFileInformation wst;
+
+  if (readdir_nt_gone(dir))
+    return NULL;
 
 TryAgain:
   while (!dir->isdone) {
     int rc = readdir_nt_next(dir);
-    if (rc < 0)
+    if (rc < 0) {
+      dir->failed = true;
       return NULL;
+    }
     if (!rc) {
       dir->isdone = true;
     } else if (!(dir->attrs & kNtFileAttributeSystem)) {
@@ -456,11 +485,20 @@ DIR *fdopendir(int fd) {
 
   // on unix, file descriptor isn't required to be tracked
   dir->fd = fd;
+  if (_weaken(__zipos_fdnode)) {
+    dir->zipdir = _weaken(__zipos_fdnode)(fd);
+    dir->zipcheck = _weaken(__zipos_present)(dir->zipdir);
+  }
   if (__isfdkind(fd, kFdProc)) {
     dir->isproc = true;
     return dir;
   }
   if (!__isfdkind(fd, kFdZip)) {
+    if (IsWindows() && __isfdkind(fd, kFdDevRandom) &&
+        __get_pib()->fds.p[fd].devdir) {
+      dir->isdev = __get_pib()->fds.p[fd].devdir;
+      return dir;
+    }
     if (IsWindows()) {
       if (!fdopendir_nt(dir, fd)) {
         return dir;
@@ -476,6 +514,10 @@ DIR *fdopendir(int fd) {
   // ensure open /zip/... file is a directory
   struct ZiposHandle *h =
       (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle;
+  if (h->isvirtual) {
+    dir->isvirtual = true;
+    return dir;
+  }
   if (h->cfile != ZIPOS_SYNTHETIC_DIRECTORY &&
       !S_ISDIR(GetZipCfileMode(h->zipos->map + h->cfile))) {
     free(dir);
@@ -549,15 +591,40 @@ DIR *opendir(const char *name) {
   return __opendirat(AT_FDCWD, name);
 }
 
+// whether `name` spells the root: slashes and dot components only
+static bool IsRootPath(const char *name) {
+  if (name[0] != '/')
+    return false;
+  for (const char *p = name; *p;) {
+    while (*p == '/')
+      ++p;
+    if (*p == '.' && (!p[1] || p[1] == '/')) {
+      ++p;
+    } else if (*p) {
+      return false;
+    }
+  }
+  return true;
+}
+
 DIR *__opendirat(int dirfd, const char *name) {
   int fd;
   DIR *res;
   fd = openat(dirfd, name, O_RDONLY | O_DIRECTORY | O_NOCTTY | O_CLOEXEC);
   if (fd == -1)
     return 0;
+  if (_weaken(__zipos_setfdnode))
+    _weaken(__zipos_setfdnode)(fd, dirfd, name);
   res = fdopendir(fd);
-  if (!res)
+  if (!res) {
     close(fd);
+    return 0;
+  }
+  // the zip store hangs off the root, as readdir_nt shows it; on unix
+  // the kernel's listing of / doesn't know, so it gets the entry here
+  if (!IsWindows() && _weaken(__zipos_get) && _weaken(__zipos_get)() &&
+      IsRootPath(name))
+    res->ziproot = true;
   return res;
 }
 
@@ -638,8 +705,16 @@ static struct dirent *readdir_unix(DIR *dir) {
       unassert(seeky <= INT_MAX);
       dir->offset = seeky << 32;
     }
+    int e = errno;
     int rc = sys_getdents(dir->fd, dir->buf, sizeof(dir->buf), &basep);
     STRACE("sys_getdents(%d) → %d% m", dir->fd, rc);
+    // a directory that was removed is at its end, as glibc has it
+    if (rc == -1 && errno == ENOENT) {
+      errno = e;
+      rc = 0;
+    }
+    if (rc == -1)
+      dir->failed = true;
     if (!rc || rc == -1)
       return NULL;
     dir->buf_pos = 0;
@@ -677,7 +752,9 @@ static struct dirent *readdir_unix(DIR *dir) {
     dir->buf_pos += bsd->d_reclen;
     ent = &dir->ent;
     ent->d_ino = bsd->d_fileno;
-    ent->d_off = dir->offset++;
+    // seekdir() counts entries here, and linux's d_off names the one
+    // after the entry
+    ent->d_off = IsXnu() ? ++dir->offset : dir->offset++;
     ent->d_type = bsd->d_type;
     memcpy(ent->d_name, bsd->d_name, bsd->d_namlen + 1);
   }
@@ -692,9 +769,69 @@ static struct dirent *readdir_proc(DIR *dir) {
   return &dir->ent;
 }
 
+// what open-nt.c makes up under /dev, in the order linux happens to
+// list the common ones; the links are what /dev/stdin and friends are
+static const char kDevNames[][8] = {"full", "null",   "zero",   "random",
+                                    "urandom", "tty", "ptmx",   "stdin",
+                                    "stdout",  "stderr", "fd",  "pts"};
+
+// the /dev, /dev/pts and /dev/fd listings on windows
+static struct dirent *readdir_dev(DIR *dir) {
+  struct dirent *ent = &dir->ent;
+  long i = dir->index;  // readdir() counts it up
+  ent->d_off = i + 1;
+  if (i < 2) {
+    strcpy(ent->d_name, i ? ".." : ".");
+    ent->d_type = DT_DIR;
+    ent->d_ino = 0x646576 + (i ? 0 : dir->isdev);
+    return ent;
+  }
+  i -= 2;
+  if (dir->isdev == 1) {
+    if (i >= ARRAYLEN(kDevNames))
+      return 0;
+    strcpy(ent->d_name, kDevNames[i]);
+    ent->d_type = i >= 10 ? DT_DIR : i >= 7 ? DT_LNK : DT_CHR;
+    ent->d_ino = 0x64657600 + i;
+    return ent;
+  }
+  if (dir->isdev == 2) {
+    int nums[64];
+    int n = _weaken(__pty_list_nt) ? _weaken(__pty_list_nt)(nums, 64) : 0;
+    if (i >= n || i >= 64)
+      return 0;
+    FormatInt32(ent->d_name, nums[i]);
+    ent->d_type = DT_CHR;
+    ent->d_ino = 0x70747300 + nums[i];
+    return ent;
+  }
+  // /dev/fd: the open descriptors, with dir->offset as the cursor
+  for (; dir->offset < __get_pib()->fds.n; ++dir->offset) {
+    if (!__isfdopen(dir->offset))
+      continue;
+    FormatInt32(ent->d_name, dir->offset);
+    ent->d_type = DT_LNK;
+    ent->d_ino = 0x66640000 + dir->offset;
+    ++dir->offset;
+    return ent;
+  }
+  return 0;
+}
+
 static struct dirent *readdir_impl(DIR *dir) {
   struct dirent *res;
-  if (dir->isproc) {
+  if (dir->isdev) {
+    res = readdir_dev(dir);
+  } else if (dir->isvirtual) {
+    if (dir->index < 2) {
+      strcpy(dir->ent.d_name, dir->index ? ".." : ".");
+      dir->ent.d_type = DT_DIR;
+      struct stat st;
+      if (fstatat(dir->fd, dir->ent.d_name, &st, 0)) return 0;
+      dir->ent.d_ino = st.st_ino;
+      res = &dir->ent;
+    } else res = 0;
+  } else if (dir->isproc) {
     res = readdir_proc(dir);
   } else if (dir->iszip) {
     res = readdir_zipos(dir);
@@ -702,6 +839,36 @@ static struct dirent *readdir_impl(DIR *dir) {
     res = readdir_nt(dir);
   } else {
     res = readdir_unix(dir);
+  }
+  if (dir->ziproot) {
+    if (res) {
+      if (!strcmp(res->d_name, "zip"))
+        dir->gotzip = true;
+    } else if (!dir->gotzip && !dir->failed) {
+      struct stat st;
+      dir->gotzip = true;
+      if (!stat("/zip", &st)) {
+        strcpy(dir->ent.d_name, "zip");
+        dir->ent.d_ino = st.st_ino;
+        dir->ent.d_type = DT_DIR;
+        res = &dir->ent;
+      }
+    }
+  }
+  if (dir->zipdir) {
+    if (!res && dir->failed) return 0;
+    if (res) {
+      if (dir->zipcheck && _weaken(__zipos_ischild)(dir->zipdir, res->d_name) &&
+          critbit0_insert(&dir->merged, res->d_name) == -1) return 0;
+    } else if (!dir->mergedone) {
+      while ((dir->zipchild = _weaken(__zipos_child)(dir->zipdir, dir->zipchild, &dir->ent))) {
+        if (!dir->zipcheck || !critbit0_contains(&dir->merged, dir->ent.d_name)) {
+          res = &dir->ent;
+          break;
+        }
+      }
+      if (!dir->zipchild) dir->mergedone = true;
+    }
   }
   if (res) {
     ++dir->index;
@@ -777,11 +944,12 @@ errno_t readdir_r(DIR *dir, struct dirent *output, struct dirent **result) {
 int closedir(DIR *dir) {
   int rc = 0;
   if (dir) {
-    if (dir->iszip)
+    critbit0_clear(&dir->merged);
+    if (dir->iszip && !dir->isvirtual)
       critbit0_clear(&dir->zip.found);
     if (dir->fd != -1)
       rc |= close(dir->fd);
-    if (IsWindows() && !dir->iszip && !dir->isproc)
+    if (IsWindows() && !dir->iszip && !dir->isproc && !dir->isdev)
       free(dir->ntbuf);
     free(dir);
   }
@@ -791,10 +959,18 @@ int closedir(DIR *dir) {
 /**
  * Returns offset into directory data.
  */
+// linux hands out the kernel's d_off, and glibc's telldir() is the one
+// of the last entry, which seekdir() gives back to lseek(). listings
+// with entries of our own (zip overlays, /proc, windows) count instead
+static bool dirstream_seeks(DIR *dir) {
+  return IsLinux() && !dir->iszip && !dir->isproc && !dir->isvirtual &&
+         !dir->ziproot && !dir->zipdir;
+}
+
 long telldir(DIR *dir) {
   long rc;
   lockdir(dir);
-  rc = dir->index;
+  rc = dirstream_seeks(dir) ? dir->offset : dir->index;
   unlockdir(dir);
   return rc;
 }
@@ -807,6 +983,17 @@ int dirfd(DIR *dir) {
 }
 
 static void rewinddir_impl(DIR *dir) {
+  critbit0_clear(&dir->merged);
+  dir->zipchild = 0;
+  dir->mergedone = false;
+  dir->failed = false;
+  dir->gotzip = false;
+  if (dir->isvirtual) { dir->index = 0; return; }
+  if (dir->isdev) {
+    dir->index = 0;
+    dir->offset = 0;
+    return;
+  }
   if (dir->isproc) {
     dir->index = 0;
   } else if (dir->iszip) {
@@ -848,9 +1035,17 @@ void rewinddir(DIR *dir) {
  */
 void seekdir(DIR *dir, long tell) {
   lockdir(dir);
-  rewinddir_impl(dir);
-  for (long i = 0; i < tell; ++i)
-    readdir_impl(dir);
+  if (dirstream_seeks(dir)) {
+    if (lseek(dir->fd, tell, SEEK_SET) != -1) {
+      dir->buf_pos = dir->buf_end = 0;
+      dir->offset = tell;
+      dir->failed = false;
+    }
+  } else {
+    rewinddir_impl(dir);
+    for (long i = 0; i < tell; ++i)
+      readdir_impl(dir);
+  }
   unlockdir(dir);
 }
 

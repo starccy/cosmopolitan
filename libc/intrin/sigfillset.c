@@ -28,11 +28,10 @@
  * @vforksafe
  */
 int sigfillset(sigset_t *set) {
+  // every signal but the one libc keeps for itself, as on linux, where
+  // the kernel ignores the SIGKILL and SIGSTOP bits
   *set = -1;
-  *set &= ~(1ull << (SIGTHR - 1));   // only libc should mask
-  *set &= ~(1ull << (SIGABRT - 1));  // it's annoying to mask
-  *set &= ~(1ull << (SIGKILL - 1));  // it's impossible to mask
-  *set &= ~(1ull << (SIGSTOP - 1));  // it's impossible to mask
+  *set &= ~(1ull << (SIGTHR - 1));
   if (IsOpenbsd())
     *set &= 0xffffffff;  // it doesn't really exist
   if (IsXnu())

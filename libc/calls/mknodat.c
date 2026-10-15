@@ -11,6 +11,7 @@
 #include "libc/sysv/consts/host.internal.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/consts/s.h"
+#include "libc/str/str.h"
 #include "libc/sysv/errfuns.h"
 
 /**
@@ -38,10 +39,24 @@ int mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
   } else if (!IsWindows()) {
     int e = errno;
     rc = sys_mknodat(__dirfd2host(dirfd), path, mode, dev);
-    // xnu has only mknod(), which is enough for a path it can resolve
-    if (rc == -1 && errno == ENOSYS && (dirfd == AT_FDCWD || *path == '/')) {
+    // xnu has only mknod(): a relative path is put after the directory
+    // the descriptor names
+    if (rc == -1 && errno == ENOSYS) {
+      char full[2048];
+      const char *p = path;
+      if (dirfd != AT_FDCWD && *path != '/') {
+        size_t n;
+        if (__sys_fcntl(dirfd, 50, (uintptr_t)full) == -1)
+          return -1;
+        n = strlen(full);
+        if (n + 1 + strlen(path) >= sizeof(full))
+          return enametoolong();
+        full[n] = '/';
+        strcpy(full + n + 1, path);
+        p = full;
+      }
       errno = e;
-      rc = sys_mknod(path, mode, dev);
+      rc = sys_mknod(p, mode, dev);
     }
   } else if ((mode & S_IFMT) == S_IFIFO) {
     rc = __mkfifo_nt(dirfd, path, mode);

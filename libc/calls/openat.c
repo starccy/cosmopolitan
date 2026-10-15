@@ -24,8 +24,10 @@
 #include "libc/calls/struct/stat.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/dce.h"
+#include "libc/limits.h"
 #include "libc/errno.h"
 #include "libc/fmt/itoa.h"
 #include "libc/intrin/describeflags.h"
@@ -178,6 +180,7 @@
  */
 int openat(int dirfd, const char *path, int flags, ...) {
   int rc;
+  int e0 = errno;
   va_list va;
   unsigned mode;
   struct stat st;
@@ -227,6 +230,27 @@ int openat(int dirfd, const char *path, int flags, ...) {
     rc = sys_openat(dirfd, path, flags & ~O_UNLINK, mode);
     if (rc != -1 && IsXnu() && !strcmp(path, "/dev/ptmx"))
       __ptmx_opened_xnu(rc);
+    if (rc == -1 && IsXnu() && _weaken(__procfs_open) &&
+        !(flags & (O_CREAT | O_NOFOLLOW)) &&
+        (errno == ENOENT || errno == ENOTDIR)) {
+      // a link into a virtual tree, which the kernel can't resolve
+      int e = errno;
+      char next[PATH_MAX];
+      int r = __follow_link(dirfd, path, errno == ENOTDIR, next);
+      if (r == 1) {
+        if (__follow_link_depth < 40) {
+          ++__follow_link_depth;
+          rc = openat(dirfd, next, flags, mode);
+          --__follow_link_depth;
+          if (rc != -1)
+            errno = e0;
+        } else {
+          rc = eloop();
+        }
+      } else if (r == 0) {
+        errno = e;
+      }
+    }
     if (rc != -1) {
       // openat succeeded
       if (IsXnu() && (flags & _O_PATH) && !(flags & O_NONBLOCK))

@@ -431,6 +431,7 @@ textwindows static int sys_open_nt_dispatch(int dirfd, const char *file,
 textwindows int sys_open_nt(int dirfd, const char *file, uint32_t flags,
                             int32_t mode) {
   int newfd;
+  int e0 = errno;
   mode &= ~__get_pib()->umask;
   if (!(flags & O_CREAT))
     mode = 0;
@@ -447,5 +448,25 @@ textwindows int sys_open_nt(int dirfd, const char *file, uint32_t flags,
     }
   }
   ALLOW_SIGNALS;
+  if (newfd == -1 && !(flags & (O_CREAT | O_NOFOLLOW)) &&
+      (errno == ENOENT || errno == ENOTDIR)) {
+    // a link into a virtual tree, which windows can't resolve
+    int e = errno;
+    char next[PATH_MAX];
+    int r = __follow_link_nt(dirfd, file, errno == ENOTDIR, next);
+    if (r == 1) {
+      if (__follow_link_depth < 40) {
+        ++__follow_link_depth;
+        newfd = openat(dirfd, next, flags, mode);
+        --__follow_link_depth;
+        if (newfd != -1)
+          errno = e0;
+      } else {
+        newfd = eloop();
+      }
+    } else if (r == 0) {
+      errno = e;
+    }
+  }
   return newfd;
 }

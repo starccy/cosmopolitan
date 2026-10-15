@@ -241,7 +241,7 @@ textwindows static struct PgrpEntry *__proc_pgrp(struct Proc *pr) {
     __pgrp_unpublish(pr->hPgrp, pr->pgrp);
     pr->pgrp = 0;
     pr->pgrppid = pr->pid;
-    pr->hPgrp = __pgrp_publish(pr->pid, pr->pgid, &pr->pgrp);
+    pr->hPgrp = __pgrp_publish(pr->pid, pr->pgid, __get_pib()->sid, &pr->pgrp);
   }
   return pr->pgrp;
 }

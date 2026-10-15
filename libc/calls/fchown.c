@@ -17,7 +17,9 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
+#include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/dce.h"
 #include "libc/intrin/strace.h"
 #include "libc/sysv/consts/at.h"
 
@@ -29,11 +31,14 @@
  * @return 0 on success, or -1 w/ errno
  * @see /etc/passwd for user ids
  * @see /etc/group for group ids
- * @raises ENOSYS on Windows
  */
 int fchown(int fd, uint32_t uid, uint32_t gid) {
   int rc;
-  rc = sys_fchown(fd, uid, gid);
+  if (!IsWindows()) {
+    rc = sys_fchown(fd, uid, gid);
+  } else {
+    rc = sys_fchown_nt(fd, uid, gid);
+  }
   STRACE("fchown(%d, %d, %d) → %d% m", fd, uid, gid, rc);
   return rc;
 }

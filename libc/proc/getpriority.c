@@ -28,6 +28,26 @@
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/errno.h"
 
+#ifdef __aarch64__
+// the generic stub takes a negative return for an error, and xnu gives
+// the nice value as it is
+static int sys_getpriority_xnu(int which, unsigned who) {
+  register long x0 asm("x0") = which;
+  register long x1 asm("x1") = who;
+  register long x16 asm("x16") = 100;
+  long err;
+  asm volatile("svc\t0x80\n\tcset\t%1, cs"
+               : "+r"(x0), "=r"(err), "+r"(x1)
+               : "r"(x16)
+               : "memory", "cc");
+  if (err) {
+    errno = __errno_host2linux(x0);
+    return -1;
+  }
+  return x0;
+}
+#endif
+
 /**
  * Returns nice value of thing.
  *
@@ -80,9 +100,12 @@ int getpriority(int which, unsigned who) {
     rc = enosys();
   }
 #else
-  rc = sys_getpriority(which, who);
-  if (rc != -1) {
-    rc = NZERO - rc;
+  if (IsXnu()) {
+    rc = sys_getpriority_xnu(which, who);
+  } else {
+    rc = sys_getpriority(which, who);
+    if (rc != -1)
+      rc = NZERO - rc;
   }
 #endif
   STRACE("getpriority(%s, %u) → %d% m", DescribeWhichPrio(which), who, rc);

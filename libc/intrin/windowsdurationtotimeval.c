@@ -19,5 +19,11 @@
 #include "libc/fmt/wintime.internal.h"
 
 struct timeval WindowsDurationToTimeVal(int64_t x) {
-  return (struct timeval){x / HECTONANOSECONDS, x % HECTONANOSECONDS / 10};
+  int64_t sec = x / (int64_t)HECTONANOSECONDS;
+  int64_t rem = x % (int64_t)HECTONANOSECONDS;
+  if (rem < 0) {
+    rem += HECTONANOSECONDS;
+    --sec;
+  }
+  return (struct timeval){sec, rem / 10};
 }

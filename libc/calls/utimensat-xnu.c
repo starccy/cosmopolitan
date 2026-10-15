@@ -26,16 +26,13 @@ struct attrlist_xnu {
 
 int sys_setattrlistat(int, const char *, struct attrlist_xnu *, void *, size_t,
                       uint32_t);
+int sys_fsetattrlist(int, struct attrlist_xnu *, void *, size_t, uint32_t);
 
-// utimensat() for a path on xnu, through setattrlistat() the way
-// apple's libc does it, which takes a dirfd, AT_SYMLINK_NOFOLLOW and
-// nanoseconds. the attribute values go in bit order, mtime first
-int sys_utimensat_xnu(int dirfd, const char *path, const struct timespec ts[2],
-                      int flags) {
-  if (!path)
-    return sys_utimensat_old(dirfd, path, ts, flags);
-  struct timespec now, in[2], buf[2];
-  struct attrlist_xnu al = {ATTR_BIT_MAP_COUNT};
+// the attribute list for utimensat() and futimens(): what's set goes
+// in bit order, mtime first; 0 when nothing is to be set, -1 w/ errno
+static int utimens_attrs_xnu(const struct timespec ts[2],
+                             struct attrlist_xnu *al, struct timespec buf[2]) {
+  struct timespec now, in[2];
   int n = 0;
   if (ts) {
     in[0] = ts[0];
@@ -54,15 +51,45 @@ int sys_utimensat_xnu(int dirfd, const char *path, const struct timespec ts[2],
       return einval();
   }
   if (in[1].tv_nsec != UTIME_OMIT) {
-    al.commonattr |= ATTR_CMN_MODTIME;
+    al->commonattr |= ATTR_CMN_MODTIME;
     buf[n++] = in[1];
   }
   if (in[0].tv_nsec != UTIME_OMIT) {
-    al.commonattr |= ATTR_CMN_ACCTIME;
+    al->commonattr |= ATTR_CMN_ACCTIME;
     buf[n++] = in[0];
   }
-  if (!n)
-    return 0;
+  return n;
+}
+
+// futimens() on xnu: futimes() rounds to microseconds, fsetattrlist()
+// takes the nanoseconds
+static int sys_futimens_xnu(int fd, const struct timespec ts[2]) {
+  struct attrlist_xnu al = {ATTR_BIT_MAP_COUNT};
+  struct timespec buf[2];
+  int n = utimens_attrs_xnu(ts, &al, buf);
+  if (n <= 0)
+    return n;
+  int e = errno;
+  int rc = sys_fsetattrlist(fd, &al, buf, n * sizeof(struct timespec), 0);
+  if (rc == -1 && errno == ENOSYS) {
+    errno = e;
+    rc = sys_utimensat_old(fd, 0, ts, 0);
+  }
+  return rc;
+}
+
+// utimensat() for a path on xnu, through setattrlistat() the way
+// apple's libc does it, which takes a dirfd, AT_SYMLINK_NOFOLLOW and
+// nanoseconds. the attribute values go in bit order, mtime first
+int sys_utimensat_xnu(int dirfd, const char *path, const struct timespec ts[2],
+                      int flags) {
+  if (!path)
+    return sys_futimens_xnu(dirfd, ts);
+  struct timespec buf[2];
+  struct attrlist_xnu al = {ATTR_BIT_MAP_COUNT};
+  int n = utimens_attrs_xnu(ts, &al, buf);
+  if (n <= 0)
+    return n;
   int e = errno;
   int rc = sys_setattrlistat(__dirfd2host(dirfd), path, &al, buf,
                              n * sizeof(struct timespec),

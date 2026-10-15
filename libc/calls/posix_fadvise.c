@@ -19,6 +19,7 @@
 #include "libc/assert.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/internal.h"
+#include "libc/calls/struct/stat.h"
 #include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
@@ -27,6 +28,7 @@
 #include "libc/intrin/fds.h"
 #include "libc/intrin/strace.h"
 #include "libc/str/str.h"
+#include "libc/sysv/consts/s.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/sysv/pib.h"
 
@@ -62,6 +64,18 @@ errno_t posix_fadvise(int fd, int64_t offset, int64_t len, int advice) {
     unassert(rc >= 0);
   } else if (IsWindows()) {
     rc = sys_posix_fadvise_nt(fd, offset, len, advice);
+  } else if (IsXnu()) {
+    // nothing to pass on, so only what linux would refuse is
+    struct stat st;
+    if (fstat(fd, &st) == -1) {
+      rc = -1;
+    } else if (S_ISFIFO(st.st_mode)) {
+      rc = espipe();
+    } else if (advice < 0 || advice > 5 || offset < 0 || len < 0) {
+      rc = einval();
+    } else {
+      rc = 0;
+    }
   } else {
     rc = enosys();
   }

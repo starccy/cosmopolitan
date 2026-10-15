@@ -20,7 +20,9 @@
 #include "libc/calls/internal.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/struct/stat.internal.h"
+#include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
+#include "libc/limits.h"
 #include "libc/errno.h"
 #include "libc/fmt/itoa.h"
 #include "libc/intrin/describeflags.h"
@@ -79,6 +81,7 @@ static inline const char *__strace_fstatat_flags(char buf[12], int flags) {
 int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
   // execve() depends on this
   int rc;
+  int e0 = errno;
   struct ZiposUri zipname;
   int zr;
   char zbuf[ZIPOS_PATH_MAX + 8];
@@ -103,6 +106,27 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     rc = _weaken(__zipos_stat)(&zipname, st);
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     rc = sys_fstatat(dirfd, path, st, flags);
+    if (rc == -1 && IsXnu() && _weaken(__procfs_stat) &&
+        !(flags & AT_SYMLINK_NOFOLLOW) &&
+        (errno == ENOENT || errno == ENOTDIR)) {
+      // a link into a virtual tree, which the kernel can't resolve
+      int e = errno;
+      char next[PATH_MAX];
+      int r = __follow_link(dirfd, path, errno == ENOTDIR, next);
+      if (r == 1) {
+        if (__follow_link_depth < 40) {
+          ++__follow_link_depth;
+          rc = fstatat(dirfd, next, st, flags);
+          --__follow_link_depth;
+          if (!rc)
+            errno = e0;
+        } else {
+          rc = eloop();
+        }
+      } else if (r == 0) {
+        errno = e;
+      }
+    }
   } else if (IsWindows()) {
     rc = sys_fstatat_nt(dirfd, path, st, flags);
   } else {

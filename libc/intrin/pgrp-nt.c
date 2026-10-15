@@ -156,6 +156,33 @@ textwindows int __pgrp_of(int pid) {
   return g;
 }
 
+// the session of the process published as `pid`, or -1
+textwindows int __sid_of(int pid) {
+  bool existed;
+  intptr_t h;
+  struct PgrpEntry *e;
+  int s = -1;
+  if (pid > 0 && (e = MapEntry(pid, false, &h, &existed))) {
+    int p = atomic_load(&e->pid);
+    if (p != pid) {
+      // an alias under a win32 pid
+      UnmapEntry(e, h);
+      if (p <= 0 || !(e = MapEntry(p, false, &h, &existed)))
+        return -1;
+    }
+    if (atomic_load(&e->pgid))
+      s = atomic_load(&e->sid);
+    UnmapEntry(e, h);
+  }
+  return s;
+}
+
+textwindows void __sid_self_set(int sid) {
+  __get_pib()->sid = sid;
+  if (__pgrp.self && !__vforked)
+    atomic_store_explicit(&__pgrp.self->sid, sid, memory_order_relaxed);
+}
+
 // publishes the calling process, or takes the group its creator gave it
 // meanwhile; called at startup and in a fork()ed child
 textwindows void __pgrp_own(void) {
@@ -170,11 +197,18 @@ textwindows void __pgrp_own(void) {
   atomic_store_explicit(&__pgrp.tty, 0, memory_order_relaxed);
   if (!(e = MapEntry(pib->pid, true, &h, &existed)))
     return;
-  int g;
-  if (existed && atomic_load(&e->pid) == pib->pid && (g = atomic_load(&e->pgid)))
-    pib->pgid = g;
+  int g, s;
+  if (existed && atomic_load(&e->pid) == pib->pid) {
+    if ((g = atomic_load(&e->pgid)))
+      pib->pgid = g;
+    if ((s = atomic_load(&e->sid)))
+      pib->sid = s;
+  }
+  if (!pib->sid)
+    pib->sid = pib->pid;
   atomic_store_explicit(&e->pid, pib->pid, memory_order_relaxed);
   atomic_store_explicit(&e->self, win, memory_order_relaxed);
+  atomic_store_explicit(&e->sid, pib->sid, memory_order_relaxed);
   atomic_store_explicit(&e->pgid, pib->pgid, memory_order_release);
   __pgrp.self = e;
   __pgrp.selfmap = h;
@@ -217,7 +251,8 @@ textwindows void __pgrp_disown(void) {
 
 // publishes cosmo process `pid` in group `pgid` unless it did so itself
 // already; the returned handle keeps the entry alive
-textwindows intptr_t __pgrp_publish(int pid, int pgid, struct PgrpEntry **out) {
+textwindows intptr_t __pgrp_publish(int pid, int pgid, int sid,
+                                    struct PgrpEntry **out) {
   bool existed;
   intptr_t h;
   struct PgrpEntry *e;
@@ -225,6 +260,7 @@ textwindows intptr_t __pgrp_publish(int pid, int pgid, struct PgrpEntry **out) {
     return 0;
   if (!existed || !atomic_load(&e->pgid)) {
     atomic_store_explicit(&e->pid, pid, memory_order_relaxed);
+    atomic_store_explicit(&e->sid, sid, memory_order_relaxed);
     atomic_store_explicit(&e->pgid, pgid, memory_order_release);
   }
   *out = e;

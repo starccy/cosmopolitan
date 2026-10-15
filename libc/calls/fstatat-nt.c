@@ -25,6 +25,7 @@
 #include "libc/errno.h"
 #include "libc/intrin/fds.h"
 #include "libc/intrin/kprintf.h"
+#include "libc/limits.h"
 #include "libc/nt/createfile.h"
 #include "libc/nt/enum/accessmask.h"
 #include "libc/nt/enum/creationdisposition.h"
@@ -127,6 +128,8 @@ textwindows int sys_fstatat_nt(int dirfd, const char *path, struct stat *st,
   // not, and that one gets a second, data, open below
   int rc;
   int64_t fh;
+  int e0 = errno;
+  bool follow = false;
   uint32_t dwShareMode =
       kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete;
   BLOCK_SIGNALS;
@@ -162,8 +165,32 @@ TryAgain:
       goto TryAgain;
     } else {
       rc = __fix_enotdir(__winerr(), path16);
+      follow = !(flags & AT_SYMLINK_NOFOLLOW) &&
+               (dwErrorCode == kNtErrorFileNotFound ||
+                dwErrorCode == kNtErrorPathNotFound);
     }
   }
   ALLOW_SIGNALS;
+  if (follow) {
+    // a link into a virtual tree, which windows can't resolve
+    int e = errno;
+    char next[PATH_MAX];
+    int r = __follow_link_nt(dirfd, path, errno == ENOTDIR, next);
+    if (r == 1) {
+      if (__follow_link_depth < 40) {
+        ++__follow_link_depth;
+        rc = fstatat(dirfd, next, st, flags);
+        --__follow_link_depth;
+        if (!rc)
+          errno = e0;
+      } else {
+        rc = eloop();
+      }
+    } else if (r == 0) {
+      errno = e;
+    } else {
+      rc = -1;
+    }
+  }
   return rc;
 }

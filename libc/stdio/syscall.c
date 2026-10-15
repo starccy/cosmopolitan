@@ -103,13 +103,60 @@ static long sys_futex_emul(va_list va) {
  * - `SYS_pidfd_open`, `SYS_pidfd_send_signal`, `SYS_pidfd_getfd` (Linux
  *   only, ENOSYS elsewhere)
  *
+ * Any other number goes to the kernel as is on Linux, with up to six
+ * arguments, like glibc's syscall(). The other hosts have no such
+ * numbers, so it's ENOSYS there.
+ *
  * @return system call result, or -1 w/ errno
  */
+static long sys_raw_linux(long n, long a, long b, long c, long d, long e,
+                          long f) {
+#ifdef __x86_64__
+  long rc;
+  register long r10 asm("r10") = d;
+  register long r8 asm("r8") = e;
+  register long r9 asm("r9") = f;
+  asm volatile("syscall"
+               : "=a"(rc)
+               : "0"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9)
+               : "rcx", "r11", "memory");
+  return rc;
+#else
+  register long x8 asm("x8") = n;
+  register long x0 asm("x0") = a;
+  register long x1 asm("x1") = b;
+  register long x2 asm("x2") = c;
+  register long x3 asm("x3") = d;
+  register long x4 asm("x4") = e;
+  register long x5 asm("x5") = f;
+  asm volatile("svc\t#0"
+               : "+r"(x0)
+               : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+               : "memory");
+  return x0;
+#endif
+}
+
 long syscall(long number, ...) {
   switch (number) {
-    default:
-      errno = ENOSYS;
-      return -1;
+    default: {
+      if (!IsLinux()) {
+        errno = ENOSYS;
+        return -1;
+      }
+      long a[6];
+      va_list va;
+      va_start(va, number);
+      for (int i = 0; i < 6; ++i)
+        a[i] = va_arg(va, long);
+      va_end(va);
+      long rc = sys_raw_linux(number, a[0], a[1], a[2], a[3], a[4], a[5]);
+      if (rc < 0 && rc > -4096) {
+        errno = -rc;
+        return -1;
+      }
+      return rc;
+    }
     case SYS_futex: {
       va_list va;
       va_start(va, number);

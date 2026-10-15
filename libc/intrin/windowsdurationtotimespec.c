@@ -19,5 +19,12 @@
 #include "libc/fmt/wintime.internal.h"
 
 struct timespec WindowsDurationToTimeSpec(int64_t x) {
-  return (struct timespec){x / HECTONANOSECONDS, x % HECTONANOSECONDS * 100};
+  // a time before 1970 is negative, with the nanoseconds still counted up
+  int64_t sec = x / (int64_t)HECTONANOSECONDS;
+  int64_t rem = x % (int64_t)HECTONANOSECONDS;
+  if (rem < 0) {
+    rem += HECTONANOSECONDS;
+    --sec;
+  }
+  return (struct timespec){sec, rem * 100};
 }

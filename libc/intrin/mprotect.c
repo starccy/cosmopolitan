@@ -314,7 +314,10 @@ int __mprotect(char *addr, size_t size, int prot) {
  */
 int mprotect(void *addr, size_t size, int prot) {
   int rc;
+  int e = errno;
   rc = __mprotect(addr, size, prot);
+  if (!rc)
+    errno = e;
   STRACE("mprotect(%p, %'zu, %s) → %d% m", addr, size, DescribeProtFlags(prot),
          rc);
   return rc;

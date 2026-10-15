@@ -114,7 +114,13 @@ int getsubopt(char **, char *const *, char **) libcesque paramsnonnull();
 char *strsignal(int) returnsnonnull libcesque;
 char *__strsignal_name(int) returnsnonnull libcesque;
 char *strerror(int) returnsnonnull dontthrow dontcallback;
+#if defined(_GNU_SOURCE) && !defined(_COSMO_SOURCE)
+/* the glibc shape: a known errno comes back as a static string, anything
+   else is formatted into buf; the message is wherever the return value says */
+char *strerror_r(int, char *, size_t) __asm__("__gnu_strerror_r") libcesque;
+#else
 errno_t strerror_r(int, char *, size_t) libcesque;
+#endif
 int __xpg_strerror_r(int, char *, size_t) libcesque;
 
 int bcmp(const void *, const void *, size_t) strlenesque;

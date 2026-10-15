@@ -17,6 +17,7 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
+#include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/describeflags.h"
@@ -51,6 +52,8 @@ int fchownat(int dirfd, const char *path, uint32_t uid, uint32_t gid,
   } else if (_weaken(__zipos_notat) &&
              (rc = __zipos_notat(dirfd, path)) == -1) {
     rc = erofs();
+  } else if (IsWindows()) {
+    rc = sys_fchownat_nt(dirfd, path, uid, gid, flags);
   } else {
     rc = sys_fchownat(__dirfd2host(dirfd), path, uid, gid, hflags);
   }

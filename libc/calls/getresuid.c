@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/calls/syscall_support-sysv.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/strace.h"
 
@@ -41,6 +42,16 @@ int getresuid(uint32_t *real, uint32_t *effective, uint32_t *saved) {
     if (saved)
       *saved = uid;
     rc = 0;
+  } else if (IsXnu()) {
+    uint32_t ids[6];
+    if (!(rc = __resids_xnu(ids))) {
+      if (real)
+        *real = ids[0];
+      if (effective)
+        *effective = ids[1];
+      if (saved)
+        *saved = ids[2];
+    }
   } else if (saved) {
     rc = sys_getresuid(real, effective, saved);
   } else {

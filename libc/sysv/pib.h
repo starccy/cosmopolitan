@@ -25,6 +25,7 @@ struct CosmoPib {
   int dwCreationFlags;
   int dwPriorityClass;
   int pgid;  // process group, carried through execve() as _COSMO_PGID
+  int sid;   // session, kept in the pgrp entry across execve()
   intptr_t hStopEvent;
   intptr_t hStopChurn;
   intptr_t hPidHold;  // process whose win32 pid is ours, after execve()

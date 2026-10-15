@@ -103,6 +103,12 @@
 #define INOTIFY_INTERVAL_MS 200
 #define INOTIFY_SWEEP_MS    5000  // windows: scan of the request-backed watches
 #define INOTIFY_COALESCE_MS 2     // wait for the rest of a burst
+#define INOTIFY_NUDGE_MS    50    // windows: a nonblocking read waits this long for a round
+
+// the completion keys of the scanner's port: a request's overlapped
+// says which, 0 is close() or InotifyWake(), this one is a reader
+// asking for a round right away
+#define kInotifyNudge 1
 #define INOTIFY_EVENT_SIZE  sizeof(struct inotify_event)
 
 // <sync with the xnu headers>
@@ -248,6 +254,9 @@ struct Inotify {
   size_t cpend;
   bool dead;  // closed; the scanner frees the instance on its way out
   bool scanning;
+  uint32_t rounds;        // scanner passes, for the nudge below
+  pthread_cond_t rounded;
+  bool nudged;  // xnu: a reader asked for a full look
   bool overflow;  // IN_Q_OVERFLOW is the last record queued
   size_t queued;
   struct InotifyRec *head;
@@ -382,6 +391,7 @@ static void InotifyFree(struct Inotify *in, bool live) {
   if (in->kq >= 0 && live)
     sys_close(in->kq);
   pthread_mutex_destroy(&in->lock);
+  pthread_cond_destroy(&in->rounded);
   free(in);
 }
 
@@ -1422,7 +1432,8 @@ static void *InotifyScannerFs(struct Inotify *in) {
     if (in->dead)
       break;
     now = InotifyNowMs();
-    if (now >= sweep_due) {
+    if (now >= sweep_due || in->nudged) {
+      in->nudged = false;
       InotifyScan(in, kInotifyAll);
       sweep_due = now + INOTIFY_SWEEP_MS;
       poll_due = now + interval;
@@ -1432,6 +1443,8 @@ static void *InotifyScannerFs(struct Inotify *in) {
     } else {
       InotifyScan(in, kInotifyDirty);
     }
+    ++in->rounds;
+    pthread_cond_broadcast(&in->rounded);
   }
   InotifyFsStop(in);
   if (src) {
@@ -1565,7 +1578,11 @@ static void *InotifyScannerKq(struct Inotify *in) {
     if (in->dead)
       break;
     now = InotifyNowMs();
-    if (now >= poll_due) {
+    if (in->nudged) {
+      in->nudged = false;
+      InotifyScan(in, kInotifyAll);
+      poll_due = now + interval;
+    } else if (now >= poll_due) {
       InotifyScan(in, kInotifyPolled | kInotifyDirty);
       poll_due = now + interval;
     } else if (total) {
@@ -1573,6 +1590,8 @@ static void *InotifyScannerKq(struct Inotify *in) {
     } else {
       InotifyReap(in);
     }
+    ++in->rounds;
+    pthread_cond_broadcast(&in->rounded);
     pthread_mutex_unlock(&in->lock);
   }
   // close() waits for the descriptors to go, as linux frees them
@@ -1812,6 +1831,8 @@ static void *InotifyScannerNt(struct Inotify *in) {
           ++n;
         } else if (ok) {
           woke = true;
+          if (key == kInotifyNudge)
+            break;  // a reader is waiting on this round
         } else {
           break;  // the timeout
         }
@@ -1863,6 +1884,8 @@ static void *InotifyScannerNt(struct Inotify *in) {
       InotifyScan(in, kInotifyDirty);
     }
     InotifyIssue(in);  // a watch that followed its file has a new request
+    ++in->rounds;
+    pthread_cond_broadcast(&in->rounded);
     pthread_mutex_unlock(&in->lock);
   }
 Dead:
@@ -1942,6 +1965,7 @@ static int InotifyInit(int flags) {
     return -1;
   }
   pthread_mutex_init(&in->lock, 0);
+  pthread_cond_init(&in->rounded, 0);
   in->fd = fd;
   in->refs = 1;
   in->next_wd = 1;
@@ -2113,9 +2137,47 @@ static ssize_t InotifyTake(struct Inotify *in, int fd, struct Fd *f,
 }
 
 // called by read() on an inotify descriptor
+// linux queues a change as it happens; here the scanner does it a
+// little later, so a nonblocking read that finds nothing asks for a
+// round and waits for it, within reason, before answering EAGAIN. on
+// windows the round takes in what the requests reported; on xnu, where
+// fsevents has its own latency, it's a look at every watch
+static bool InotifyNudge(struct Inotify *in) {
+  pthread_mutex_lock(&in->lock);
+  if (!InotifyScanning(in)) {
+    pthread_mutex_unlock(&in->lock);
+    return false;
+  }
+  uint32_t round = in->rounds;
+  bool woke = false;
+  if (IsWindows() && in->port) {
+    woke = PostQueuedCompletionStatus(in->port, 0, kInotifyNudge, 0);
+  } else if (in->fs && in->src) {
+    in->nudged = true;
+    woke = InotifyFsWake(in);
+  } else if (in->kq >= 0) {
+    struct KeventXnu k = {0, XNU_EVFILT_USER, 0, XNU_NOTE_TRIGGER};
+    in->nudged = true;
+    woke = sys_kevent(in->kq, &k, 1, 0, 0, 0) != -1;
+  }
+  if (!woke) {
+    pthread_mutex_unlock(&in->lock);
+    return false;
+  }
+  struct timespec deadline =
+      timespec_add(timespec_real(), timespec_frommillis(INOTIFY_NUDGE_MS));
+  while (in->rounds == round && !in->dead)
+    if (pthread_cond_timedwait(&in->rounded, &in->lock, &deadline))
+      break;
+  bool rounded = in->rounds != round;
+  pthread_mutex_unlock(&in->lock);
+  return rounded;
+}
+
 ssize_t __inotify_read(int fd, struct Fd *f, void *buf, size_t size) {
   ssize_t rc;
   sigset_t m = 0;
+  bool nudged = false;
   struct Inotify *in = f->inotify;
   if (IsWindows())
     m = __sig_block();
@@ -2123,6 +2185,8 @@ ssize_t __inotify_read(int fd, struct Fd *f, void *buf, size_t size) {
     if ((rc = InotifyTake(in, fd, f, buf, size)))
       break;
     if (f->flags & O_NONBLOCK) {
+      if (!nudged && (nudged = true, InotifyNudge(in)))
+        continue;
       rc = eagain();
       break;
     }

@@ -24,6 +24,7 @@
 #include "libc/calls/syscall_support-nt.internal.h"
 #include "libc/dce.h"
 #include "libc/intrin/dll.h"
+#include "libc/intrin/pgrp.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/nt/enum/status.h"
@@ -117,6 +118,16 @@ textwindows static int __proc_reap_zombie(struct Proc *pr, int *wstatus,
   return pr->pid;
 }
 
+// whether a child is one of those a wait is for: -1 is any, 0 is the
+// caller's process group, a negative number is that group
+textwindows static bool __proc_match(const struct Proc *pr, int pid) {
+  if (pid == -1)
+    return true;
+  if (pid > 0)
+    return pr->pid == pid;
+  return pr->pgid == (pid ? -pid : __pgrp_self());
+}
+
 // options are waitid's: WUNTRACED (WSTOPPED), WCONTINUED and WEXITED pick
 // the events, WNOWAIT leaves the process in place
 textwindows static int __proc_check(int pid, int *wstatus, int options,
@@ -126,7 +137,7 @@ textwindows static int __proc_check(int pid, int *wstatus, int options,
   if (options & WCONTINUED) {
     for (e = dll_first(__proc.list); e; e = dll_next(__proc.list, e)) {
       struct Proc *pr = PROC_CONTAINER(e);
-      if (pr->continued && (pid == -1 || pid == pr->pid)) {
+      if (pr->continued && __proc_match(pr, pid)) {
         if (wstatus)
           *wstatus = 0xffff;
         if (opt_out_rusage)
@@ -140,7 +151,7 @@ textwindows static int __proc_check(int pid, int *wstatus, int options,
   if (options & WUNTRACED) {
     for (e = dll_first(__proc.stopped); e; e = dll_next(__proc.stopped, e)) {
       struct Proc *pr = STOP_PROC_CONTAINER(e);
-      if (pid == -1 || pid == pr->pid)
+      if (__proc_match(pr, pid))
         return __proc_unstop(pr, wstatus, opt_out_rusage, peek);
     }
   }
@@ -148,7 +159,7 @@ textwindows static int __proc_check(int pid, int *wstatus, int options,
     return 0;
   for (e = dll_first(__proc.zombies); e; e = dll_next(__proc.zombies, e)) {
     struct Proc *pr = PROC_CONTAINER(e);
-    if (pid == -1 || pid == pr->pid) {
+    if (__proc_match(pr, pid)) {
       int rc = __proc_reap_zombie(pr, wstatus, opt_out_rusage, peek);
       if (peek ||
           !(__get_pib()->sighandrvas[SIGCHLD - 1] == (uintptr_t)SIG_IGN ||
@@ -181,10 +192,16 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
     int rc = __proc_check(pid, wstatus, options, rusage);
 
     // if there's no zombies left
-    // check if there's any living processes
-    if (!rc && dll_is_empty(__proc.list)) {
-      __proc_unlock();
-      return echild();
+    // check if there's any living processes the wait could be for
+    if (!rc) {
+      bool any = false;
+      for (struct Dll *e = dll_first(__proc.list); e && !any;
+           e = dll_next(__proc.list, e))
+        any = __proc_match(PROC_CONTAINER(e), pid);
+      if (!any) {
+        __proc_unlock();
+        return echild();
+      }
     }
 
     // otherwise return zombie or zero
@@ -198,8 +215,8 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
     int handcount = 2;
     intptr_t hands[3];
     struct Proc *pr = 0;
-    if (pid == -1) {
-      // wait for any status change
+    if (pid < 1) {
+      // wait for any status change, and look for the group's afterwards
       if (options & WEXITED) {
         hands[0] = __proc.haszombies;
         ++__proc.waiters;
@@ -351,13 +368,8 @@ textwindows int sys_wait4_nt(int pid, int *opt_out_wstatus, int options,
   // wait; the SIGCHLD that comes with it is what callers act on
   if (options & ~(WNOHANG | WUNTRACED | WCONTINUED))
     return einval();
-  // XXX: NT doesn't really have process groups. For instance the
-  //      CreateProcess() flag for starting a process group actually
-  //      just does an "ignore ctrl-c" internally.
-  if (pid == 0)
-    pid = -1;
-  if (pid < -1)
-    pid = -pid;
+  // 0 and negative numbers name process groups, which the tracker
+  // keeps for its children, see __proc_setpgid()
   sigset_t m = __sig_block();
   int rc = __proc_wait(pid, opt_out_wstatus, options | WEXITED,
                        opt_out_rusage, m | 1ull << (SIGCHLD - 1));
@@ -380,8 +392,7 @@ textwindows int sys_waitid_nt(int idtype, int id, int *wstatus,
       pid = id;
       break;
     case P_PGID:
-      // no process groups on NT, see sys_wait4_nt
-      pid = id ? id : -1;
+      pid = id ? -id : 0;
       break;
     default:
       return einval();

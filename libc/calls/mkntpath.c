@@ -33,6 +33,10 @@
 #include "libc/str/tab.h"
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
+
+// the limit linux puts on a path string, which is longer than the
+// PATH_MAX cosmo sizes its buffers by
+#define LINUX_PATH_MAX 4096
 #include "libc/sysv/pib.h"
 
 textwindows static size_t __normunixpath(char16_t *p, size_t n) {
@@ -179,6 +183,46 @@ textwindows static int __pfxunc(char16_t *p, int n) {
   return __retntpath(p, n);
 }
 
+// converts a relative unix path into `p`, which holds PATH_MAX units,
+// collapsing "." and ".." as it goes: the input is taken a run of whole
+// components at a time, as many as fit, and what's in `p` is normalized
+// after each. returns the length, or -1 with ENAMETOOLONG
+textwindows static int __collapserelpath(const char *path, char16_t *p) {
+  int n = 0;
+  p[0] = 0;
+  for (const char *s = path; *s;) {
+    // the longest run of whole components that fits after a slash
+    int room = PATH_MAX - 8 - n - 1;
+    int take = 0, i = 0;
+    for (; s[i]; ++i) {
+      if (s[i] == '/' || s[i] == '\\')
+        take = i + 1;
+      if (i + 1 > room)
+        break;
+    }
+    if (!s[i])
+      take = i;
+    if (!take)
+      return enametoolong();
+    if (n && p[n - 1] != '/')
+      p[n++] = '/';
+    char chunk[PATH_MAX];
+    memcpy(chunk, s, take);
+    chunk[take] = 0;
+    n += tprecode8to16(p + n, PATH_MAX - n, chunk).ax;
+    for (i = 0; i < n; ++i)
+      if (p[i] == '\\')
+        p[i] = '/';
+    s += take;
+    n = __normunixpath(p, n);
+  }
+  if (!n) {
+    p[n++] = '.';
+    p[n] = 0;
+  }
+  return n;
+}
+
 textwindows static int __normdospath(int64_t dirhand, const char *path,
                                      char16_t path16[static PATH_MAX],
                                      bool used_explicit_drive_letter) {
@@ -194,17 +238,34 @@ textwindows static int __normdospath(int64_t dirhand, const char *path,
   // windows just straight up doesn't allow control codes. this will
   // normally raise EINVAL, but it's more informative to say EILSEQ.
   // this check is already performed on the last component in open()
-  // mkdir() etc. but let's prevent EINVAL here too.
-  for (int i = 0; path[i]; ++i)
-    if ((path[i] & 255) < 32)
+  // mkdir() etc. but let's prevent EINVAL here too. the limits are
+  // linux's: its PATH_MAX on the string, NAME_MAX on each component
+  int len = 0, seg = 0;
+  for (; path[len]; ++len) {
+    if ((path[len] & 255) < 32)
       return eilseq();
-
-  // turn utf-8 into utf-16
-  // make sure it isn't truncated and we'll have room to prepend
-  char16_t *p = path16;
-  int n = tprecode8to16(p, PATH_MAX, path).ax;
-  if (n + 7 + 1 > PATH_MAX)
+    if (path[len] == '/' || path[len] == '\\') {
+      seg = 0;
+    } else if (++seg > NAME_MAX) {
+      return enametoolong();
+    }
+  }
+  if (len >= LINUX_PATH_MAX)
     return enametoolong();
+
+  // turn utf-8 into utf-16. a relative path is collapsed a component
+  // at a time on the way in, so "a/../" a thousand times over takes
+  // the room it means, and the directory goes in front of the result
+  char16_t *p = path16;
+  int n;
+  if (path[0] != '/' && path[0] != '\\' && !(isalpha(path[0]) && path[1] == ':')) {
+    if ((n = __collapserelpath(path, p)) == -1)
+      return -1;
+  } else {
+    n = tprecode8to16(p, PATH_MAX, path).ax;
+    if (n + 7 + 1 > PATH_MAX)
+      return enametoolong();
+  }
 
   // turn backslash into forward slash
   for (int i = 0; i < n; ++i)
@@ -598,9 +659,27 @@ textwindows static int __checkdotbase(int64_t dirhand, char base[PATH_MAX],
   return rc;
 }
 
+// whether w holds a component that names something
+textwindows static bool __namedin(const char *w, int n) {
+  for (int i = 0; i < n;) {
+    while (i < n && w[i] == '/')
+      ++i;
+    int b = i;
+    while (i < n && w[i] != '/')
+      ++i;
+    int m = i - b;
+    if (m && !(w[b] == '.' && (m == 1 || (m == 2 && w[b + 1] == '.'))) &&
+        w[i - 1] != ':')
+      return true;
+  }
+  return false;
+}
+
 // rebuilds path component by component, checking what comes before
-// each inner "." and ".." with __checkdotbase(). the result is left in
-// out, where lexical normalization gives what a unix kernel would
+// each inner "." and ".." with __checkdotbase(). a checked "." adds
+// nothing and a checked ".." climbs out of the last component, so the
+// result is as long as the path means; the lexical normalization of
+// what's left gives what a unix kernel would
 dontinline textwindows static const char *__resolvedots(
     int64_t dirhand, const char *path, char out[static PATH_MAX],
     bool used_explicit_drive_letter) {
@@ -621,10 +700,25 @@ dontinline textwindows static const char *__resolvedots(
     if (!m)
       break;
     bool dots = b[0] == '.' && (m == 1 || (m == 2 && b[1] == '.'));
-    if (dots && named)
+    if (dots && named) {
       if ((n = __checkdotbase(dirhand, w, n, m == 2,
                               used_explicit_drive_letter)) == -1)
         return 0;
+      if (m == 1)
+        continue;
+      int j = n;
+      while (j && w[j - 1] != '/')
+        --j;
+      int last = n - j;
+      if (last && !(last == 2 && w[j] == '.' && w[j + 1] == '.')) {
+        n = j;
+        while (n > 1 && w[n - 1] == '/')
+          --n;
+        w[n] = 0;
+        named = __namedin(w, n);
+        continue;
+      }
+    }
     if (!dots && b[m - 1] != ':')
       named = true;
     if (n + 1 + m + 1 > PATH_MAX) {
@@ -635,6 +729,11 @@ dontinline textwindows static const char *__resolvedots(
       w[n++] = '/';
     memcpy(w + n, b, m);
     w[n += m] = 0;
+  }
+  // a relative path that climbed back to where it started is "."
+  if (!n) {
+    w[n++] = '.';
+    w[n] = 0;
   }
   size_t len = strlen(path);
   if (len && (path[len - 1] == '/' || path[len - 1] == '\\')) {
@@ -663,6 +762,10 @@ textwindows int __mkntpathath(int64_t dirhand, const char *path,
                               char16_t file[static PATH_MAX],
                               bool used_explicit_drive_letter) {
 
+  // linux's limit is on the string as given, before "." and ".." are
+  // resolved away
+  if (strlen(path) >= LINUX_PATH_MAX)
+    return enametoolong();
   char rewritten[PATH_MAX];
   if (!(path = __rewritepath(path, rewritten)))
     return -1;

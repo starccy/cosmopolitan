@@ -45,6 +45,10 @@
 #include "libc/nt/enum/memflags.h"
 #include "libc/nt/enum/pageflags.h"
 #include "libc/nt/errors.h"
+#include "libc/nt/enum/accessmask.h"
+#include "libc/nt/files.h"
+#include "libc/str/str.h"
+#include "libc/nt/enum/filesharemode.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/struct/memorybasicinformation.h"
@@ -755,24 +759,71 @@ textwindows dontinline static struct DirectMap sys_mmap_nt(
   if (page_flags == kNtPageExecuteRead && (file_flags & kNtFileMapWrite))
     return (dm.hand = -1, dm.addr = (void *)eacces(), dm);
 
+  // linux maps what the file has and faults on the rest. a section
+  // only goes to the end of a file it may not grow, and the view stops
+  // at the page that holds the end; nothing of the file in the range
+  // leaves it reserved, so a touch faults
+  size_t vsize = size;
+  uint64_t maxsize = size + off;
+  int64_t fsize;
+  if (file_handle != -1 && GetFileSizeEx(file_handle, &fsize) &&
+      (uint64_t)off + size > (uint64_t)fsize) {
+    maxsize = 0;
+    vsize = (uint64_t)off < (uint64_t)fsize ? PGUP(fsize - off) : 0;
+    if (vsize > size)
+      vsize = size;
+    if (!vsize) {
+      if (!(dm.addr = VirtualAlloc(addr, size, kNtMemReserve, kNtPageNoaccess)))
+        dm.addr = MAP_FAILED;
+      dm.hand = MAPS_VIRTUAL;
+      return dm;
+    }
+  }
+
+  // the section is made from a handle with execute access when the
+  // file's lacks it, which a file created by this process does
+  int64_t reopened = -1;
   int e = errno;
 TryAgain:
-  if ((dm.hand = CreateFileMapping(file_handle, mapsec, page_flags,
-                                   (size + off) >> 32, (size + off), 0))) {
-    if ((dm.addr = MapViewOfFileEx(dm.hand, file_flags, off >> 32, off, size,
-                                   addr))) {
+  if ((dm.hand = CreateFileMapping(reopened != -1 ? reopened : file_handle,
+                                   mapsec, page_flags, maxsize >> 32,
+                                   maxsize, 0))) {
+    if (reopened != -1) {
+      CloseHandle(reopened);
+      reopened = -1;
+    }
+    if ((dm.addr = MapViewOfFileEx(dm.hand, file_flags, off >> 32, off, vsize,
+                                   addr)) ||
+        (vsize < size && maxsize == 0 &&
+         (dm.addr = MapViewOfFileEx(dm.hand, file_flags, off >> 32, off,
+                                    fsize - off, addr)))) {
       uint32_t oldprot;
       if (__ntview2prot(file_flags) == __prot2nt(prot, iscow) ||
-          VirtualProtect(dm.addr, size, __prot2nt(prot, iscow), &oldprot))
+          VirtualProtect(dm.addr, vsize, __prot2nt(prot, iscow), &oldprot)) {
+        errno = e;
         return dm;
+      }
       UnmapViewOfFile(dm.addr);
     }
     CloseHandle(dm.hand);
-  } else if (!(prot & PROT_EXEC) &&                        //
-             (page_flags == kNtPageExecuteWritecopy ||     //
+  } else if ((page_flags == kNtPageExecuteWritecopy ||     //
               page_flags == kNtPageExecuteReadwrite ||     //
               page_flags == kNtPageExecuteRead) &&         //
              GetLastError() == kNtErrorAccessDenied) {
+    if (reopened == -1 && file_handle != -1) {
+      uint32_t access = kNtGenericRead | kNtGenericExecute;
+      if (page_flags == kNtPageExecuteReadwrite)
+        access |= kNtGenericWrite;
+      if ((reopened = ReOpenFile(file_handle, access,
+                                 kNtFileShareRead | kNtFileShareWrite |
+                                     kNtFileShareDelete,
+                                 0)) != -1) {
+        errno = e;
+        goto TryAgain;
+      }
+    }
+    if (prot & PROT_EXEC)
+      goto Failed;
     // your file needs to have been O_CREAT'd with exec `mode` bits in
     // order to be mapped with executable permission. we always try to
     // get execute permission if the kernel will give it to us because
@@ -795,6 +846,9 @@ TryAgain:
     goto TryAgain;
   }
 
+Failed:
+  if (reopened != -1)
+    CloseHandle(reopened);
   dm.hand = -1;
   dm.addr = (void *)(intptr_t)-1;
   return dm;
@@ -1211,7 +1265,10 @@ static void *__mmap(char *addr, size_t size, int prot, int flags, int fd,
   return res;
 }
 
-static long __mremap_polyfill_check(char *addr, size_t old_size) {
+// `whole` wants the old range to end where a mapping does, as growing
+// in place needs; a move takes a range that ends inside one, which
+// munmap() then splits
+static long __mremap_polyfill_check(char *addr, size_t old_size, bool whole) {
 
   // we support anon maps
   struct Map *base, *map, *next;
@@ -1231,37 +1288,70 @@ static long __mremap_polyfill_check(char *addr, size_t old_size) {
   for (;; map = next) {
     prot = map->prot;
     flags = map->flags & MAP_TYPE;
-    if (map->addr + map->size == end)
+    if (map->addr + PGUP(map->size) == end)
       break;
-    if (map->addr + map->size > end)
-      return enomem();
+    if (map->addr + PGUP(map->size) > end) {
+      if (whole)
+        return enomem();
+      break;
+    }
     if (!(next = __maps_next(map)))
       return efault();
-    if (map->addr + map->size != next->addr)
+    if (map->addr + PGUP(map->size) != next->addr)
       return efault();
   }
 
   return (unsigned long)flags << 32 | prot;
 }
 
+// grows an anonymous mapping: in place when the range after it is free
+// and granule sized, else by moving to a new one, which linux's
+// MREMAP_MAYMOVE allows
+int __mprotect(char *, size_t, int);
+
 static void *__mremap_polyfill_impl(char *addr, size_t old_size,
-                                    size_t new_size) {
+                                    size_t new_size, int mflags) {
 
   __maps_lock();
-  long rc = __mremap_polyfill_check(addr, old_size);
+  long rc = __mremap_polyfill_check(addr, old_size, true);
   __maps_unlock();
-  if (rc == -1)
+  if (rc == -1 && !(mflags & MREMAP_MAYMOVE))
     return MAP_FAILED;
   int flags = rc >> 32;
   int prot = rc;
 
   // request system memory and create entry
-  if (__mmap_impl(addr + old_size, new_size - old_size, prot,
+  if (rc != -1 && !((old_size | new_size) & (__gransize - 1)) &&
+      __mmap_impl(addr + old_size, new_size - old_size, prot,
                   flags | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1,
-                  0) == MAP_FAILED)
-    return (void *)enomem();
+                  0) != MAP_FAILED)
+    return addr;
 
-  return addr;
+  if (!(mflags & MREMAP_MAYMOVE))
+    return (void *)enomem();
+  if (rc == -1) {
+    __maps_lock();
+    rc = __mremap_polyfill_check(addr, old_size, false);
+    __maps_unlock();
+    if (rc == -1)
+      return MAP_FAILED;
+    flags = rc >> 32;
+    prot = rc;
+  }
+  // the copy needs the new pages writable, whatever the old ones were
+  char *res = __mmap_impl(0, new_size, PROT_READ | PROT_WRITE,
+                          flags | MAP_ANONYMOUS, -1, 0);
+  if (res == MAP_FAILED)
+    return MAP_FAILED;
+  if (prot & PROT_READ) {
+    memcpy(res, addr, old_size);
+  } else {
+    // unreadable pages carry nothing worth keeping
+  }
+  if (prot != (PROT_READ | PROT_WRITE))
+    __mprotect(res, new_size, prot);
+  __munmap(addr, old_size);
+  return res;
 }
 
 static void *__mremap_polyfill(char *addr, size_t old_size, size_t new_size,
@@ -1270,20 +1360,17 @@ static void *__mremap_polyfill(char *addr, size_t old_size, size_t new_size,
   // round up new size
   new_size = PGUP(new_size);
 
-  // we only support enough features to make dlrealloc happy
   if (flags & ~MREMAP_MAYMOVE)
     return (void *)einval();
-  if (old_size & (__gransize - 1))
-    return (void *)einval();
-  if (new_size & (__gransize - 1))
-    return (void *)einval();
   if (new_size < old_size) {
+    // a tail windows can't carve out of its granule stays mapped
+    int e = errno;
     if (__munmap(addr + new_size, old_size - new_size))
-      return MAP_FAILED;
+      errno = e;
     return addr;
   }
 
-  return __mremap_polyfill_impl(addr, old_size, new_size);
+  return __mremap_polyfill_impl(addr, old_size, new_size, flags);
 }
 
 static void *__mremap_impl(char *old_addr, size_t old_size, size_t new_size,
@@ -1338,9 +1425,11 @@ static void *__mremap_impl(char *old_addr, size_t old_size, size_t new_size,
   __maps_lock();
 
   // untrack old mapping
-  struct Map *deleted = 0;
-  __muntrack(old_addr, old_size, &deleted, 0, 0);
-  __maps_free_all(deleted);
+  if (!(flags & MREMAP_DONTUNMAP)) {
+    struct Map *deleted = 0;
+    __muntrack(old_addr, old_size, &deleted, 0, 0);
+    __maps_free_all(deleted);
+  }
 
   // track map object
   map->addr = res;
@@ -1381,8 +1470,10 @@ static void *__mremap(char *old_addr, size_t old_size, size_t new_size,
       if (flags & MREMAP_MAYMOVE)
         flags &= ~MREMAP_MAYMOVE;
 
-  // we support these flags
-  if (flags & ~(MREMAP_MAYMOVE | MREMAP_FIXED))
+  // we support these flags; linux also keeps the old pages mapped when
+  // asked to, which only changes what the mapping tracker does
+  if (flags & ~(MREMAP_MAYMOVE | MREMAP_FIXED |
+                (IsLinux() ? MREMAP_DONTUNMAP : 0)))
     return (void *)einval();
   if ((flags & MREMAP_FIXED) && !(flags & MREMAP_MAYMOVE))
     return (void *)einval();

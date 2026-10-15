@@ -46,8 +46,11 @@ int setsid(void) {
     __get_pib()->dwCreationFlags |= kNtCreateNoWindow | kNtDetachedProcess;
     rc = getpid();
     __get_pib()->pgid = rc;
+    __get_pib()->sid = rc;
     if (_weaken(__pgrp_self_set))
       _weaken(__pgrp_self_set)(rc);
+    if (_weaken(__sid_self_set))
+      _weaken(__sid_self_set)(rc);
   }
   STRACE("setsid() → %d% m", rc);
   return rc;

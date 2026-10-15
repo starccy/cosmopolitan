@@ -506,7 +506,7 @@ scall	sys_bsdthread_register	0xfffffffff216efff	0xfff	globl hidden
 #scall	fmount			0xfffffffff220efff	0xfff	globl
 #scall	fs_snapshot		0xfffffffff2206fff	0xfff	globl
 #scall	fsctl			0xfffffffff20f2fff	0xfff	globl
-#scall	fsetattrlist		0xfffffffff20e5fff	0xfff	globl
+scall	sys_fsetattrlist	0xfffffffff20e5fff	0xfff	globl hidden
 #scall	fstat_extended		0xfffffffff2119fff	0xfff	globl
 #scall	fsync_nocancel		0xfffffffff2198fff	0xfff	globl
 #scall	getattrlist		0xfffffffff20dcfff	0xfff	globl

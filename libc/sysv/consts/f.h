@@ -17,6 +17,9 @@
 #define F_SETLK  6
 #define F_SETLKW 7
 
+#define F_SETPIPE_SZ 1031
+#define F_GETPIPE_SZ 1032
+
 #define F_RDLCK 0
 #define F_WRLCK 1
 #define F_UNLCK 2
